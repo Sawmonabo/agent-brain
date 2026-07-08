@@ -6,22 +6,32 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
+// ErrBusy means Sync was re-entered. The daemon's single goroutine makes
+// this unreachable in correct code — surfacing it loudly beats silently
+// serializing a logic error.
+var ErrBusy = errors.New("engine: sync already running")
+
 // Engine runs sync cycles against one memories checkout. Not safe for
-// concurrent use: Sync (Task 8) guards against reentry and fails loudly.
+// concurrent use: Sync guards against reentry with busy and fails loudly.
 type Engine struct {
 	checkout string
 	host     string
 	layout   repo.Layout
 	registry *provider.Registry
 	now      func() time.Time
+	// busy is the non-reentrancy guard: Sync CAS-acquires it and returns
+	// ErrBusy if a second call finds it already held.
+	busy atomic.Bool
 }
 
 // New validates the wiring. host must already be sanitized — it becomes
