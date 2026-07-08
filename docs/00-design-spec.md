@@ -303,7 +303,7 @@ the bash world until v2 merges.
 ```
 agent-brain/
 ├── go.mod                     # module github.com/Sawmonabo/agent-brain
-├── cmd/agent-brain/main.go    # thin: fang.Execute(cli.Root())
+├── cmd/agent-brain/main.go    # thin: fang.Execute(cli.Root(), fang.WithVersion(cli.Version))
 ├── internal/
 │   ├── cli/                   # cobra tree, one file per command
 │   │   └── dashboard/         # bubbletea models/views

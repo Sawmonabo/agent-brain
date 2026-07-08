@@ -260,6 +260,9 @@ func Root() *cobra.Command {
 And `cmd/agent-brain/main.go`:
 
 ```go
+// Package main is the thin entry point for the agent-brain CLI binary
+// (spec §8): it wires fang's runtime around the cobra command tree
+// assembled in internal/cli.
 package main
 
 import (
@@ -272,13 +275,13 @@ import (
 )
 
 func main() {
-	if err := fang.Execute(context.Background(), cli.Root()); err != nil {
+	if err := fang.Execute(context.Background(), cli.Root(), fang.WithVersion(cli.Version)); err != nil {
 		os.Exit(1)
 	}
 }
 ```
 
-(Signature verified against fang v2.0.1: `func Execute(ctx context.Context, root *cobra.Command, options ...Option) error`. If a later fang differs, `go doc charm.land/fang/v2 Execute` is the authority.)
+(Signature verified against fang v2.0.1: `func Execute(ctx context.Context, root *cobra.Command, options ...Option) error`. If a later fang differs, `go doc charm.land/fang/v2 Execute` is the authority. `fang.WithVersion(cli.Version)` is required — fang.Execute unconditionally overwrites `root.Version` with its own build-info fallback otherwise (verified in fang v2.0.1 source, fang.go:137-139), so neither `cli.Version`'s default "dev" nor a release ldflags stamp would ever reach `--version` without it. The package doc comment is required by the revive package-comments rule in the Task 3 lint gate.)
 
 - [ ] **Step 5: Run tests and build**
 
