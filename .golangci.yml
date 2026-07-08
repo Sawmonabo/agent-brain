@@ -1,0 +1,36 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - revive
+    - gosec
+    - errorlint
+    - misspell
+    - unconvert
+    - unparam
+    - nolintlint
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    gosec:
+      excludes:
+        # This tool is invoked BY git: file paths and git argv come from
+        # git's own invocation, our env contract, or our config — there is
+        # no untrusted path/exec input boundary to defend.
+        - G204 # subprocess with variable args (the gitx wrapper's purpose)
+        - G304 # file path from variable (filter/merge inputs ARE variable paths)
+        - G702 # command-injection taint (env merge labels → git merge-file argv)
+        - G703 # path-traversal taint (env config dir → keyset path)
+  exclusions:
+    rules:
+      - path: '_test\.go'
+        linters:
+          - gosec # test fixtures use 0o644 files and variable paths by design
+formatters:
+  enable:
+    - gofmt
+    - gofumpt

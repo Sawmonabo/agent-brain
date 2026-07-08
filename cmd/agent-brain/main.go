@@ -1,3 +1,6 @@
+// Package main is the thin entry point for the agent-brain CLI binary
+// (spec §8): it wires fang's runtime around the cobra command tree
+// assembled in internal/cli.
 package main
 
 import (
