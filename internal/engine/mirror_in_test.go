@@ -215,6 +215,100 @@ func TestMirrorInScrubsGitMetaFromCheckout(t *testing.T) {
 	}
 }
 
+// TestIsGitMetaPath pins the guard's exact-segment semantics. The
+// negatives matter as much as the positives: over-matching would silently
+// stop legitimate files syncing, which is its own spec violation.
+// .gitmodules and .github are deliberate non-matches — git reads
+// .gitmodules only at the repository root, which unit-relative paths can
+// never name, and .github pins that matching is whole-segment, not prefix.
+func TestIsGitMetaPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		rel  string
+		want bool
+	}{
+		{".gitattributes", true},
+		{".gitignore", true},
+		{".git", true},
+		{".GITATTRIBUTES", true},
+		{".GitIgnore", true},
+		{"sub/.gitattributes", true},
+		{"caps/.GITIGNORE", true},
+		{".git/config", true},
+		{"a/b/.git", true},
+		{"", false},
+		{"gitattributes", false},
+		{"gitignore", false},
+		{".gitattributes.bak", false},
+		{"foo.gitignore", false},
+		{".gitmodules", false},
+		{".github", false},
+		{".github/notes.md", false},
+		{"memories/real.md", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.rel, func(t *testing.T) {
+			t.Parallel()
+			if got := isGitMetaPath(tt.rel); got != tt.want {
+				t.Fatalf("isGitMetaPath(%q) = %v, want %v", tt.rel, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMirrorInScrubHealCommits pins the full heal: the scrub's staged
+// deletion must survive commitProjects (including its Lstat guard on the
+// folder pathspec) so the poison's removal reaches HEAD and propagates to
+// other machines on push — not merely sit staged in this host's index.
+func TestMirrorInScrubHealCommits(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+	ctx := context.Background()
+
+	unitDir := engine.layout.UnitDir("alpha", "claude")
+	if err := os.MkdirAll(filepath.Join(unitDir, "evil"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "evil", ".gitattributes"), []byte("* -filter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(unitDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "memories", "keep.md"), []byte("innocent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "-m", "simulate poisoned integrate")
+
+	manifest := repo.NewManifest()
+	if _, _, err := engine.mirrorIn(ctx, []repo.Unit{u}, manifest); err != nil {
+		t.Fatal(err)
+	}
+	subjects, err := engine.commitProjects(ctx, fixedStamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSubjects := []string{"memory: host-a alpha " + fixedStamp}
+	if len(subjects) != 1 || subjects[0] != wantSubjects[0] {
+		t.Fatalf("subjects = %v, want %v", subjects, wantSubjects)
+	}
+
+	tracked := mustGit(t, checkout, "ls-tree", "-r", "--name-only", "HEAD", "--", "alpha").Stdout
+	if strings.Contains(tracked, ".gitattributes") {
+		t.Fatalf("poisoned .gitattributes still tracked at HEAD:\n%s", tracked)
+	}
+	if !strings.Contains(tracked, "alpha/claude/memories/keep.md") {
+		t.Fatalf("innocent file missing from HEAD:\n%s", tracked)
+	}
+	status := mustGit(t, checkout, "status", "--porcelain")
+	if strings.TrimSpace(status.Stdout) != "" {
+		t.Fatalf("tree dirty after heal commit:\n%s", status.Stdout)
+	}
+}
+
 func TestMirrorInRefusesSymlinks(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
