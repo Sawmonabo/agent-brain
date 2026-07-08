@@ -3,7 +3,7 @@ package gitx
 import (
 	"context"
 	"errors"
-	"fmt"
+	"strings"
 )
 
 // InstallFilters writes the local .git/config wiring (spec §5). It runs on
@@ -17,7 +17,12 @@ func InstallFilters(ctx context.Context, repoDir, binPath string) error {
 		// Fail closed here rather than write an unrunnable required filter.
 		return errors.New("gitx: empty binPath for filter wiring")
 	}
-	quoted := fmt.Sprintf("%q", binPath)
+	// git runs filter/diff/merge command lines through `sh -c`, so binPath needs
+	// POSIX-sh quoting, not Go %q: the two diverge on $, backtick, and backslash
+	// (inside sh double quotes a command substitution would expand and escapes
+	// would mangle). Single-quoting, escaping any embedded quote as '\'', makes
+	// sh treat every byte literally — closing the injection surface entirely.
+	quoted := "'" + strings.ReplaceAll(binPath, "'", `'\''`) + "'"
 	settings := [][2]string{
 		{"filter.agentbrain.clean", quoted + " git-clean"},
 		{"filter.agentbrain.smudge", quoted + " git-smudge"},

@@ -21,6 +21,7 @@ func seedTwoMachines(t *testing.T, seedContent string) (string, string, string) 
 }
 
 func TestDivergentOverlapRetainsBoth(t *testing.T) {
+	t.Parallel()
 	bare, machineA, machineB := seedTwoMachines(t, "fact: original\n")
 
 	writeFile(t, machineA, "notes.md", "fact: edited on machine A\n")
@@ -58,14 +59,21 @@ func TestDivergentOverlapRetainsBoth(t *testing.T) {
 		t.Fatalf("machines diverge after sync:\nA: %q\nB: %q", got, merged)
 	}
 
-	// And the wire never saw plaintext, even through the driver's re-encrypt.
+	// And the wire never saw plaintext, even through the driver's re-encrypt:
+	// the converged blob is agent-brain ciphertext (magic header), not merely
+	// free of the known plaintext — a HasPrefix guard that also rules out a
+	// vacuous pass on an empty blob.
 	stored := remoteBlob(t, bare, "notes.md")
+	if !strings.HasPrefix(stored, magicPrefix) {
+		t.Fatalf("converged blob lacks agent-brain magic; plaintext on the wire? %q", stored[:min(16, len(stored))])
+	}
 	if strings.Contains(stored, "edited on machine") {
 		t.Fatal("PLAINTEXT LEAKED TO REMOTE after merge-driver rewrite")
 	}
 }
 
 func TestDivergentNonOverlapMergesClean(t *testing.T) {
+	t.Parallel()
 	_, machineA, machineB := seedTwoMachines(t, "top\n\nmiddle\n\nbottom\n")
 
 	writeFile(t, machineA, "notes.md", "top EDITED A\n\nmiddle\n\nbottom\n")
@@ -94,6 +102,7 @@ func TestDivergentNonOverlapMergesClean(t *testing.T) {
 // edit dissolves (its commit becomes empty and the rebase drops it), so B
 // converges to A's regenerated copy with no conflict block.
 func TestDivergentLwwKeepsUpstream(t *testing.T) {
+	t.Parallel()
 	bare := newBareRepo(t)
 	machineA := newMachine(t, "machine-a", bare)
 	writeFile(t, machineA, ".gitattributes", gitAttributes)
@@ -121,6 +130,9 @@ func TestDivergentLwwKeepsUpstream(t *testing.T) {
 		t.Fatalf("lww must never produce conflict blocks:\n%s", merged)
 	}
 	stored := remoteBlob(t, bare, "summary.lww.md")
+	if !strings.HasPrefix(stored, magicPrefix) {
+		t.Fatalf("lww blob lacks agent-brain magic; plaintext on the wire? %q", stored[:min(16, len(stored))])
+	}
 	if strings.Contains(stored, "regenerated") {
 		t.Fatal("PLAINTEXT LEAKED TO REMOTE on the lww path")
 	}
@@ -137,6 +149,7 @@ func TestDivergentLwwKeepsUpstream(t *testing.T) {
 // byte-identical on a fresh clone. That is the path a real conflict
 // resolution takes, and Phase 2's engine tests build on it.
 func TestRetainBothReencryptsThroughResolution(t *testing.T) {
+	t.Parallel()
 	bare, machineA, machineB := seedTwoMachines(t, "fact: original\n")
 
 	// Drive both machines into a genuine retain-both on the same file.

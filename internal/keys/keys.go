@@ -6,6 +6,7 @@ package keys
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,12 @@ import (
 	"github.com/tink-crypto/tink-go/v2/tink"
 )
 
+// ErrKeysetExists is the sentinel behind both refuse-to-overwrite paths
+// (Generate and Import): losing a keyset loses every memory encrypted under it,
+// so neither ever clobbers an existing one. Phase 2's init / key-import UX
+// branches on this with errors.Is rather than matching the message string.
+var ErrKeysetExists = errors.New("keyset already exists")
+
 // Generate creates a fresh AES256_SIV keyset at path (0600). It refuses to
 // overwrite: losing a keyset means losing every memory encrypted under it.
 func Generate(path string) error {
@@ -27,7 +34,7 @@ func Generate(path string) error {
 	// one-shot CLI action and the sync engine is the only concurrent writer, so
 	// the race is accepted.
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("keyset already exists at %s (use key import/export to move keys)", path)
+		return fmt.Errorf("%w at %s (use key import/export to move keys)", ErrKeysetExists, path)
 	}
 	// AESSIVKeyTemplate is daead's only template; it generates the
 	// AES256_SIV key type (64-byte key, RFC 5297) the spec pins.
@@ -79,7 +86,7 @@ func Import(path, armored string) error {
 	// as Generate; refusing to overwrite protects an existing keyset from an
 	// errant import.
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("keyset already exists at %s; refusing to overwrite", path)
+		return fmt.Errorf("%w at %s; refusing to overwrite", ErrKeysetExists, path)
 	}
 	data, err := base64.StdEncoding.DecodeString(armored)
 	if err != nil {

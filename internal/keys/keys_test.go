@@ -3,6 +3,7 @@ package keys
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,8 +26,8 @@ func TestGenerateLoadRoundtrip(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("keyset perm = %o, want 600", perm)
 	}
-	if err := Generate(path); err == nil {
-		t.Fatal("second Generate succeeded; want refuse-to-overwrite error")
+	if err := Generate(path); !errors.Is(err, ErrKeysetExists) {
+		t.Fatalf("second Generate must refuse to overwrite with ErrKeysetExists, got %v", err)
 	}
 	primitive, err := Primitive(path)
 	if err != nil {
@@ -74,8 +75,8 @@ func TestExportImport(t *testing.T) {
 	if err != nil || string(plaintext) != "shared identity" {
 		t.Fatalf("cross-keyset decrypt failed: %v %q", err, plaintext)
 	}
-	if err := Import(imported, armored); err == nil {
-		t.Fatal("Import over existing file succeeded; want error")
+	if err := Import(imported, armored); !errors.Is(err, ErrKeysetExists) {
+		t.Fatalf("Import over an existing keyset must refuse with ErrKeysetExists, got %v", err)
 	}
 	if err := Import(filepath.Join(dir, "bad.json"), "!!!not-base64!!!"); err == nil {
 		t.Fatal("Import of garbage succeeded; want error")

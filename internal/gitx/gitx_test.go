@@ -70,11 +70,11 @@ func TestInstallFilters(t *testing.T) {
 	}
 	for key, want := range map[string]string{
 		"filter.agentbrain.required":  "true",
-		"filter.agentbrain.clean":     `"/usr/local/bin/agent-brain" git-clean`,
-		"filter.agentbrain.smudge":    `"/usr/local/bin/agent-brain" git-smudge`,
-		"diff.agentbrain.textconv":    `"/usr/local/bin/agent-brain" git-textconv`,
-		"merge.agentbrain.driver":     `"/usr/local/bin/agent-brain" git-merge --mode fact -- %O %A %B %P`,
-		"merge.agentbrain-lww.driver": `"/usr/local/bin/agent-brain" git-merge --mode lww -- %O %A %B %P`,
+		"filter.agentbrain.clean":     `'/usr/local/bin/agent-brain' git-clean`,
+		"filter.agentbrain.smudge":    `'/usr/local/bin/agent-brain' git-smudge`,
+		"diff.agentbrain.textconv":    `'/usr/local/bin/agent-brain' git-textconv`,
+		"merge.agentbrain.driver":     `'/usr/local/bin/agent-brain' git-merge --mode fact -- %O %A %B %P`,
+		"merge.agentbrain-lww.driver": `'/usr/local/bin/agent-brain' git-merge --mode lww -- %O %A %B %P`,
 		"merge.renormalize":           "true",
 	} {
 		result, err := Run(ctx, dir, "config", "--get", key)
@@ -166,8 +166,40 @@ func TestInstallFiltersIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("filter.agentbrain.clean: %v", err)
 	}
-	if got, want := strings.TrimSpace(result.Stdout), `"`+bin+`" git-clean`; got != want {
+	if got, want := strings.TrimSpace(result.Stdout), `'`+bin+`' git-clean`; got != want {
 		t.Errorf("clean = %q, want %q", got, want)
+	}
+}
+
+// TestInstallFiltersQuotesBinPathForSh pins the POSIX-sh quoting (Minor #2). git
+// runs filter/merge command lines through `sh -c`, so a binPath carrying sh
+// metacharacters must be single-quoted (embedded quotes escaped the POSIX way),
+// never Go %q — which double-quotes and so diverges from sh on $, backtick, and
+// backslash. The want string is hand-computed, not recomputed from the impl, so
+// it fails if the escape idiom itself is wrong; the second check proves the
+// metacharacters land literally (a Go %q would have wrapped them in
+// expansion-prone double quotes).
+func TestInstallFiltersQuotesBinPathForSh(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, err := Run(ctx, dir, "init", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+	const hostile = `/opt/o'brien/$(touch pwned)/agent-brain`
+	if err := InstallFilters(ctx, dir, hostile); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(ctx, dir, "config", "--get", "filter.agentbrain.clean")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `'/opt/o'\''brien/$(touch pwned)/agent-brain' git-clean`
+	if got := strings.TrimSpace(result.Stdout); got != want {
+		t.Errorf("binPath not POSIX-sh quoted:\n got: %q\nwant: %q", got, want)
+	}
+	if !strings.Contains(result.Stdout, `$(touch pwned)`) {
+		t.Errorf("sh metacharacters not preserved literally inside single quotes: %q", result.Stdout)
 	}
 }
 
