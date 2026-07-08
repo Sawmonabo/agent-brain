@@ -20,6 +20,12 @@ import (
 // Generate creates a fresh AES256_SIV keyset at path (0600). It refuses to
 // overwrite: losing a keyset means losing every memory encrypted under it.
 func Generate(path string) error {
+	// The Stat check is a best-effort guard, not a lock: the check-then-write
+	// window is a benign TOCTOU. The write path uses renameio's atomic replace,
+	// chosen for crash-atomicity (a partially written keyset is never visible)
+	// over an O_CREATE|O_EXCL no-clobber open. Keyset bootstrap is a single-user,
+	// one-shot CLI action and the sync engine is the only concurrent writer, so
+	// the race is accepted.
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("keyset already exists at %s (use key import/export to move keys)", path)
 	}
@@ -49,18 +55,29 @@ func Primitive(path string) (tink.DeterministicAEAD, error) {
 	return primitive, nil
 }
 
-// Export returns the keyset as std-base64 for transfer over a user-chosen
-// channel; the export IS the recovery artifact (spec §5).
+// Export validates the on-disk keyset and returns it as std-base64 for transfer
+// over a user-chosen channel; the export IS the recovery artifact (spec §5), so
+// a corrupt or wrong-type keyset must fail here rather than at restore time.
 func Export(path string) (string, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the program-derived keyset location (config.Paths.Keyset), not untrusted input
 	if err != nil {
 		return "", fmt.Errorf("read keyset: %w", err)
+	}
+	handle, err := insecurecleartextkeyset.Read(keyset.NewJSONReader(bytes.NewReader(data)))
+	if err != nil {
+		return "", fmt.Errorf("parse keyset: %w", err)
+	}
+	if _, err := daead.New(handle); err != nil {
+		return "", fmt.Errorf("keyset is not a Deterministic AEAD keyset: %w", err)
 	}
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
 // Import validates an armored keyset and installs it at path (0600).
 func Import(path, armored string) error {
+	// Best-effort no-clobber guard with the same accepted check-then-write TOCTOU
+	// as Generate; refusing to overwrite protects an existing keyset from an
+	// errant import.
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("keyset already exists at %s; refusing to overwrite", path)
 	}
