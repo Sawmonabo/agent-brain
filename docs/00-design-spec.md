@@ -380,6 +380,17 @@ only rescues (a).
 **`agent-brain migrate`** — one-time, idempotent, import-only (the sole
 backward-compat surface, ADR 11):
 
+**Pre-flight (per machine, before migrate reads anything):** the bash-era
+system cannot propagate deletions, so `chezmoi --config
+~/.config/agent-brain/chezmoi.toml diff` may list source-only orphans —
+memories deleted from `~/.agent-brain/<slug>/` that any stray `apply` would
+resurrect straight into the migrate seed. The diff must be EMPTY first:
+adjudicate each orphan (restore keepers to the destination, `chezmoi forget`
+confirmed deletions, commit + push the legacy source). Executed on
+Sawmons-MacBook-Pro 2026-07-08 (30 orphans → 28 forgotten, 2 restored); the
+history scrub below is the point of no return for anything left
+unadjudicated.
+
 1. Requires `init` complete (repo + keyset + daemon).
 2. Enumerates `~/.agent-brain/<slug>/` dirs (skipping `.lock`/`.sync-pending`),
    best-guess maps slugs → projects, confirms interactively (the same huh picker
