@@ -99,7 +99,7 @@ func (e *Engine) commitPaths(ctx context.Context, subject, pathspec string) (boo
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(changed.Stdout) == "" {
+	if len(changed.Stdout) == 0 {
 		return false, nil // nothing under pathspec to commit
 	}
 	if _, err := gitx.Run(ctx, e.checkout, "add", "-A", "--", pathspec); err != nil {

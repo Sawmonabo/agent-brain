@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
@@ -149,5 +150,126 @@ func TestMirrorInUnknownProviderIsError(t *testing.T) {
 	bad := repo.Unit{Provider: "gemini", ProjectID: "x", Folder: "alpha", LocalDir: t.TempDir()}
 	if _, _, err := engine.mirrorIn(context.Background(), []repo.Unit{bad}, repo.NewManifest()); err == nil {
 		t.Fatal("unenrollable provider silently skipped; want loud error")
+	}
+}
+
+func TestMirrorInRemovesUntrackedOrphanOnDeletion(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+
+	// Simulate a prior cycle that crashed after mirror-in wrote this
+	// file into the checkout but before commitProjects ran: the file
+	// exists on disk but was never `git add`ed, so it is untracked.
+	orphan := filepath.Join(checkout, "alpha", "claude", "memories", "orphan.md")
+	if err := os.MkdirAll(filepath.Dir(orphan), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphan, []byte("crashed before commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := repo.NewManifest()
+	entry := repo.ManifestEntry{Size: 22, MTimeUnixNano: 1, SHA256: "deadbeef"}
+	if err := manifest.Set("alpha/claude/memories/orphan.md", entry); err != nil {
+		t.Fatal(err)
+	}
+	// Provider-local dir intentionally has no matching file: this path
+	// is only reachable through the manifest-driven deletion branch.
+	if _, err := os.Stat(filepath.Join(u.LocalDir, "memories", "orphan.md")); !os.IsNotExist(err) {
+		t.Fatal("test setup error: orphan.md unexpectedly present locally")
+	}
+
+	stats, _, err := engine.mirrorIn(context.Background(), []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 1 {
+		t.Fatalf("Deleted = %d, want 1", stats.Deleted)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatal("untracked orphan still on disk after the deletion pass — resurrection hole")
+	}
+	if manifest.Has("alpha/claude/memories/orphan.md") {
+		t.Fatal("manifest still lists the removed orphan")
+	}
+}
+
+func TestMirrorInRefreshesLedgerOnIdenticalContentTouch(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+	writeLocal(t, u, "memories/a.md", "content\n")
+
+	manifest := repo.NewManifest()
+	ctx := context.Background()
+	if _, _, err := engine.mirrorIn(ctx, []repo.Unit{u}, manifest); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := manifest.Get("alpha/claude/memories/a.md")
+	if !ok {
+		t.Fatal("manifest missing entry after first sync")
+	}
+
+	full := filepath.Join(u.LocalDir, "memories", "a.md")
+	touched := time.Unix(0, before.MTimeUnixNano).Add(time.Hour)
+	if err := os.Chtimes(full, touched, touched); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMTime := info.ModTime().UnixNano()
+	if wantMTime == before.MTimeUnixNano {
+		t.Fatal("test setup error: touched mtime did not change on disk")
+	}
+
+	stats, _, err := engine.mirrorIn(ctx, []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Copied != 0 {
+		t.Fatalf("Copied = %d, want 0 — content-identical touch must not recopy", stats.Copied)
+	}
+	after, ok := manifest.Get("alpha/claude/memories/a.md")
+	if !ok {
+		t.Fatal("manifest missing entry after touch cycle")
+	}
+	if after.MTimeUnixNano != wantMTime {
+		t.Fatalf("manifest MTimeUnixNano = %d, want %d (refreshed to the new mtime)", after.MTimeUnixNano, wantMTime)
+	}
+}
+
+// TestMirrorInDropsStaleManifestEntries covers pass 3 (ledger hygiene):
+// verified against the actual code, an entry whose file is gone from
+// both the provider dir and the checkout is dropped from the manifest
+// silently and is NOT counted in stats.Deleted — pass 2 (the only pass
+// that increments Deleted) only ever visits files that still exist on
+// the checkout side, so it never sees this path. Nothing was deleted
+// this cycle; this is stale-bookkeeping cleanup only.
+func TestMirrorInDropsStaleManifestEntries(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+
+	manifest := repo.NewManifest()
+	entry := repo.ManifestEntry{Size: 4, MTimeUnixNano: 1, SHA256: "deadbeef"}
+	if err := manifest.Set("alpha/claude/memories/stale.md", entry); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, _, err := engine.mirrorIn(context.Background(), []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Has("alpha/claude/memories/stale.md") {
+		t.Fatal("stale manifest entry (gone from both sides) was not dropped")
+	}
+	if stats.Deleted != 0 {
+		t.Fatalf("Deleted = %d, want 0 — pass 3 is ledger hygiene, not a this-cycle deletion", stats.Deleted)
 	}
 }

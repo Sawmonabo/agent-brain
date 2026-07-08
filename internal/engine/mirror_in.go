@@ -125,6 +125,17 @@ func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Pr
 		if _, err := gitx.Run(ctx, e.checkout, "rm", "--quiet", "--ignore-unmatch", "--", repoRel); err != nil {
 			return err
 		}
+		if _, statErr := os.Lstat(fullPath); statErr == nil {
+			// git rm --ignore-unmatch silently no-ops on an untracked
+			// file: a prior cycle can crash after mirror-in wrote it but
+			// before commit. Remove it directly here, or the orphan
+			// reads as new-from-remote next cycle and gets copied back
+			// to the provider dir — resurrecting a file the user
+			// deleted.
+			if err := os.Remove(fullPath); err != nil { //nolint:gosec // G122: fullPath comes from walking this unit's own checkout dir, and Remove doesn't follow symlinks — no TOCTOU exfiltration path
+				return fmt.Errorf("remove untracked orphan %s: %w", fullPath, err)
+			}
+		}
 		manifest.Delete(repoRel)
 		stats.Deleted++
 		return nil

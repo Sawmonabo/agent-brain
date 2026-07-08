@@ -63,6 +63,44 @@ func TestCommitProjectsOneCommitPerProject(t *testing.T) {
 	}
 }
 
+// TestChangedTopLevelsHandlesRenames covers the porcelain -z rename
+// record (`R  <dest>\0<origin>\0`, verified against real git output):
+// moving a file across top-level folders must mark BOTH the origin and
+// destination folders changed, not just the destination that `record`
+// itself carries.
+func TestChangedTopLevelsHandlesRenames(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	alpha, beta := unit(t, "alpha"), unit(t, "beta")
+	writeLocal(t, alpha, "memories/a.md", "A\n")
+	writeLocal(t, beta, "memories/seed.md", "seed\n")
+	manifest := repo.NewManifest()
+	if _, _, err := engine.mirrorIn(ctx, []repo.Unit{alpha, beta}, manifest); err != nil {
+		t.Fatal(err)
+	}
+	// Commit the seed state directly (not via commitProjects, which
+	// every other test already exercises): this test's subject is
+	// changedTopLevels' own porcelain parsing, not the commit helper.
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "-m", "seed")
+
+	mustGit(t, checkout, "mv",
+		"alpha/claude/memories/a.md",
+		"beta/claude/memories/a-moved.md")
+
+	folders, err := engine.changedTopLevels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "beta"}
+	if len(folders) != len(want) || folders[0] != want[0] || folders[1] != want[1] {
+		t.Fatalf("changedTopLevels = %v, want %v", folders, want)
+	}
+}
+
 func TestCommitsAreNoopsWhenClean(t *testing.T) {
 	t.Parallel()
 	checkout, _ := newTestCheckout(t)
