@@ -1,0 +1,85 @@
+package crypto
+
+import (
+	"bytes"
+	"path/filepath"
+	"testing"
+
+	"github.com/Sawmonabo/agent-brain/internal/keys"
+)
+
+// testing.TB so both tests (*testing.T) and fuzz targets (*testing.F) can use it.
+func newTestCodec(tb testing.TB) *Codec {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), "keyset.json")
+	if err := keys.Generate(path); err != nil {
+		tb.Fatal(err)
+	}
+	primitive, err := keys.Primitive(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return NewCodec(primitive)
+}
+
+func TestCodec(t *testing.T) {
+	t.Parallel()
+	codec := newTestCodec(t)
+	plaintext := []byte("# memory\n\nsecret fact\n")
+
+	ciphertext, err := codec.Encrypt(plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsEncrypted(ciphertext) {
+		t.Fatal("Encrypt output not recognized by IsEncrypted")
+	}
+	if bytes.Contains(ciphertext, []byte("secret fact")) {
+		t.Fatal("ciphertext contains plaintext")
+	}
+
+	again, err := codec.Encrypt(plaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ciphertext, again) {
+		t.Fatal("determinism violated: equal plaintext produced different ciphertext")
+	}
+
+	decrypted, err := codec.Decrypt(ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Fatalf("roundtrip mismatch: %q", decrypted)
+	}
+
+	if _, err := codec.Decrypt(plaintext); err == nil {
+		t.Fatal("Decrypt of plaintext succeeded; want no-magic error")
+	}
+
+	cleaned, err := codec.Clean(ciphertext)
+	if err != nil || !bytes.Equal(cleaned, ciphertext) {
+		t.Fatalf("Clean not idempotent on ciphertext: %v", err)
+	}
+	cleaned, err = codec.Clean(plaintext)
+	if err != nil || !bytes.Equal(cleaned, ciphertext) {
+		t.Fatalf("Clean(plaintext) != Encrypt(plaintext): %v", err)
+	}
+	smudged, err := codec.Smudge(ciphertext)
+	if err != nil || !bytes.Equal(smudged, plaintext) {
+		t.Fatalf("Smudge(ciphertext) failed: %v", err)
+	}
+	smudged, err = codec.Smudge(plaintext)
+	if err != nil || !bytes.Equal(smudged, plaintext) {
+		t.Fatalf("Smudge must pass plaintext through: %v", err)
+	}
+	tampered := append([]byte{}, ciphertext...)
+	tampered[len(tampered)-1] ^= 0xFF
+	if _, err := codec.Decrypt(tampered); err == nil {
+		t.Fatal("Decrypt of tampered ciphertext succeeded; want auth error")
+	}
+	if IsEncrypted([]byte("agb")) || IsEncrypted(nil) {
+		t.Fatal("IsEncrypted false positives on short input")
+	}
+}
