@@ -26,14 +26,12 @@ func TestGuessPath(t *testing.T) {
 			// The slug encoding is lossy: "-Users-u-dev-agent-brain" could
 			// mean either /Users/u/dev/agent/brain or .../agent-brain. The
 			// naive (all-slash) guess does not exist, so the walk falls
-			// back segment by segment. It resolves to the hyphenated
-			// directory here specifically because /Users/u/dev/agent ALSO
-			// exists (dirExists is checked one slug segment at a time, so
-			// the walk commits to "/agent" as its own directory before
-			// ever considering "-brain"); with only the ancestors and the
-			// final combined directory present (no /Users/u/dev/agent),
-			// this same algorithm instead falls through to the naive
-			// guess — see TestGuessPathRealisticHyphenatedLeafHasNoDecoy.
+			// back segment by segment: /Users/u/dev/agent existing lets
+			// the walk descend there, and "-brain" then extends that
+			// committed component to the existing final directory. The
+			// realistic variant of this fixture WITHOUT the
+			// /Users/u/dev/agent decoy is covered by
+			// TestGuessPathHyphenatedLeafWithoutDecoy.
 			name: "dash-preserving reconstruction via the greedy filesystem-guided walk",
 			slug: "-Users-u-dev-agent-brain",
 			dirExists: map[string]bool{
@@ -62,19 +60,16 @@ func TestGuessPath(t *testing.T) {
 	}
 }
 
-// TestGuessPathRealisticHyphenatedLeafHasNoDecoy pins a known limitation:
-// the documented "greedy filesystem-guided walk" only recovers a
-// hyphenated leaf directory when a shorter, non-hyphenated directory of
-// the same prefix ALSO happens to exist (a decoy — see the case above).
-// The realistic case — only the true, hyphenated project directory and
-// its real ancestors exist, e.g. this very repository checked out at
-// ".../dev/agent-brain" with no sibling ".../dev/agent" directory — does
-// NOT reconstruct correctly: the walk commits to the wrong intermediate
-// boundary and falls back to the (incorrect) naive guess. This is
-// implemented exactly as specified; flagged in the task report rather
-// than silently patched, since GuessPath is reused verbatim by migrate
-// (spec §10) and the fix changes shared reconstruction semantics.
-func TestGuessPathRealisticHyphenatedLeafHasNoDecoy(t *testing.T) {
+// TestGuessPathHyphenatedLeafWithoutDecoy pins the realistic
+// hyphenated-leaf case: only the true project directory and its real
+// ancestors exist — e.g. this very repository checked out at
+// ".../dev/agent-brain" with no sibling ".../dev/agent" directory. The
+// greedy walk dead-ends after ".../dev" (no decoy to descend through),
+// so GuessPath must recover the leaf by retrying the unresolved
+// dash-run as ONE hyphenated component under the deepest verified
+// boundary. GuessPath is reused verbatim by migrate (spec §10), so this
+// reconstruction contract is shared.
+func TestGuessPathHyphenatedLeafWithoutDecoy(t *testing.T) {
 	t.Parallel()
 	dirExists := map[string]bool{
 		"/Users/u":                 true,
@@ -83,9 +78,7 @@ func TestGuessPathRealisticHyphenatedLeafHasNoDecoy(t *testing.T) {
 		// deliberately absent: "/Users/u/dev/agent" — no decoy directory.
 	}
 	got := claude.GuessPath("-Users-u-dev-agent-brain", func(path string) bool { return dirExists[path] })
-	want := "/Users/u/dev/agent/brain" // known-wrong naive fallback, not .../agent-brain
-	if got != want {
-		t.Fatalf("GuessPath(%q) = %q, want %q (documenting the current limitation; "+
-			"update this test if GuessPath's reconstruction is strengthened)", "-Users-u-dev-agent-brain", got, want)
+	if want := "/Users/u/dev/agent-brain"; got != want {
+		t.Fatalf("GuessPath(%q) = %q, want %q", "-Users-u-dev-agent-brain", got, want)
 	}
 }

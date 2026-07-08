@@ -20,8 +20,12 @@ import (
 // lossy — a '-' in a real path component is indistinguishable from a
 // separator — so the reconstruction is filesystem-guided: walk the slug
 // segments, preferring '/' when the resulting directory exists and
-// falling back to extending the current component with '-'. dirExists is
-// injected for testability (production passes a stat closure).
+// falling back to extending the current component with '-'; a dash-run
+// the walk cannot resolve is then retried as a single hyphenated leaf
+// component under the deepest verified boundary (exactly how a project
+// directory like "agent-brain" encodes) before the naive all-slash
+// reversal is returned as the last resort. dirExists is injected for
+// testability (production passes a stat closure).
 //
 // Exported because migrate (spec §10) maps identical slugs under
 // ~/.agent-brain/.
@@ -35,16 +39,43 @@ func GuessPath(slug string, dirExists func(string) bool) string {
 		return naive
 	}
 	current := "/" + segments[0]
+	// confirmed is the deepest walk prefix verified to be a real directory
+	// ("" until one is); pending is the dash-run of segments accumulated
+	// past it. Together they let the fallback below retry an unresolved
+	// run against the last trustworthy boundary.
+	confirmed := ""
+	var pending []string
+	if dirExists(current) {
+		confirmed = current
+	} else {
+		pending = append(pending, segments[0])
+	}
 	for _, segment := range segments[1:] {
 		asChild := current + "/" + segment
 		if dirExists(asChild) {
 			current = asChild
+			confirmed = asChild
+			pending = nil
 			continue
 		}
 		current += "-" + segment
+		pending = append(pending, segment)
 	}
 	if dirExists(current) {
 		return current
+	}
+	// The greedy walk merges an unresolvable dash-run into the last
+	// component it committed to (".../dev" + agent,brain →
+	// ".../dev-agent-brain"). The other lossy reading — the run is one NEW
+	// hyphenated component under the last verified boundary
+	// (".../dev/agent-brain") — is exactly how a hyphenated project leaf
+	// directory encodes, and the walk above can only reach it when a
+	// shorter decoy sibling (".../dev/agent") happens to exist. Try the
+	// leaf reading before surrendering to the naive guess.
+	if confirmed != "" && len(pending) > 0 {
+		if leaf := confirmed + "/" + strings.Join(pending, "-"); dirExists(leaf) {
+			return leaf
+		}
 	}
 	return filepath.ToSlash(naive)
 }
