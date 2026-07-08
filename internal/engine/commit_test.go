@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,6 +100,61 @@ func TestChangedTopLevelsHandlesRenames(t *testing.T) {
 	want := []string{"alpha", "beta"}
 	if len(folders) != len(want) || folders[0] != want[0] || folders[1] != want[1] {
 		t.Fatalf("changedTopLevels = %v, want %v", folders, want)
+	}
+}
+
+// TestCommitProjectsAfterLastFileDeleted covers the case where mirrorIn's
+// deletion pass `git rm`s a project folder's only file: git removes the
+// now-empty folder from the working tree while staging the deletion in
+// the index, so commitPaths must not rely on `git add -A -- <folder>`
+// succeeding (it fails with exit 128 "pathspec did not match any files"
+// once the folder is gone from the working tree).
+func TestCommitProjectsAfterLastFileDeleted(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	alpha := unit(t, "alpha")
+	writeLocal(t, alpha, "memories/ephemeral.md", "short-lived\n")
+	// manifest stays in-memory across both mirrorIn calls below (like a
+	// single long-lived Engine would hold it mid-Sync); no disk
+	// round-trip is needed to reproduce the bug, and saving it here
+	// would leave an untracked, never-committed .agent-brain/ behind
+	// since this test never calls commitMeta.
+	manifest := repo.NewManifest()
+	if _, _, err := engine.mirrorIn(ctx, []repo.Unit{alpha}, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.commitProjects(ctx, fixedStamp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the only file on the provider side, then mirror in again:
+	// this is what stages the git rm and removes the now-empty folder
+	// from the working tree.
+	if err := os.Remove(filepath.Join(alpha.LocalDir, "memories", "ephemeral.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.mirrorIn(ctx, []repo.Unit{alpha}, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	subjects, err := engine.commitProjects(ctx, fixedStamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSubjects := []string{"memory: host-a alpha " + fixedStamp}
+	if len(subjects) != 1 || subjects[0] != wantSubjects[0] {
+		t.Fatalf("subjects = %v, want %v", subjects, wantSubjects)
+	}
+
+	if _, err := os.Stat(filepath.Join(checkout, "alpha")); !os.IsNotExist(err) {
+		t.Fatalf("checkout dir for alpha still present: err = %v", err)
+	}
+	status := mustGit(t, checkout, "status", "--porcelain")
+	if strings.TrimSpace(status.Stdout) != "" {
+		t.Fatalf("tree dirty after commit:\n%s", status.Stdout)
 	}
 }
 

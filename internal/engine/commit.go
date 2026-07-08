@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -88,12 +90,17 @@ func topSegment(p string) string {
 }
 
 // commitPaths stages pathspec and commits when it has changes; a clean
-// pathspec is a no-op. The status gate is load-bearing: `git add -A --
-// <pathspec>` fails ("pathspec did not match any files") when the path
-// has never existed — e.g. .agent-brain before this host's first
-// manifest write — whereas `git status` tolerates it and reports empty.
-// Gating the add on a non-empty, pathspec-scoped status is what keeps
-// both commit points no-ops on a clean tree (spec §4).
+// pathspec is a no-op. The status gate only guarantees there is
+// something to commit — not that `git add -A -- <pathspec>` will
+// succeed. `git status` reports staged changes even when pathspec no
+// longer exists anywhere (e.g. mirror-in's deletion pass `git rm`ing a
+// project's last file removes the now-empty folder from the working
+// tree, leaving the deletion staged in the index only), but `git add`
+// matches pathspecs against the working tree/index and fails ("pathspec
+// did not match any files") once the folder is gone from both. So the
+// add only runs while pathspec still exists in the working tree;
+// otherwise the deletions are already staged by `git rm` and we go
+// straight to the commit.
 func (e *Engine) commitPaths(ctx context.Context, subject, pathspec string) (bool, error) {
 	changed, err := gitx.Run(ctx, e.checkout, "status", "--porcelain", "-z", "--", pathspec)
 	if err != nil {
@@ -102,8 +109,10 @@ func (e *Engine) commitPaths(ctx context.Context, subject, pathspec string) (boo
 	if len(changed.Stdout) == 0 {
 		return false, nil // nothing under pathspec to commit
 	}
-	if _, err := gitx.Run(ctx, e.checkout, "add", "-A", "--", pathspec); err != nil {
-		return false, err
+	if _, err := os.Lstat(filepath.Join(e.checkout, pathspec)); err == nil {
+		if _, err := gitx.Run(ctx, e.checkout, "add", "-A", "--", pathspec); err != nil {
+			return false, err
+		}
 	}
 	staged, err := gitx.RunStatus(ctx, e.checkout, "diff", "--cached", "--quiet")
 	if err != nil {
