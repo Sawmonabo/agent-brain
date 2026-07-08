@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // TestMain isolates every git invocation in this package from the developer's
@@ -55,6 +57,92 @@ func TestRun(t *testing.T) {
 	}
 	if result.ExitCode == 0 {
 		t.Fatal("RunStatus.ExitCode = 0 for failing command")
+	}
+}
+
+// TestChildEnv pins the daemon-safety env contract at the unit level: every
+// git child gets the full inherited environment (so user git config,
+// credential helpers, and AGENT_BRAIN_* vars keep propagating) plus exactly
+// the two overrides, appended last so they win over any duplicate the
+// inherited environment already carried.
+func TestChildEnv(t *testing.T) {
+	t.Parallel()
+	base := os.Environ()
+	got := childEnv()
+
+	tests := []struct {
+		name  string
+		check func(t *testing.T)
+	}{
+		{
+			name: "length is os.Environ() plus the two overrides",
+			check: func(t *testing.T) {
+				if len(got) != len(base)+2 {
+					t.Errorf("len(childEnv()) = %d, want %d (len(os.Environ())+2)", len(got), len(base)+2)
+				}
+			},
+		},
+		{
+			name: "leaves the inherited environment untouched",
+			check: func(t *testing.T) {
+				if diff := cmp.Diff(base, got[:len(base)]); diff != "" {
+					t.Errorf("childEnv() prefix diverges from os.Environ() (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "ends with the two daemon-safety overrides",
+			check: func(t *testing.T) {
+				want := []string{"LC_ALL=C", "GIT_TERMINAL_PROMPT=0"}
+				if diff := cmp.Diff(want, got[len(got)-2:]); diff != "" {
+					t.Errorf("childEnv() suffix mismatch (-want +got):\n%s", diff)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, test.check)
+	}
+}
+
+// TestRunPropagatesDaemonSafeEnv proves childEnv's contract reaches an actual
+// git child, not just the slice childEnv() computes. git has no builtin way
+// to echo its own environment back to the caller, so a pre-commit hook is
+// used as the observer: git execs it as a real subprocess inheriting git's
+// environment, exactly like the credential-helper and filter subprocesses
+// this fix targets. A locale- or terminal-dependent behavioral probe (a
+// translated git message, or a hang on /dev/tty) was ruled out — neither is
+// portable across machines and CI (NLS catalogs and a controlling terminal
+// are not guaranteed present), so it would either be flaky or pass
+// vacuously depending on the host. Reading the hook's own env dump is
+// deterministic and hermetic instead.
+func TestRunPropagatesDaemonSafeEnv(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, err := Run(ctx, dir, "init", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+
+	const hook = `#!/bin/sh
+printf '%s\n' "$LC_ALL" > env-dump.txt
+printf '%s\n' "$GIT_TERMINAL_PROMPT" >> env-dump.txt
+`
+	hookPath := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, "env-dump.txt"))
+	if err != nil {
+		t.Fatalf("pre-commit hook did not run: %v", err)
+	}
+	if want := "C\n0\n"; string(got) != want {
+		t.Errorf("child env observed by git's own hook = %q, want %q", got, want)
 	}
 }
 

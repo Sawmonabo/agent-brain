@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -38,12 +39,33 @@ func Run(ctx context.Context, dir string, args ...string) (Result, error) {
 	return result, nil
 }
 
+// childEnv is the environment for every git child process this package
+// spawns: the inherited environment — so user git config, credential
+// helpers, and AGENT_BRAIN_* vars keep propagating — with two overrides
+// appended. os/exec keeps only the last value for a duplicate key, so the
+// appended pair always wins even if the inherited environment already set
+// either one.
+//   - LC_ALL=C pins git's textual output to English. The sync engine parses
+//     that output — push-rejection classification ([rejected],
+//     non-fast-forward, fetch first) and porcelain fallbacks — and a
+//     translated locale (e.g. LANG=de_DE.UTF-8) would misclassify it.
+//   - GIT_TERMINAL_PROMPT=0 makes a fetch/push that would otherwise prompt
+//     for credentials fail fast instead of blocking forever. This runner
+//     backs an unattended daemon: the engine treats a failed fetch as a
+//     clean Offline outcome, not as a goroutine wedged on a terminal that
+//     does not exist.
+func childEnv() []string {
+	return append(os.Environ(), "LC_ALL=C", "GIT_TERMINAL_PROMPT=0")
+}
+
 // RunStatus executes git and reports the exit code as data — needed for
 // commands like merge-file whose exit code is a count, not a failure. It errors
 // only when git cannot run to a trustworthy completion: a missing dir, a failed
 // spawn, a canceled/expired context, or a child terminated by a signal. The
 // last two both kill git mid-run, surfacing as a bogus -1 exit code a caller
 // would otherwise misread as real data (e.g. a merge-file conflict count).
+// Every invocation runs with childEnv: LC_ALL=C and GIT_TERMINAL_PROMPT=0, so
+// output stays parseable and a credential prompt can never hang this daemon.
 func RunStatus(ctx context.Context, dir string, args ...string) (Result, error) {
 	if dir == "" {
 		// A wrapper whose whole identity is "run git in dir" must never fall
@@ -57,6 +79,7 @@ func RunStatus(ctx context.Context, dir string, args ...string) (Result, error) 
 	// wrapper's entire purpose (ADR 06).
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // G204: git is a constant and args are internally sourced (see above); no untrusted boundary.
 	cmd.Dir = dir
+	cmd.Env = childEnv()
 	cmd.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
