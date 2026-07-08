@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -87,7 +88,7 @@ func SocketPathForClient() (string, error) {
 
 // Run blocks until ctx is cancelled (graceful shutdown, returns nil) or
 // startup fails. Startup order matters: runtime dir → flock → logging →
-// rlimit → engine/watch → API → loop.
+// rlimit → engine → registry → API → loop (which owns the watcher).
 func (d *Daemon) Run(ctx context.Context) error {
 	runtimeDir, err := config.RuntimeDir()
 	if err != nil {
@@ -123,11 +124,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	logger := d.cfg.Logger
 	if logger == nil {
-		fileLogger, logFile, err := openLogger(d.cfg.Paths.DaemonLogFile())
+		fileLogger, logWriter, err := openLogger(d.cfg.Paths.DaemonLogFile())
 		if err != nil {
 			return err
 		}
-		defer func() { _ = logFile.Close() }()
+		defer func() { _ = logWriter.Close() }()
 		logger = fileLogger
 	}
 	if err := raiseFDLimit(); err != nil {
@@ -149,37 +150,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
-	watchManager, err := watch.New(watch.Config{
-		Debounce: time.Duration(d.cfg.Settings.Sync.Debounce),
-		Poll:     time.Duration(d.cfg.Settings.Sync.Poll),
-	})
+	// A corrupt registry is fatal at startup: a hand-edited file naming a
+	// vanished project must fail loudly, not be silently skipped. The loop
+	// owns the watcher from here and re-reads the registry every cycle, so
+	// enrollment changes need no restart (rebuild-on-diff, below).
+	initial, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
 	if err != nil {
 		return err
 	}
-	defer func() { _ = watchManager.Close() }()
-	units, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
-	if err != nil {
-		return err
-	}
-	// Every Add happens before Run starts: the pump goroutine owns all
-	// watch state once it is running (the watch package's contract).
-	for _, u := range units.Units {
-		if err := watchManager.Add(u.LocalDir); err != nil {
-			logger.Warn("watch root not attached", "dir", u.LocalDir, "error", err)
-		}
-	}
-	go func() {
-		if err := watchManager.Run(ctx); err != nil {
-			if ctx.Err() != nil {
-				// Shutdown order cancels ctx before the deferred Close
-				// releases the watcher; a stream-closed error surfacing
-				// from that race is benign, not a died watcher.
-				logger.Info("watch manager stopped during shutdown", "error", err)
-				return
-			}
-			logger.Error("watch manager died", "error", err)
-		}
-	}()
 
 	listener, err := listenSocket(socketPath)
 	if err != nil {
@@ -198,7 +176,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.mu.Unlock()
 	logger.Info("daemon started", "version", d.cfg.Version, "socket", socketPath, "state", d.checkoutState())
 
-	d.loop(ctx, syncEngine, watchManager, logger)
+	d.loop(ctx, syncEngine, logger, initial.Units)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -216,7 +194,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 // backoff, initial 5s, capped at 5m, reset on success. No elapsed-time
 // stop — a resident daemon that gives up is a dead daemon, and the
 // ticker/poll backstops keep firing regardless.
-func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, watchManager *watch.Manager, logger *slog.Logger) {
+func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *slog.Logger, initialUnits []repo.Unit) {
 	ticker := time.NewTicker(time.Duration(d.cfg.Settings.Sync.Ticker))
 	defer ticker.Stop()
 
@@ -225,13 +203,40 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, watchManag
 	retryPolicy.MaxInterval = 5 * time.Minute
 	var retryC <-chan time.Time
 
+	watchCfg := watch.Config{
+		Debounce: time.Duration(d.cfg.Settings.Sync.Debounce),
+		Poll:     time.Duration(d.cfg.Settings.Sync.Poll),
+	}
+	// watchDied carries a spontaneous watcher failure (fd exhaustion, WSL2
+	// teardown) from a watcher goroutine to this loop, which rebuilds it —
+	// a died watcher must not silently degrade to ticker-only forever. Size
+	// 1 + non-blocking send: coalesced failures need only one rebuild.
+	watchDied := make(chan error, 1)
+	live := rebuildWatcher(ctx, watchCfg, nil, rootsOf(initialUnits), watchDied, logger)
+	defer func() {
+		if live.manager != nil {
+			_ = live.manager.Close()
+		}
+	}()
+
 	runCycle := func(reason string) {
-		summary := d.runCycle(ctx, syncEngine, logger, reason)
+		summary, units, cycled := d.runCycle(ctx, syncEngine, logger, reason)
 		if summary != nil && summary.Error != "" {
 			retryC = time.After(retryPolicy.NextBackOff())
 		} else {
 			retryPolicy.Reset()
 			retryC = nil
+		}
+		// Keep the watcher's roots in step with enrollment: the registry is
+		// re-read every cycle, but the watcher only learns new roots by
+		// being rebuilt (Add-before-Run makes replacement the only correct
+		// shape). Also retry a build that previously failed (manager nil) so
+		// a watcher outage self-heals instead of resting on the backstop.
+		if cycled {
+			if roots := rootsOf(units); live.manager == nil || !equalRoots(roots, live.watched) {
+				logger.Info("watch roots changed — rebuilding", "roots", len(roots))
+				live = rebuildWatcher(ctx, watchCfg, live, roots, watchDied, logger)
+			}
 		}
 	}
 
@@ -239,8 +244,11 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, watchManag
 		select {
 		case <-ctx.Done():
 			return
-		case trigger := <-watchManager.Triggers():
+		case trigger := <-live.triggers:
 			runCycle(trigger.Reason)
+		case err := <-watchDied:
+			logger.Error("watch manager died — rebuilding", "error", err)
+			live = rebuildWatcher(ctx, watchCfg, live, live.watched, watchDied, logger)
 		case <-ticker.C:
 			runCycle("ticker")
 		case <-retryC:
@@ -255,21 +263,130 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, watchManag
 	}
 }
 
+// liveWatcher is the one running watch.Manager the loop keeps, plus the
+// handle to stop it deliberately. A build failure yields a zero-manager
+// value (nil triggers, so the loop's select blocks on that case and the
+// ticker/poll backstop carries cycles); watched is still recorded so the
+// next cycle can retry the build.
+type liveWatcher struct {
+	manager  *watch.Manager
+	triggers <-chan watch.Trigger
+	watched  []string // sorted roots currently attached
+	cancel   context.CancelFunc
+}
+
+// rebuildWatcher stops old (if any) and starts a fresh watch.Manager over
+// roots. Rebuild-by-replacement is mandatory: watch.Manager requires
+// every Add before Run, so a running manager can never gain a root.
+// Enrollment changes and watcher death both funnel here.
+//
+// The old manager is stopped deliberately by cancelling its own context
+// first, then Close: its Run then returns via ctx (not a closed event
+// stream), and the goroutine below detects the deliberate stop via
+// watchCtx.Err() and stays silent — a rebuild must never masquerade as a
+// death, or the loop would rebuild in a tight cycle.
+func rebuildWatcher(ctx context.Context, cfg watch.Config, old *liveWatcher, roots []string, watchDied chan<- error, logger *slog.Logger) *liveWatcher {
+	if old != nil {
+		if old.cancel != nil {
+			old.cancel()
+		}
+		if old.manager != nil {
+			_ = old.manager.Close()
+		}
+	}
+	manager, err := watch.New(cfg)
+	if err != nil {
+		// Exceptional (bad debounce, or fd exhaustion in fsnotify): fall
+		// back to the ticker/poll backstop and let a later cycle retry.
+		logger.Error("watch rebuild failed — ticker/poll backstop only", "error", err)
+		return &liveWatcher{watched: roots}
+	}
+	for _, root := range roots {
+		if err := manager.Add(root); err != nil {
+			logger.Warn("watch root not attached", "dir", root, "error", err)
+		}
+	}
+	watchCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		err := manager.Run(watchCtx)
+		switch {
+		case err == nil:
+			// Clean stop: ctx (shutdown) or watchCtx (rebuild) cancelled.
+		case ctx.Err() != nil:
+			logger.Info("watch manager stopped during shutdown", "error", err)
+		case watchCtx.Err() != nil:
+			// Deliberate rebuild; the replacement manager is already running.
+		default:
+			select {
+			case watchDied <- err:
+			default: // a death is already pending; one rebuild covers it
+			}
+		}
+	}()
+	return &liveWatcher{manager: manager, triggers: manager.Triggers(), watched: roots, cancel: cancel}
+}
+
+// rootsOf is the sorted, de-duplicated set of LocalDirs the watcher must
+// cover. Sorted so equalRoots is a cheap element-wise compare; a nil
+// return (no units) detaches the watcher from everything.
+func rootsOf(units []repo.Unit) []string {
+	if len(units) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(units))
+	roots := make([]string, 0, len(units))
+	for _, u := range units {
+		if seen[u.LocalDir] {
+			continue
+		}
+		seen[u.LocalDir] = true
+		roots = append(roots, u.LocalDir)
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+// equalRoots reports whether two sorted root slices are identical.
+func equalRoots(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // runCycle loads units fresh (Phase-3 enrollments apply without a
-// restart), runs the engine, and records the outcome.
-func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger *slog.Logger, reason string) *api.SyncSummary {
+// restart), runs the engine, and records the outcome. It returns the unit
+// set it synced and cycled=true so loop can keep the watcher's roots in
+// step; cycled=false (nil units) means no cycle ran — checkout not ready,
+// or the registry failed to load — so the caller must leave the watcher
+// untouched rather than tear it down on a transient read error.
+func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger *slog.Logger, reason string) (*api.SyncSummary, []repo.Unit, bool) {
+	// Bound the conflict log before this cycle can append to it. The merge
+	// driver (a git child spawned inside engine.Sync's integrate) is its
+	// only writer and runs only DURING a cycle; here at the top, this single
+	// engine goroutine has not entered Sync yet, so no writer holds the file
+	// and renaming it is race-free. A full disk must not stop sync attempts,
+	// so a rotation failure is logged, not returned.
+	if err := rotateIfOversized(d.cfg.Paths.ConflictLogFile(), maxConflictLogSize); err != nil {
+		logger.Warn("rotate conflict log", "error", err)
+	}
 	if d.checkoutState() != "ready" {
 		d.mu.Lock()
 		d.state = "uninitialized"
 		d.mu.Unlock()
-		return nil
+		return nil, nil, false
 	}
 	registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
 	if err != nil {
 		logger.Error("load local registry", "error", err)
 		summary := &api.SyncSummary{At: time.Now().UTC(), Error: err.Error()}
 		d.record(summary)
-		return summary
+		return summary, nil, false
 	}
 	report, err := syncEngine.Sync(ctx, registry.Units)
 	summary := toSummary(report)
@@ -281,7 +398,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
 	}
 	d.record(summary)
-	return summary
+	return summary, registry.Units, true
 }
 
 func (d *Daemon) record(summary *api.SyncSummary) {
@@ -343,7 +460,7 @@ func (d *Daemon) Status() api.StatusResponse {
 // cancels the cycle itself.
 func (d *Daemon) TriggerSync(ctx context.Context) (api.SyncResponse, error) {
 	if d.checkoutState() != "ready" {
-		return api.SyncResponse{}, errors.New("memories repo not initialized on this machine (agent-brain init arrives in Phase 3)")
+		return api.SyncResponse{}, errors.New("memories repo not initialized on this machine — run `agent-brain init` first")
 	}
 	request := syncRequest{reply: make(chan api.SyncResponse, 1)}
 	timeout := time.After(syncWaitTimeout)

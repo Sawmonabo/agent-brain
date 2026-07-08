@@ -47,9 +47,12 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// newDaemonEnv provisions Paths under short temp dirs (sun_path limit),
-// a seeded memories checkout with a bare remote, and one enrolled unit.
-func newDaemonEnv(t *testing.T) (config.Paths, repo.Unit) {
+// provisionMemories sets up Paths under short temp dirs (sun_path limit)
+// and a seeded memories checkout with a bare remote, but enrolls NO
+// units. It returns the paths and the base temp dir so callers can
+// enroll their own units at fresh dirs under base (e.g. the
+// enrolled-after-startup watcher test).
+func provisionMemories(t *testing.T) (config.Paths, string) {
 	t.Helper()
 	base, err := os.MkdirTemp("", "ab")
 	if err != nil {
@@ -74,7 +77,14 @@ func newDaemonEnv(t *testing.T) (config.Paths, repo.Unit) {
 	mustGit(t, checkout, "add", "-A")
 	mustGit(t, checkout, "commit", "-m", "init: repo skeleton")
 	mustGit(t, checkout, "push", "-u", "origin", "main")
+	return paths, base
+}
 
+// newDaemonEnv provisions Paths under short temp dirs (sun_path limit),
+// a seeded memories checkout with a bare remote, and one enrolled unit.
+func newDaemonEnv(t *testing.T) (config.Paths, repo.Unit) {
+	t.Helper()
+	paths, base := provisionMemories(t)
 	localDir := filepath.Join(base, "proj", ".claude", "memory")
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -253,5 +263,81 @@ func TestLogRotationOnStart(t *testing.T) {
 	}
 	if current.Size() >= int64(len(big)) {
 		t.Fatal("fresh log did not start small")
+	}
+}
+
+// TestWatcherCoversUnitEnrolledAfterStartup is the load-bearing daemon
+// test for this task: a unit enrolled AFTER the daemon is up must be
+// watched without a restart. The daemon starts with zero units (the
+// watcher covers nothing), then a unit is enrolled at a fresh dir and a
+// single manual cycle makes the loop observe it and rebuild the watcher.
+// A file written into that dir afterward must drive a full cycle — and
+// with the ticker parked at 1h and no further manual trigger, only the
+// rebuilt watcher can be responsible.
+func TestWatcherCoversUnitEnrolledAfterStartup(t *testing.T) {
+	paths, base := provisionMemories(t)
+	client := startDaemon(t, paths)
+
+	projects, err := client.Projects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects.Units) != 0 {
+		t.Fatalf("expected zero units at startup, got %+v", projects.Units)
+	}
+
+	// Simulate `track`: enroll a unit at a fresh dir while the daemon runs.
+	newLocalDir := filepath.Join(base, "late", ".claude", "memory")
+	if err := os.MkdirAll(newLocalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := repo.LoadLocalRegistry(paths.LocalRegistryFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Enroll(repo.Unit{Provider: "claude", ProjectID: "id-beta", Folder: "beta", LocalDir: newLocalDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Save(paths.LocalRegistryFile()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One manual cycle makes the loop observe the new unit and rebuild the
+	// watcher over its root. The dir has no memory files yet, so this cycle
+	// mirrors nothing in; its timestamp anchors the post-write assertion.
+	syncResp, err := client.Sync(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syncResp.Summary == nil {
+		t.Fatalf("manual sync = %+v, want a completed summary", syncResp)
+	}
+	if syncResp.Summary.MirrorIn.Copied != 0 {
+		t.Fatalf("manual sync mirrored in %d files, want 0 (no memory files written yet)", syncResp.Summary.MirrorIn.Copied)
+	}
+	baselineAt := syncResp.Summary.At
+
+	// Write into the freshly-watched root. With the ticker at 1h and no
+	// further manual trigger, only the rebuilt watcher can drive a new
+	// cycle that mirrors this file in.
+	if err := os.MkdirAll(filepath.Join(newLocalDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newLocalDir, "memories", "fact.md"), []byte("late-enrolled\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		status, err := client.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.LastSync != nil && status.LastSync.At.After(baselineAt) && status.LastSync.MirrorIn.Copied > 0 {
+			break // a new, watcher-driven cycle mirrored the file in
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher never covered the late-enrolled root; last status %+v", status)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

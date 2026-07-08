@@ -1,0 +1,122 @@
+package daemon
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Sawmonabo/agent-brain/internal/watch"
+)
+
+// TestRebuildWatcherSwapsRootsAndClosesOld pins the rebuild-by-replacement
+// path that both enrollment changes and watcher death flow through: a new
+// Manager is built for the new root set and the old one is closed. A real
+// fsnotify fd death can't be forced portably, so exercising the SAME code
+// path here is how the death-recovery branch is covered — loop's watchDied
+// handler calls exactly this function.
+func TestRebuildWatcherSwapsRootsAndClosesOld(t *testing.T) {
+	t.Parallel()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg := watch.Config{Debounce: 20 * time.Millisecond, Poll: 0}
+	watchDied := make(chan error, 1)
+
+	// First build: cover rootA only.
+	live := rebuildWatcher(ctx, cfg, nil, []string{rootA}, watchDied, logger)
+	if live.manager == nil {
+		t.Fatal("first rebuild produced no manager")
+	}
+	writeInto(t, rootA, "a1.md")
+	waitTrigger(t, live.triggers, "event under rootA before the swap")
+	oldTriggers := live.triggers
+
+	// Swap to rootB: closes the old manager. The deliberate close must not
+	// masquerade as a watcher death (that would spin loop rebuilding).
+	live = rebuildWatcher(ctx, cfg, live, []string{rootB}, watchDied, logger)
+	if live.manager == nil {
+		t.Fatal("second rebuild produced no manager")
+	}
+	if live.triggers == oldTriggers {
+		t.Fatal("rebuild kept the old triggers channel; expected a fresh manager")
+	}
+
+	// The new root now triggers cycles.
+	writeInto(t, rootB, "b1.md")
+	waitTrigger(t, live.triggers, "event under rootB after the swap")
+
+	// The removed root is silent on both the new channel and the old,
+	// now-closed one.
+	writeInto(t, rootA, "a2.md")
+	assertNoTrigger(t, live.triggers, 300*time.Millisecond, "removed rootA on the new channel")
+	assertNoTrigger(t, oldTriggers, 300*time.Millisecond, "removed rootA on the closed old channel")
+
+	select {
+	case err := <-watchDied:
+		t.Fatalf("a deliberate rebuild reported a watcher death: %v", err)
+	default:
+	}
+}
+
+// TestRebuildWatcherBuildFailureFallsBackToBackstop pins the degraded
+// path: when watch.New rejects the config, rebuildWatcher returns a
+// manager-less state (nil triggers, so loop's select blocks on it and the
+// ticker/poll backstop keeps cycles alive) instead of panicking, and it
+// still remembers the roots so a later cycle can retry the build.
+func TestRebuildWatcherBuildFailureFallsBackToBackstop(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	watchDied := make(chan error, 1)
+	roots := []string{t.TempDir()}
+
+	// Debounce <= 0 is the one config watch.New rejects.
+	live := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, nil, roots, watchDied, logger)
+	if live.manager != nil || live.triggers != nil {
+		t.Fatalf("failed build should yield no manager/triggers, got %+v", live)
+	}
+	if live.cancel != nil {
+		t.Fatal("failed build must not leave a cancel func to call")
+	}
+	if len(live.watched) != len(roots) || live.watched[0] != roots[0] {
+		t.Fatalf("failed build must remember roots for a later retry, got %v", live.watched)
+	}
+
+	// A subsequent rebuild with this degraded state as `old` must not panic
+	// on the nil cancel/manager.
+	next := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, live, roots, watchDied, logger)
+	if next.manager != nil {
+		t.Fatal("second failed build should still yield no manager")
+	}
+}
+
+func writeInto(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitTrigger(t *testing.T, triggers <-chan watch.Trigger, what string) {
+	t.Helper()
+	select {
+	case <-triggers:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("no trigger for %s within deadline", what)
+	}
+}
+
+func assertNoTrigger(t *testing.T, triggers <-chan watch.Trigger, window time.Duration, what string) {
+	t.Helper()
+	select {
+	case <-triggers:
+		t.Fatalf("unexpected trigger for %s", what)
+	case <-time.After(window):
+	}
+}
