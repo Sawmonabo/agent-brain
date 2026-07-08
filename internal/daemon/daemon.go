@@ -278,7 +278,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 		logger.Error("sync cycle failed", "reason", reason, "error", err)
 	} else {
 		logger.Info("sync cycle", "reason", reason,
-			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded)
+			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
 	}
 	d.record(summary)
 	return summary
@@ -302,6 +302,7 @@ func toSummary(report engine.Report) *api.SyncSummary {
 		MirrorIn:   api.Stats(report.MirrorIn),
 		MirrorOut:  api.Stats(report.MirrorOut),
 		Degraded:   report.Degraded,
+		Scrubbed:   report.Scrubbed,
 		Pushed:     report.Pushed,
 		PushQueued: report.PushQueued,
 	}

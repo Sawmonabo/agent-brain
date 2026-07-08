@@ -13,14 +13,18 @@ type Stats struct {
 
 // SyncSummary is one engine cycle's outcome, as reported over the API.
 type SyncSummary struct {
-	At         time.Time `json:"at"`
-	Commits    []string  `json:"commits,omitempty"`
-	MirrorIn   Stats     `json:"mirror_in"`
-	MirrorOut  Stats     `json:"mirror_out"`
-	Degraded   []string  `json:"degraded,omitempty"`
-	Pushed     bool      `json:"pushed"`
-	PushQueued bool      `json:"push_queued"`
-	Error      string    `json:"error,omitempty"`
+	At        time.Time `json:"at"`
+	Commits   []string  `json:"commits,omitempty"`
+	MirrorIn  Stats     `json:"mirror_in"`
+	MirrorOut Stats     `json:"mirror_out"`
+	Degraded  []string  `json:"degraded,omitempty"`
+	// Scrubbed lists git-meta paths the post-integrate scrub removed or
+	// healed — nonzero means a remote pushed something hostile or
+	// corrupted (spec §5).
+	Scrubbed   []string `json:"scrubbed,omitempty"`
+	Pushed     bool     `json:"pushed"`
+	PushQueued bool     `json:"push_queued"`
+	Error      string   `json:"error,omitempty"`
 }
 
 // StatusResponse answers GET /v0/status. State is "ready" when the

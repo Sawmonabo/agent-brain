@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
+	"github.com/Sawmonabo/agent-brain/internal/engine"
 )
 
 type fakeController struct {
@@ -61,6 +62,7 @@ func TestStatusSyncProjectsRoundtrip(t *testing.T) {
 		status: api.StatusResponse{Version: "test", State: "ready", PID: 42, StartedAt: time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC)},
 		sync: api.SyncResponse{Status: "completed", Summary: &api.SyncSummary{
 			Pushed: true, Commits: []string{"memory: host-a alpha 2026-07-08T12:00:00Z"},
+			Scrubbed: []string{"alpha/.gitattributes"},
 		}},
 		projects: api.ProjectsResponse{Units: []api.UnitInfo{
 			{Provider: "claude", Folder: "alpha", LocalDir: "/p/.claude/memory", Degraded: true},
@@ -90,6 +92,19 @@ func TestStatusSyncProjectsRoundtrip(t *testing.T) {
 	}
 	if diff := cmp.Diff(want.projects, projects); diff != "" {
 		t.Fatalf("projects (-want +got):\n%s", diff)
+	}
+}
+
+// TestToSummaryIncludesScrubbed pins the engine-report → DTO mapping for
+// Scrubbed: a nonzero count means a remote pushed something hostile or
+// corrupted (spec §5), so it must survive the trip into api.SyncSummary
+// alongside the fields toSummary already carried.
+func TestToSummaryIncludesScrubbed(t *testing.T) {
+	t.Parallel()
+	report := engine.Report{Scrubbed: []string{"alpha/.gitattributes", ".gitattributes"}}
+	got := toSummary(report)
+	if diff := cmp.Diff(report.Scrubbed, got.Scrubbed); diff != "" {
+		t.Fatalf("toSummary Scrubbed (-want +got):\n%s", diff)
 	}
 }
 
