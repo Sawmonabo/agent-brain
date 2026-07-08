@@ -329,15 +329,6 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
-    gosec:
-      excludes:
-        # This tool is invoked BY git: file paths and git argv come from
-        # git's own invocation, our env contract, or our config — there is
-        # no untrusted path/exec input boundary to defend.
-        - G204 # subprocess with variable args (the gitx wrapper's purpose)
-        - G304 # file path from variable (filter/merge inputs ARE variable paths)
-        - G702 # command-injection taint (env merge labels → git merge-file argv)
-        - G703 # path-traversal taint (env config dir → keyset path)
   exclusions:
     rules:
       - path: '_test\.go'
@@ -349,7 +340,7 @@ formatters:
     - gofumpt
 ```
 
-Run: `golangci-lint run` → no issues (skeleton code is clean). If the config schema errors, run `golangci-lint config verify` and fix per its message — the tool documents its own v2 schema. (This exact config passed `golangci-lint config verify` on v2.12.2, 2026-07-07.) If a future gosec release adds more taint rules (G7xx) that fire on the filter/merge/keyset paths, extend the excludes list with the same one-line justification — the input-trust argument is identical.
+Run: `golangci-lint run` → no issues (skeleton code is clean). If the config schema errors, run `golangci-lint config verify` and fix per its message — the tool documents its own v2 schema. (This exact config passed `golangci-lint config verify` on v2.12.2, 2026-07-07.) Global gosec excludes are prohibited (owner decision 2026-07-08, Q1 review). When a later task's by-design pattern fires a gosec rule (keyset paths in keys, filter argv paths in cli, git exec in gitx, merge labels), suppress it at the narrowest scope: a path-scoped rule under `linters.exclusions.rules` (path + rule-ID text match) or `//nolint:gosec // <reason>` at the site — every waiver carries a written justification (nolintlint enforces the nolint form).
 
 - [ ] **Step 2: Write `lefthook.yml`** (pre-commit fast, pre-push heavy — ADR 12):
 
