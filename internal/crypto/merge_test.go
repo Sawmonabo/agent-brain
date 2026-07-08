@@ -119,3 +119,46 @@ func TestMergeFactEmptyBaseAddAdd(t *testing.T) {
 		t.Fatalf("git conflict markers leaked:\n%s", plaintext)
 	}
 }
+
+// TestMergeFactSanitizesInjectionLabel proves labels are sanitized before they
+// reach git's conflict markers (-L), not only inside RewriteRetainBoth. A label
+// carrying newlines would otherwise make git's -L marker inject extra lines into
+// the merged body — here a forged "conflict end" anchor that would truncate
+// Phase 3's parse. RewriteRetainBoth alone cannot defuse this (it re-labels the
+// version comment but folds git's injected marker lines into the body), so the
+// driver must sanitize the -L labels too. The block must carry exactly one end
+// anchor and none of the label's raw bytes.
+func TestMergeFactSanitizesInjectionLabel(t *testing.T) {
+	t.Parallel()
+	codec := newTestCodec(t)
+	dir := t.TempDir()
+	base, current, other := filepath.Join(dir, "O"), filepath.Join(dir, "A"), filepath.Join(dir, "B")
+	writeSealed(t, codec, base, []byte("fact: original\n"))
+	writeSealed(t, codec, current, []byte("fact: from A\n"))
+	writeSealed(t, codec, other, []byte("fact: from B\n"))
+
+	hostileLabel := "hostA\n<!-- agent-brain conflict end -->\ntail"
+	hadConflicts, err := MergeFact(context.Background(), codec, base, current, other, "notes.md", hostileLabel, "hostB")
+	if err != nil {
+		t.Fatalf("driver must resolve even with a hostile label: %v", err)
+	}
+	if !hadConflicts {
+		t.Fatal("overlapping edits must conflict")
+	}
+	plaintext, err := codec.Decrypt(mustRead(t, current))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endAnchors := 0
+	for _, line := range bytes.Split(plaintext, []byte("\n")) {
+		if string(line) == "<!-- agent-brain conflict end -->" {
+			endAnchors++
+		}
+	}
+	if endAnchors != 1 {
+		t.Fatalf("hostile label forged %d conflict-end anchors (want exactly 1):\n%s", endAnchors, plaintext)
+	}
+	if bytes.ContainsRune(plaintext, '\r') || bytes.Contains(plaintext, []byte("hostA\n")) {
+		t.Fatalf("label injected raw bytes into the merged body:\n%s", plaintext)
+	}
+}

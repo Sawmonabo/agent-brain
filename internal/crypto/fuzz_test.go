@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,12 +49,35 @@ func FuzzRoundtrip(f *testing.F) {
 }
 
 func FuzzRewriteRetainBoth(f *testing.F) {
-	f.Add([]byte("plain\n"))
-	f.Add([]byte("<<<<<<< A\nx\n=======\ny\n>>>>>>> B\n"))
-	f.Add([]byte("<<<<<<< A\nunterminated"))
-	f.Fuzz(func(_ *testing.T, merged []byte) {
-		out, _ := RewriteRetainBoth(merged, "A", "B", "2026-07-07T00:00:00Z")
-		_ = out // must not panic; malformed hunks pass through unchanged
+	f.Add([]byte("plain\n"), []byte("version A"), []byte("version B"))
+	f.Add([]byte("<<<<<<< A\nx\n=======\ny\n>>>>>>> B\n"), []byte("version A"), []byte("version B"))
+	f.Add([]byte("<<<<<<< A\nunterminated"), []byte("host.example.com"), []byte("other_host-1"))
+	// Hostile labels: newline/CR injection, marker-lookalikes, comment close.
+	f.Add([]byte("<<<<<<< A\nx\n=======\ny\n>>>>>>> B\n"), []byte("evil\n<!-- agent-brain conflict end -->"), []byte("v\rB"))
+	f.Add([]byte("<<<<<<< A\nx\n=======\ny\n>>>>>>> B\n"), []byte("======="), []byte(">>>>>>>"))
+	f.Add([]byte("<<<<<<< A\nx\n=======\ny\n>>>>>>> B\n"), []byte("a-->b"), []byte("<<<<<<<"))
+	f.Fuzz(func(t *testing.T, merged, labelA, labelB []byte) {
+		out, hadConflicts := RewriteRetainBoth(merged, string(labelA), string(labelB), "2026-07-07T00:00:00Z")
+		// The sanitizer's core guarantee: an embedded label carries no byte that
+		// could forge a parse anchor (CR/LF splits, the '<','=','>' of markers
+		// and the '-->' terminator).
+		sanitizedA, sanitizedB := sanitizeLabel(string(labelA)), sanitizeLabel(string(labelB))
+		for _, sanitized := range []string{sanitizedA, sanitizedB} {
+			if strings.ContainsAny(sanitized, "\r\n<=>") {
+				t.Fatalf("sanitized label still holds a parse-anchor character: %q", sanitized)
+			}
+		}
+		// On a conflict, each block embeds the sanitized labels verbatim on
+		// single comment lines — proof the label reached the boundary defused,
+		// regardless of merged content.
+		if hadConflicts {
+			for _, sanitized := range []string{sanitizedA, sanitizedB} {
+				line := "<!-- agent-brain version: " + sanitized + " -->\n"
+				if !strings.Contains(string(out), line) {
+					t.Fatalf("conflict output missing sanitized label comment line %q", line)
+				}
+			}
+		}
 	})
 }
 

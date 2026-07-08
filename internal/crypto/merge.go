@@ -39,6 +39,12 @@ func MergeFact(ctx context.Context, codec *Codec, basePath, currentPath, otherPa
 		}
 	}
 
+	// Labels reach two format boundaries: git's conflict markers (-L, below) and
+	// the retain-both block. A newline in a label would make git's -L marker
+	// inject an extra line into the merged body — a forged anchor RewriteRetainBoth
+	// would then fold in verbatim — so sanitize before -L here. RewriteRetainBoth
+	// re-sanitizes (idempotent), covering callers that bypass this path.
+	labelA, labelB = sanitizeLabel(labelA), sanitizeLabel(labelB)
 	result, err := gitx.RunStatus(ctx, tempDir, "merge-file", "-p",
 		"-L", labelA, "-L", "base", "-L", labelB,
 		plaintextPaths[0], plaintextPaths[1], plaintextPaths[2])

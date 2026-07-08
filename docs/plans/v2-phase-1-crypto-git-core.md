@@ -1593,7 +1593,7 @@ Driver modes are `fact` and `lww` only: derived-index files merge as facts at th
 **Interfaces:**
 - Consumes: `crypto.Codec` (Task 6), `gitx.RunStatus` (Task 8), `loadCodec` (Task 7).
 - Produces:
-  - `crypto.RewriteRetainBoth(merged []byte, labelA, labelB, timestamp string) (out []byte, hadConflicts bool)`
+  - `crypto.RewriteRetainBoth(merged []byte, labelA, labelB, timestamp string) (out []byte, hadConflicts bool)` — both labels are sanitized at this boundary (CR/LF and the marker/`-->` characters `<` `=` `>` → U+FFFD) so a hostile label cannot forge the block's parse anchors; well-behaved labels (hostnames, the defaults) pass through byte-for-byte (Q3 mandate).
   - `crypto.MergeFact(ctx context.Context, codec *Codec, basePath, currentPath, otherPath, pathname, labelA, labelB string) (hadConflicts bool, err error)` — Phase 2's engine reuses this directly
   - CLI command `git-merge --mode fact|lww -- <base> <current> <other> <pathname>`
   - Retain-both block format (STABLE — Phase 3's conflicts view parses it):
@@ -1607,7 +1607,7 @@ Driver modes are `fact` and `lww` only: derived-index files merge as facts at th
 <!-- agent-brain conflict end -->
 ```
 
-  - Labels default to `version A` / `version B`; env `AGENT_BRAIN_MERGE_LABEL_A` / `AGENT_BRAIN_MERGE_LABEL_B` override (the Phase 2 engine sets these to host names). Optional env `AGENT_BRAIN_CONFLICT_LOG`: when set, the driver appends one JSON line `{"time":...,"path":...,"mode":...}` per conflicted merge (best-effort; never fails the merge).
+  - Labels default to `version A` / `version B`; env `AGENT_BRAIN_MERGE_LABEL_A` / `AGENT_BRAIN_MERGE_LABEL_B` override (the Phase 2 engine sets these to host names). Both are sanitized at the format boundary — inside `RewriteRetainBoth` and before git's `-L` markers in `MergeFact` — so a hostile override cannot forge conflict/anchor lines (Q3 mandate). Optional env `AGENT_BRAIN_CONFLICT_LOG`: when set, the driver appends one JSON line `{"time":...,"path":...,"mode":...}` per conflicted merge (best-effort; never fails the merge).
 
 - [ ] **Step 1: Write the failing rewriter test** — `internal/crypto/retain_test.go`:
 
