@@ -6,6 +6,7 @@ toolchain go1.26.5
 
 require (
 	charm.land/fang/v2 v2.0.1
+	github.com/google/go-cmp v0.7.0
 	github.com/google/renameio/v2 v2.0.2
 	github.com/spf13/cobra v1.10.2
 	github.com/tink-crypto/tink-go/v2 v2.7.0
