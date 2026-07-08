@@ -817,13 +817,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `crypto.NewCodec(d tink.DeterministicAEAD) *Codec`
   - `(*Codec) Encrypt(plaintext []byte) ([]byte, error)` — output = `agb1\x00` magic + Tink ciphertext
   - `(*Codec) Decrypt(data []byte) ([]byte, error)` — errors unless data carries the magic
-  - `(*Codec) Clean(data []byte) ([]byte, error)` — the clean-filter endpoint: passthrough if already ciphertext (idempotent), else Encrypt
+  - `(*Codec) Clean(data []byte) ([]byte, error)` — the clean-filter endpoint: on magic-prefixed input, verify-decrypt then pass the original bytes through byte-identical (idempotent) on success or fail closed with `ErrCleanVerifyFailed` if it does not decrypt; else Encrypt
   - `(*Codec) Smudge(data []byte) ([]byte, error)` — the smudge/textconv endpoint: Decrypt if ciphertext, else passthrough (never-encrypted content)
   - `crypto.IsEncrypted(data []byte) bool`
 
 Per spec §8, `internal/crypto` owns the clean/smudge/textconv/merge endpoint *logic*; `internal/cli` wraps it in thin cobra commands (Tasks 7, 9).
 
-Design constraints locked here: **associated data is always nil** — the merge driver and textconv operate on pathless temp blobs git hands them, so a path-bound AD would break decryption there; and equal-plaintext ⇒ equal-ciphertext is the accepted determinism trade (spec §5). The magic header makes clean/smudge idempotent and lets `IsEncrypted` distinguish never-filtered plaintext.
+Design constraints locked here: **associated data is always nil** — the merge driver and textconv operate on pathless temp blobs git hands them, so a path-bound AD would break decryption there; and equal-plaintext ⇒ equal-ciphertext is the accepted determinism trade (spec §5). The magic header lets `IsEncrypted` distinguish never-filtered plaintext; Clean's idempotency is a **verified passthrough** — magic-prefixed input is returned byte-identical only after it decrypts, so re-cleaning genuine stored ciphertext is stable while lookalike plaintext and foreign-keyset ciphertext fail closed (spec §5, Q2-ratified).
 
 - [ ] **Step 1: Write the failing test** — `internal/crypto/codec_test.go`:
 
@@ -832,6 +832,7 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -913,6 +914,48 @@ func TestCodec(t *testing.T) {
 		t.Fatal("IsEncrypted false positives on short input")
 	}
 }
+
+// TestCleanFailsClosed pins the Q2-ratified verify-decrypt contract: Clean
+// must reject magic-prefixed input it cannot decrypt rather than pass it
+// through, so plaintext that merely mimics the header never reaches a git
+// object and ciphertext from a foreign keyset is not silently committed.
+func TestCleanFailsClosed(t *testing.T) {
+	t.Parallel()
+	codec := newTestCodec(t)
+
+	// An independent keyset stands in for another machine's ciphertext.
+	foreign := newTestCodec(t)
+	foreignCiphertext, err := foreign.Encrypt([]byte("secret from another machine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{
+			name:  "lookalike plaintext carrying the magic header",
+			input: append(append([]byte{}, magic...), "not valid ciphertext"...),
+		},
+		{
+			name:  "genuine ciphertext under a different keyset",
+			input: foreignCiphertext,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codec.Clean(testCase.input)
+			if !errors.Is(err, ErrCleanVerifyFailed) {
+				t.Fatalf("Clean error = %v; want ErrCleanVerifyFailed", err)
+			}
+			if got != nil {
+				t.Fatalf("Clean returned %q on failure; want nil output", got)
+			}
+		})
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -940,6 +983,12 @@ var magic = []byte("agb1\x00")
 
 // ErrNotEncrypted reports input without the agent-brain magic header.
 var ErrNotEncrypted = errors.New("data is not agent-brain ciphertext (missing magic header)")
+
+// ErrCleanVerifyFailed reports that Clean received magic-prefixed input it
+// could not decrypt: the bytes carry the agent-brain header but are not valid
+// ciphertext under this keyset (keyset mismatch or corrupted content). Clean
+// fails closed on it rather than commit lookalike plaintext or double-wrap.
+var ErrCleanVerifyFailed = errors.New("clean: magic-prefixed input is not valid ciphertext under this keyset (keyset mismatch or corrupted content)")
 
 // Codec encrypts/decrypts memory content. Associated data is always nil:
 // the merge driver and textconv receive pathless temp blobs from git, and
@@ -975,11 +1024,22 @@ func (c *Codec) Decrypt(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// Clean is the clean-filter endpoint (spec §5, §8): already-ciphertext
-// input passes through (idempotent — git may re-clean stored content),
-// plaintext is encrypted.
+// Clean is the clean-filter endpoint (spec §5, §8). It upholds the absolute
+// invariant that plaintext memory content never reaches a git object.
+//
+// Non-magic input is encrypted. Magic-prefixed input is verify-decrypted: on
+// success the ORIGINAL input passes through byte-identical (idempotent — git
+// may re-clean already-stored ciphertext), on failure Clean fails closed with
+// ErrCleanVerifyFailed. Verification is what makes passthrough safe: it proves
+// the bytes are genuine ciphertext under this keyset, so lookalike plaintext
+// (content that merely begins with the magic header) and foreign-keyset or
+// corrupted ciphertext are rejected at commit time rather than stored or
+// double-wrapped.
 func (c *Codec) Clean(data []byte) ([]byte, error) {
 	if IsEncrypted(data) {
+		if _, err := c.Decrypt(data); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrCleanVerifyFailed, err)
+		}
 		return data, nil
 	}
 	return c.Encrypt(data)
@@ -1017,6 +1077,7 @@ func FuzzRoundtrip(f *testing.F) {
 	f.Add([]byte(""))
 	f.Add([]byte("# memory\nfact\n"))
 	f.Add([]byte{0x00, 0xFF, 0x61, 0x67, 0x62, 0x31, 0x00})
+	f.Add([]byte("agb1\x00looks like ciphertext but is plaintext"))
 	f.Fuzz(func(t *testing.T, plaintext []byte) {
 		first, err := codec.Encrypt(plaintext)
 		if err != nil {
@@ -1035,6 +1096,17 @@ func FuzzRoundtrip(f *testing.F) {
 		}
 		if !bytes.Equal(decrypted, plaintext) {
 			t.Fatal("roundtrip mismatch")
+		}
+		// Clean must verify-decrypt genuine ciphertext and pass the exact
+		// bytes through (Q2 verify-decrypt contract): whatever the plaintext,
+		// its ciphertext decrypts under this keyset, so Clean neither rejects
+		// nor alters it.
+		cleaned, err := codec.Clean(first)
+		if err != nil {
+			t.Fatalf("Clean rejected genuine ciphertext: %v", err)
+		}
+		if !bytes.Equal(cleaned, first) {
+			t.Fatal("Clean altered genuine ciphertext; want byte-identical passthrough")
 		}
 	})
 }
@@ -1070,7 +1142,7 @@ Behavior table (implement exactly):
 
 | Command | Input has magic | Input plain | Keyset missing |
 |---|---|---|---|
-| `git-clean` (stdin→stdout) | passthrough (already ciphertext — idempotent) | encrypt | ERROR exit 1 (blocks commit — never push plaintext) |
+| `git-clean` (stdin→stdout) | verify-decrypt → byte-identical passthrough; ERROR exit 1 if decrypt fails (blocks commit) | encrypt | ERROR exit 1 (blocks commit — never push plaintext) |
 | `git-smudge` (stdin→stdout) | decrypt | passthrough (never-encrypted file) | ERROR exit 1 only if input has magic; plain passthrough still works |
 | `git-textconv <file>` | decrypt file→stdout | cat file→stdout | ERROR exit 1 only if file has magic |
 
@@ -1205,9 +1277,11 @@ func loadCodec() (*crypto.Codec, error) {
 	return crypto.NewCodec(primitive), nil
 }
 
-// The endpoint logic lives on crypto.Codec (Clean/Smudge — spec §8); these
-// commands only decide whether a codec is needed at all, so the keyset-less
-// passthrough rows of the behavior table still work.
+// The endpoint logic lives on crypto.Codec (Clean/Smudge — spec §8). git-clean
+// always needs the codec now (Clean verify-decrypts magic input before it may
+// pass through), so it has no keyset-less path; git-smudge/textconv keep their
+// keyset-less passthrough for never-encrypted plaintext, so a clone without a
+// keyset can still read never-filtered files.
 
 func newGitCleanCmd() *cobra.Command {
 	return &cobra.Command{
@@ -1216,9 +1290,12 @@ func newGitCleanCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// nil passthrough: git-clean has no keyset-less short-circuit —
+			// Clean verify-decrypts magic input, so both branches (verify
+			// existing ciphertext, encrypt plaintext) need the codec.
 			return pipeFilter(cmd, func(codec *crypto.Codec, data []byte) ([]byte, error) {
 				return codec.Clean(data)
-			}, crypto.IsEncrypted) // already-ciphertext passes through without a keyset
+			}, nil)
 		},
 	}
 }
@@ -1266,14 +1343,18 @@ func newGitTextconvCmd() *cobra.Command {
 	}
 }
 
-// pipeFilter reads stdin, short-circuits (raw passthrough, no keyset needed)
-// when passthrough reports true, otherwise applies the codec endpoint.
+// pipeFilter reads stdin and applies the codec endpoint. A nil passthrough
+// predicate means the endpoint always needs the keyset (git-clean must
+// verify-decrypt magic input, so it can never short-circuit keyset-less). A
+// non-nil predicate short-circuits to raw passthrough when it reports true —
+// git-smudge/textconv pass never-encrypted plaintext through without a keyset,
+// so a clone lacking one can still read never-filtered files.
 func pipeFilter(cmd *cobra.Command, endpoint func(*crypto.Codec, []byte) ([]byte, error), passthrough func([]byte) bool) error {
 	input, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
 		return err
 	}
-	if passthrough(input) {
+	if passthrough != nil && passthrough(input) {
 		_, err = cmd.OutOrStdout().Write(input)
 		return err
 	}
