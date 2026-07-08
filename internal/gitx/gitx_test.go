@@ -170,3 +170,29 @@ func TestInstallFiltersIdempotent(t *testing.T) {
 		t.Errorf("clean = %q, want %q", got, want)
 	}
 }
+
+// TestRunStatusSignalKilledErrors pins the signal-termination guard (the final
+// review's Important #1). A git terminated by a signal — crash, OOM, an external
+// SIGKILL, none of them a context cancel — exits with code -1, which is NOT a
+// real exit code and must never reach a caller as data: RunStatus reports the
+// exit code AS data (merge-file's conflict count lives there), so a leaked -1
+// would be read as "0 conflicts" and let MergeFact encrypt an empty merge over
+// %A. A PATH-shim fake `git` that SIGKILLs itself reproduces the signal exit
+// hermetically, with no dependence on the real git ever crashing.
+func TestRunStatusSignalKilledErrors(t *testing.T) {
+	// t.Setenv forbids t.Parallel: this test shims PATH process-wide.
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\nkill -KILL $$\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result, err := RunStatus(context.Background(), t.TempDir(), "merge-file")
+	if err == nil {
+		t.Fatal("RunStatus must error when git is terminated by a signal; a -1 exit code is not trustworthy data")
+	}
+	if result.ExitCode == -1 {
+		t.Errorf("signal kill leaked as ExitCode -1 alongside the error; want the exit code left unset, not fake data")
+	}
+}

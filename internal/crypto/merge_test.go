@@ -82,6 +82,40 @@ func TestMergeFactCanceledContextPreservesCurrent(t *testing.T) {
 	}
 }
 
+// TestMergeFactSignalKilledPreservesCurrent covers the third error branch — the
+// one the final review's Important #1 closed. A signal-killed git merge-file
+// (crash, OOM, external SIGKILL) exits -1; gitx.RunStatus must surface that as
+// an error rather than the "0 conflicts" count a leaked -1 would read as. If it
+// slipped through, MergeFact would encrypt an EMPTY merge over %A and lose the
+// file. Same no-data-loss invariant as the binary-input and canceled-context
+// cases, reached through a signal. A PATH-shim fake `git` that SIGKILLs itself
+// reproduces the signal exit hermetically; every side is real ciphertext, so the
+// pre-merge decrypt still runs and only the merge-file call is intercepted.
+func TestMergeFactSignalKilledPreservesCurrent(t *testing.T) {
+	// t.Setenv forbids t.Parallel: this test shims PATH process-wide.
+	codec := newTestCodec(t)
+	dir := t.TempDir()
+	base, current, other := filepath.Join(dir, "O"), filepath.Join(dir, "A"), filepath.Join(dir, "B")
+	writeSealed(t, codec, base, []byte("base\n"))
+	writeSealed(t, codec, current, []byte("ours\n"))
+	writeSealed(t, codec, other, []byte("theirs\n"))
+	before := mustRead(t, current)
+
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\nkill -KILL $$\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	if _, err := MergeFact(context.Background(), codec, base, current, other, "notes.md", "A", "B"); err == nil {
+		t.Fatal("MergeFact must surface a signal-killed merge-file as an error, not encrypt an empty merge over %A")
+	}
+	if after := mustRead(t, current); !bytes.Equal(before, after) {
+		t.Fatal("MergeFact modified %A after a signal-killed merge-file — data loss")
+	}
+}
+
 // TestMergeFactEmptyBaseAddAdd exercises decryptLoose's empty-file tolerance:
 // an add/add merge has no ancestor, so git supplies a genuinely 0-byte base.
 // decryptLoose must read it as empty plaintext (not attempt to decrypt it),

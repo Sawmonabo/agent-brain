@@ -51,11 +51,14 @@ func MergeFact(ctx context.Context, codec *Codec, basePath, currentPath, otherPa
 	if err != nil {
 		return false, err
 	}
-	// merge-file's exit value is the conflict count (bounded to 127) — but
-	// negative-on-error surfaces through exec as >127 (e.g. 255 for binary
-	// input). Treating that as "conflicts" would encrypt an EMPTY stdout
-	// over %A and lose the file, so it must be an error instead.
-	if result.ExitCode > 127 {
+	// merge-file's exit value is the conflict count, bounded to [0,127]. Anything
+	// outside that range is a failure surfacing through exec, not a count: a
+	// 255-style error exit (e.g. binary input) as >127, or a signal-kill as -1.
+	// Treating either as "conflicts" would encrypt an EMPTY stdout over %A and
+	// lose the file. RunStatus already turns the signal-kill into an error before
+	// this point; guarding <0 here too is defense-in-depth so a future RunStatus
+	// regression re-opening that path still cannot cause silent data loss.
+	if result.ExitCode > 127 || result.ExitCode < 0 {
 		return false, fmt.Errorf("git merge-file failed on %s: %s", pathname, result.Stderr)
 	}
 

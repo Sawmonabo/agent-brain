@@ -41,8 +41,9 @@ func Run(ctx context.Context, dir string, args ...string) (Result, error) {
 // RunStatus executes git and reports the exit code as data — needed for
 // commands like merge-file whose exit code is a count, not a failure. It errors
 // only when git cannot run to a trustworthy completion: a missing dir, a failed
-// spawn, or a canceled/expired context (whose kill would otherwise surface as a
-// bogus exit code).
+// spawn, a canceled/expired context, or a child terminated by a signal. The
+// last two both kill git mid-run, surfacing as a bogus -1 exit code a caller
+// would otherwise misread as real data (e.g. a merge-file conflict count).
 func RunStatus(ctx context.Context, dir string, args ...string) (Result, error) {
 	if dir == "" {
 		// A wrapper whose whole identity is "run git in dir" must never fall
@@ -74,6 +75,14 @@ func RunStatus(ctx context.Context, dir string, args ...string) (Result, error) 
 	case err == nil:
 		return result, nil
 	case errors.As(err, &exitErr):
+		// A signal-terminated child (crash, OOM, external SIGKILL — the ctx-cancel
+		// case is already caught above) did not exit normally: ExitCode() is -1,
+		// not a real exit code, and never the merge-file conflict count a caller
+		// would read it as. Surface it as an error so no caller mistakes the
+		// process's truncated output for a trustworthy result.
+		if !exitErr.Exited() {
+			return result, fmt.Errorf("git %v terminated by signal: %w", args, err)
+		}
 		result.ExitCode = exitErr.ExitCode()
 		return result, nil
 	default:

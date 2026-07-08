@@ -1400,7 +1400,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Produces:
   - `type Result struct { Stdout, Stderr string; ExitCode int }`
   - `gitx.Run(ctx, dir string, args ...string) (Result, error)` — error on non-zero exit (stderr in the error) or spawn failure
-  - `gitx.RunStatus(ctx, dir string, args ...string) (Result, error)` — error ONLY on spawn failure; non-zero exit is data (merge-file reports conflict count as exit code)
+  - `gitx.RunStatus(ctx, dir string, args ...string) (Result, error)` — non-zero exit is data (merge-file reports conflict count as exit code); errors only when git cannot run to a trustworthy completion: spawn failure, empty dir, canceled/expired context, or a signal-terminated child (whose -1 would otherwise masquerade as a conflict count)
   - `gitx.InstallFilters(ctx, repoDir, binPath string) error` — writes the `.git/config` wiring (spec §5)
 
 - [ ] **Step 1: Write the failing test** — `internal/gitx/gitx_test.go`:
