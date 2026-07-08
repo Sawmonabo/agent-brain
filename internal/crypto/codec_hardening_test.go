@@ -141,14 +141,14 @@ func TestCrossKeysetFailsClosed(t *testing.T) {
 	}
 }
 
-// TestCleanIdempotentAndPassthrough locks the clean-filter contract at
-// boundaries the brief's happy path skips: empty input is encrypted and its
-// output is stable under re-clean, and the accepted discriminator boundary
-// where genuine plaintext already beginning with the magic header is treated as
-// ciphertext and passed through unencrypted. The NUL byte in the magic makes
-// that last case unreachable for real markdown memory, but the behavior is a
-// documented design limit of the magic-prefix scheme (spec §5) and is pinned
-// here so it cannot drift silently.
+// TestCleanIdempotentAndPassthrough locks the clean-filter happy path at a
+// boundary the brief's test skips: empty input is encrypted, and re-cleaning
+// that genuine ciphertext verify-decrypts it and passes the original bytes
+// through byte-identical (idempotent — git may re-clean already-stored
+// content). Under the Q2-ratified verify-decrypt contract (spec §5),
+// passthrough is reserved for bytes that prove decryptable; magic-prefixed
+// lookalikes and foreign-keyset ciphertext fail closed instead, pinned by
+// TestCleanFailsClosed.
 func TestCleanIdempotentAndPassthrough(t *testing.T) {
 	t.Parallel()
 	codec := newTestCodec(t)
@@ -166,14 +166,5 @@ func TestCleanIdempotentAndPassthrough(t *testing.T) {
 	}
 	if !bytes.Equal(sealed, recleaned) {
 		t.Fatal("Clean not idempotent on its own output")
-	}
-
-	lookalike := append(append([]byte{}, magic...), []byte("not really ciphertext")...)
-	out, err := codec.Clean(lookalike)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(out, lookalike) {
-		t.Fatal("Clean mutated magic-prefixed input; expected passthrough")
 	}
 }

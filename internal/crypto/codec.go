@@ -16,6 +16,12 @@ var magic = []byte("agb1\x00")
 // ErrNotEncrypted reports input without the agent-brain magic header.
 var ErrNotEncrypted = errors.New("data is not agent-brain ciphertext (missing magic header)")
 
+// ErrCleanVerifyFailed reports that Clean received magic-prefixed input it
+// could not decrypt: the bytes carry the agent-brain header but are not valid
+// ciphertext under this keyset (keyset mismatch or corrupted content). Clean
+// fails closed on it rather than commit lookalike plaintext or double-wrap.
+var ErrCleanVerifyFailed = errors.New("clean: magic-prefixed input is not valid ciphertext under this keyset (keyset mismatch or corrupted content)")
+
 // Codec encrypts/decrypts memory content. Associated data is always nil:
 // the merge driver and textconv receive pathless temp blobs from git, and
 // equal-plaintext ⇒ equal-ciphertext is the accepted determinism trade
@@ -50,11 +56,22 @@ func (c *Codec) Decrypt(data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// Clean is the clean-filter endpoint (spec §5, §8): already-ciphertext
-// input passes through (idempotent — git may re-clean stored content),
-// plaintext is encrypted.
+// Clean is the clean-filter endpoint (spec §5, §8). It upholds the absolute
+// invariant that plaintext memory content never reaches a git object.
+//
+// Non-magic input is encrypted. Magic-prefixed input is verify-decrypted: on
+// success the ORIGINAL input passes through byte-identical (idempotent — git
+// may re-clean already-stored ciphertext), on failure Clean fails closed with
+// ErrCleanVerifyFailed. Verification is what makes passthrough safe: it proves
+// the bytes are genuine ciphertext under this keyset, so lookalike plaintext
+// (content that merely begins with the magic header) and foreign-keyset or
+// corrupted ciphertext are rejected at commit time rather than stored or
+// double-wrapped.
 func (c *Codec) Clean(data []byte) ([]byte, error) {
 	if IsEncrypted(data) {
+		if _, err := c.Decrypt(data); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrCleanVerifyFailed, err)
+		}
 		return data, nil
 	}
 	return c.Encrypt(data)

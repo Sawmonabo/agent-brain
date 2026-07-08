@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -81,5 +82,47 @@ func TestCodec(t *testing.T) {
 	}
 	if IsEncrypted([]byte("agb")) || IsEncrypted(nil) {
 		t.Fatal("IsEncrypted false positives on short input")
+	}
+}
+
+// TestCleanFailsClosed pins the Q2-ratified verify-decrypt contract: Clean
+// must reject magic-prefixed input it cannot decrypt rather than pass it
+// through, so plaintext that merely mimics the header never reaches a git
+// object and ciphertext from a foreign keyset is not silently committed.
+func TestCleanFailsClosed(t *testing.T) {
+	t.Parallel()
+	codec := newTestCodec(t)
+
+	// An independent keyset stands in for another machine's ciphertext.
+	foreign := newTestCodec(t)
+	foreignCiphertext, err := foreign.Encrypt([]byte("secret from another machine"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		input []byte
+	}{
+		{
+			name:  "lookalike plaintext carrying the magic header",
+			input: append(append([]byte{}, magic...), "not valid ciphertext"...),
+		},
+		{
+			name:  "genuine ciphertext under a different keyset",
+			input: foreignCiphertext,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := codec.Clean(testCase.input)
+			if !errors.Is(err, ErrCleanVerifyFailed) {
+				t.Fatalf("Clean error = %v; want ErrCleanVerifyFailed", err)
+			}
+			if got != nil {
+				t.Fatalf("Clean returned %q on failure; want nil output", got)
+			}
+		})
 	}
 }
