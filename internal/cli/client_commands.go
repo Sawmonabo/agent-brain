@@ -105,7 +105,7 @@ func newSyncCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			response, err := client.Sync(cmd.Context())
+			response, err := client.Sync(cmd.Context(), "")
 			if err != nil {
 				return explainDown(err)
 			}

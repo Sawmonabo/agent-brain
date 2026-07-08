@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -16,12 +17,15 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
-// controller is what the HTTP layer needs from the daemon core; Task 11's
-// Daemon implements it, tests fake it.
+// controller is what the HTTP layer needs from the daemon core; the Daemon
+// implements it, tests fake it.
 type controller interface {
 	Status() api.StatusResponse
-	TriggerSync(ctx context.Context) (api.SyncResponse, error)
+	TriggerSync(ctx context.Context, project string) (api.SyncResponse, error)
 	Projects() api.ProjectsResponse
+	Track(ctx context.Context, req api.TrackRequest) (api.TrackResponse, error)
+	Untrack(ctx context.Context, req api.UntrackRequest) (api.UntrackResponse, error)
+	Migrate(ctx context.Context, req api.MigrateRequest) (api.MigrateResponse, error)
 }
 
 // peerUIDFunc extracts the connecting process's UID from a unix socket
@@ -69,9 +73,15 @@ func newServer(ctrl controller, peerUID peerUIDFunc) *http.Server {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		response, err := ctrl.TriggerSync(r.Context())
+		// The project filter is an OPTIONAL body: whole-fleet syncs send none.
+		var req api.SyncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		response, err := ctrl.TriggerSync(r.Context(), req.Project)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, err)
 			return
 		}
 		writeJSON(w, response)
@@ -83,6 +93,9 @@ func newServer(ctrl controller, peerUID peerUIDFunc) *http.Server {
 		}
 		writeJSON(w, ctrl.Projects())
 	})
+	mux.HandleFunc("/v0/track", postHandler(ctrl.Track))
+	mux.HandleFunc("/v0/untrack", postHandler(ctrl.Untrack))
+	mux.HandleFunc("/v0/migrate", postHandler(ctrl.Migrate))
 
 	return &http.Server{
 		Handler: requireSameUser(mux),
@@ -116,4 +129,40 @@ func writeJSON(w http.ResponseWriter, value any) {
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// postHandler wires one JSON-in/JSON-out POST endpoint: it enforces the
+// method, decodes the request body (a malformed body is a 400), and maps a
+// handler error to its status via writeError. The three admin endpoints
+// (track/untrack/migrate) share this exact shape.
+func postHandler[Req, Resp any](handle func(context.Context, Req) (Resp, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req Req
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp, err := handle(r.Context(), req)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, resp)
+	}
+}
+
+// writeError renders err as the plain-text error envelope the client decodes,
+// honoring a statusError's code (an unknown --project folder is a 400);
+// everything else is a 500.
+func writeError(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	var se statusError
+	if errors.As(err, &se) {
+		code = se.code
+	}
+	http.Error(w, err.Error(), code)
 }

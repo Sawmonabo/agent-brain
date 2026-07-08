@@ -34,6 +34,11 @@ type ManifestEntry struct {
 type Manifest struct {
 	Version int                      `json:"version"`
 	Files   map[string]ManifestEntry `json:"files"`
+	// ImportedFrom records completed migrate seeds on this host: bash-era
+	// slug → repo folder (spec §10 step 5). Presence of a slug makes
+	// SeedProject a no-op. Additive and omitempty — the version stays 1, so
+	// a Phase-2 manifest without the key loads unchanged (nil map).
+	ImportedFrom map[string]string `json:"imported_from,omitempty"`
 }
 
 // NewManifest returns an empty manifest at the current version.

@@ -124,6 +124,53 @@ func TestHashFile(t *testing.T) {
 	}
 }
 
+func TestManifestImportedFromMarker(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "host.json")
+
+	m := repo.NewManifest()
+	m.ImportedFrom = map[string]string{"my-project": "alpha", "legacy": "beta"}
+	if err := m.Set("alpha/claude/x.md", repo.ManifestEntry{Size: 1, MTimeUnixNano: 2, SHA256: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := repo.LoadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The marker rides the shared manifest — it must round-trip byte-for-byte
+	// alongside Files (spec §10 step 5: idempotent migrate).
+	if diff := cmp.Diff(m, loaded); diff != "" {
+		t.Fatalf("ImportedFrom roundtrip (-want +got):\n%s", diff)
+	}
+	if loaded.ImportedFrom["my-project"] != "alpha" {
+		t.Fatalf("marker not loaded: %+v", loaded.ImportedFrom)
+	}
+}
+
+func TestManifestBackwardCompatNoImportedFrom(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "phase2.json")
+	// A Phase-2 manifest predates imported_from; version stays 1, so it must
+	// load unchanged (additive schema growth, backward compat pinned).
+	payload := `{"version":1,"files":{"alpha/claude/x.md":{"size":1,"mtime_unix_nano":2,"sha256":"x"}}}`
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := repo.LoadManifest(path)
+	if err != nil {
+		t.Fatalf("Phase-2 manifest without imported_from must load: %v", err)
+	}
+	if m.ImportedFrom != nil {
+		t.Fatalf("ImportedFrom = %+v, want nil for a marker-less manifest", m.ImportedFrom)
+	}
+	if !m.Has("alpha/claude/x.md") {
+		t.Fatal("existing files must survive the load")
+	}
+}
+
 func TestManifestSetGetDelete(t *testing.T) {
 	t.Parallel()
 	m := repo.NewManifest()

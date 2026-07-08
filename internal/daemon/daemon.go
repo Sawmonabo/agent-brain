@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +27,26 @@ import (
 // ErrAlreadyRunning means another daemon holds the flock.
 var ErrAlreadyRunning = errors.New("agent-brain daemon is already running")
 
-// syncWaitTimeout bounds how long POST /v0/sync waits for its cycle.
-const syncWaitTimeout = 60 * time.Second
+// errNotInitialized is the actionable refusal every mutating endpoint shares
+// when the checkout does not exist yet (init is a Phase-3 command).
+var errNotInitialized = errors.New("memories repo not initialized on this machine — run `agent-brain init` first")
+
+// syncWaitTimeout bounds how long POST /v0/sync waits for its cycle;
+// adminWaitTimeout bounds how long track/untrack/migrate wait to be serviced
+// by the engine goroutine (they queue behind any running cycle).
+const (
+	syncWaitTimeout  = 60 * time.Second
+	adminWaitTimeout = 60 * time.Second
+)
+
+// statusError carries an HTTP status code for the server's error envelope
+// (spec §7: an unknown --project folder is a 400, not a 500).
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e statusError) Error() string { return e.msg }
 
 // Config wires the daemon. Registry is injected so the composition
 // root (cmd layer) decides which providers exist — Phase 2 runs an
@@ -43,7 +62,25 @@ type Config struct {
 }
 
 type syncRequest struct {
-	reply chan api.SyncResponse
+	// filter, when non-empty, narrows the triggered cycle to one repo folder
+	// AFTER the registry loads; watch/ticker cycles pass "" and stay
+	// whole-fleet.
+	filter string
+	reply  chan api.SyncResponse
+}
+
+// adminRequest is a checkout mutation (track/untrack/migrate) submitted to the
+// engine goroutine. run executes on that goroutine with the live engine; its
+// result is type-asserted back by the handler that built it.
+type adminRequest struct {
+	reason string
+	run    func(context.Context, *engine.Engine) (any, error)
+	reply  chan adminReply
+}
+
+type adminReply struct {
+	result any
+	err    error
 }
 
 // Daemon is the resident process: one engine goroutine, a watch
@@ -57,7 +94,8 @@ type Daemon struct {
 	lastSync  *api.SyncSummary
 	degraded  map[string]bool
 
-	syncRequests chan syncRequest
+	syncRequests  chan syncRequest
+	adminRequests chan adminRequest
 }
 
 // New validates config; all I/O happens in Run.
@@ -69,10 +107,11 @@ func New(cfg Config) (*Daemon, error) {
 		return nil, errors.New("daemon: paths must be populated")
 	}
 	return &Daemon{
-		cfg:          cfg,
-		state:        "uninitialized",
-		degraded:     map[string]bool{},
-		syncRequests: make(chan syncRequest),
+		cfg:           cfg,
+		state:         "uninitialized",
+		degraded:      map[string]bool{},
+		syncRequests:  make(chan syncRequest),
+		adminRequests: make(chan adminRequest),
 	}, nil
 }
 
@@ -219,8 +258,8 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		}
 	}()
 
-	runCycle := func(reason string) {
-		summary, units, cycled := d.runCycle(ctx, syncEngine, logger, reason)
+	runCycle := func(reason, filter string) {
+		summary, units, cycled := d.runCycle(ctx, syncEngine, logger, reason, filter)
 		if summary != nil && summary.Error != "" {
 			retryC = time.After(retryPolicy.NextBackOff())
 		} else {
@@ -245,20 +284,30 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		case <-ctx.Done():
 			return
 		case trigger := <-live.triggers:
-			runCycle(trigger.Reason)
+			runCycle(trigger.Reason, "")
 		case err := <-watchDied:
 			logger.Error("watch manager died — rebuilding", "error", err)
 			live = rebuildWatcher(ctx, watchCfg, live, live.watched, watchDied, logger)
 		case <-ticker.C:
-			runCycle("ticker")
+			runCycle("ticker", "")
 		case <-retryC:
-			runCycle("retry")
+			runCycle("retry", "")
 		case request := <-d.syncRequests:
-			runCycle("manual")
+			runCycle("manual", request.filter)
 			d.mu.Lock()
 			last := d.lastSync
 			d.mu.Unlock()
 			request.reply <- api.SyncResponse{Status: "completed", Summary: last}
+		case request := <-d.adminRequests:
+			// Enrollment/purge/seed run HERE, on the one engine goroutine
+			// (ADR 03). Reply first (the fast local git work is done), then
+			// run a full cycle: it mirrors in a freshly-tracked dir, pushes
+			// the register/seed/purge commits, and — via the rebuild-on-diff
+			// below runCycle — brings the watcher's roots in step with the
+			// changed unit set.
+			result, err := request.run(ctx, syncEngine)
+			request.reply <- adminReply{result: result, err: err}
+			runCycle(request.reason, "")
 		}
 	}
 }
@@ -365,7 +414,7 @@ func equalRoots(a, b []string) bool {
 // step; cycled=false (nil units) means no cycle ran — checkout not ready,
 // or the registry failed to load — so the caller must leave the watcher
 // untouched rather than tear it down on a transient read error.
-func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger *slog.Logger, reason string) (*api.SyncSummary, []repo.Unit, bool) {
+func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger *slog.Logger, reason, filter string) (*api.SyncSummary, []repo.Unit, bool) {
 	// Bound the conflict log before this cycle can append to it. The merge
 	// driver (a git child spawned inside engine.Sync's integrate) is its
 	// only writer and runs only DURING a cycle; here at the top, this single
@@ -388,7 +437,14 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 		d.record(summary)
 		return summary, nil, false
 	}
-	report, err := syncEngine.Sync(ctx, registry.Units)
+	// A filtered manual cycle syncs only the named folder's units, but the
+	// FULL set is returned so the caller keeps the watcher whole-fleet — a
+	// `sync --project X` must never shrink what the daemon watches.
+	syncUnits := registry.Units
+	if filter != "" {
+		syncUnits = filterUnits(registry.Units, filter)
+	}
+	report, err := syncEngine.Sync(ctx, syncUnits)
 	summary := toSummary(report)
 	if err != nil {
 		summary.Error = err.Error()
@@ -399,6 +455,42 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 	}
 	d.record(summary)
 	return summary, registry.Units, true
+}
+
+// filterUnits keeps only the units whose repo folder matches folder.
+func filterUnits(units []repo.Unit, folder string) []repo.Unit {
+	filtered := make([]repo.Unit, 0, len(units))
+	for _, u := range units {
+		if u.Folder == folder {
+			filtered = append(filtered, u)
+		}
+	}
+	return filtered
+}
+
+// folderEnrolled reports whether any unit feeds folder.
+func folderEnrolled(units []repo.Unit, folder string) bool {
+	for _, u := range units {
+		if u.Folder == folder {
+			return true
+		}
+	}
+	return false
+}
+
+// enrolledFolders is the sorted, de-duplicated set of repo folders in use —
+// named in the 400 an unknown `sync --project` returns.
+func enrolledFolders(units []repo.Unit) []string {
+	seen := map[string]bool{}
+	folders := make([]string, 0, len(units))
+	for _, u := range units {
+		if !seen[u.Folder] {
+			seen[u.Folder] = true
+			folders = append(folders, u.Folder)
+		}
+	}
+	sort.Strings(folders)
+	return folders
 }
 
 func (d *Daemon) record(summary *api.SyncSummary) {
@@ -457,12 +549,28 @@ func (d *Daemon) Status() api.StatusResponse {
 
 // TriggerSync implements controller: hand the request to the loop,
 // wait bounded, report "running" on timeout. Client cancellation never
-// cancels the cycle itself.
-func (d *Daemon) TriggerSync(ctx context.Context) (api.SyncResponse, error) {
+// cancels the cycle itself. A non-empty project filters the cycle to that
+// repo folder; an unknown folder is a 400 naming the enrolled folders.
+func (d *Daemon) TriggerSync(ctx context.Context, project string) (api.SyncResponse, error) {
 	if d.checkoutState() != "ready" {
-		return api.SyncResponse{}, errors.New("memories repo not initialized on this machine — run `agent-brain init` first")
+		return api.SyncResponse{}, errNotInitialized
 	}
-	request := syncRequest{reply: make(chan api.SyncResponse, 1)}
+	if project != "" {
+		// Validate the folder off the engine goroutine (a read, like
+		// Projects) so the 400 is synchronous; the cycle re-loads and applies
+		// the filter itself.
+		registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
+		if err != nil {
+			return api.SyncResponse{}, err
+		}
+		if !folderEnrolled(registry.Units, project) {
+			return api.SyncResponse{}, statusError{
+				code: http.StatusBadRequest,
+				msg:  fmt.Sprintf("unknown folder %q; enrolled folders: %s", project, strings.Join(enrolledFolders(registry.Units), ", ")),
+			}
+		}
+	}
+	request := syncRequest{filter: project, reply: make(chan api.SyncResponse, 1)}
 	timeout := time.After(syncWaitTimeout)
 	select {
 	case d.syncRequests <- request:
@@ -499,4 +607,147 @@ func (d *Daemon) Projects() api.ProjectsResponse {
 		})
 	}
 	return response
+}
+
+// submitAdmin hands an admin operation to the engine goroutine and waits
+// bounded for its reply. The op itself is fast local git work; the wait
+// absorbs the time it queues behind any running cycle.
+func (d *Daemon) submitAdmin(ctx context.Context, reason string, run func(context.Context, *engine.Engine) (any, error)) (any, error) {
+	if d.checkoutState() != "ready" {
+		return nil, errNotInitialized
+	}
+	request := adminRequest{reason: reason, run: run, reply: make(chan adminReply, 1)}
+	timeout := time.After(adminWaitTimeout)
+	select {
+	case d.adminRequests <- request:
+	case <-timeout:
+		return nil, errors.New("daemon busy with a sync cycle — try again")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case reply := <-request.reply:
+		return reply.result, reply.err
+	case <-timeout:
+		return nil, errors.New("admin operation timed out")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// resolveFolder decides the repo folder for a track/migrate request: global
+// providers land in repo.GlobalFolder with no registration; per-project
+// providers register (collision-disambiguated) on the engine goroutine.
+func (d *Daemon) resolveFolder(ctx context.Context, e *engine.Engine, providerName, projectID, preferredFolder string) (string, error) {
+	prov, ok := d.cfg.Registry.Get(providerName)
+	if !ok {
+		return "", fmt.Errorf("unknown provider %q", providerName)
+	}
+	if prov.Scope() == provider.ScopeGlobal {
+		return repo.GlobalFolder, nil
+	}
+	return e.RegisterProject(ctx, providerName, projectID, preferredFolder)
+}
+
+// Track implements controller: register (per-project) + enroll, on the engine
+// goroutine (ADR 03). The post-track cycle the loop runs mirrors the dir in
+// and rebuilds the watcher.
+func (d *Daemon) Track(ctx context.Context, req api.TrackRequest) (api.TrackResponse, error) {
+	result, err := d.submitAdmin(ctx, "track", func(ctx context.Context, e *engine.Engine) (any, error) {
+		folder, err := d.resolveFolder(ctx, e, req.Provider, req.ProjectID, req.PreferredFolder)
+		if err != nil {
+			return nil, err
+		}
+		registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
+		if err != nil {
+			return nil, err
+		}
+		unit := repo.Unit{
+			Provider:   req.Provider,
+			ProjectID:  req.ProjectID,
+			Folder:     folder,
+			LocalDir:   req.LocalDir,
+			RepoSubdir: req.RepoSubdir,
+		}
+		if err := registry.Enroll(unit); err != nil {
+			return nil, err
+		}
+		if err := registry.Save(d.cfg.Paths.LocalRegistryFile()); err != nil {
+			return nil, err
+		}
+		return api.TrackResponse{Folder: folder}, nil
+	})
+	if err != nil {
+		return api.TrackResponse{}, err
+	}
+	return result.(api.TrackResponse), nil
+}
+
+// Untrack implements controller: drop the local enrollment, and — only when
+// this machine was the folder's last local tracker — purge the folder and its
+// registry entry. Global folders are never purged (they are shared, spec §3).
+func (d *Daemon) Untrack(ctx context.Context, req api.UntrackRequest) (api.UntrackResponse, error) {
+	result, err := d.submitAdmin(ctx, "untrack", func(ctx context.Context, e *engine.Engine) (any, error) {
+		registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
+		if err != nil {
+			return nil, err
+		}
+		folder := ""
+		for _, u := range registry.Units {
+			if u.Provider == req.Provider && u.LocalDir == req.LocalDir {
+				folder = u.Folder
+				break
+			}
+		}
+		removed := registry.Remove(req.Provider, req.LocalDir)
+		if removed {
+			if err := registry.Save(d.cfg.Paths.LocalRegistryFile()); err != nil {
+				return nil, err
+			}
+		}
+		purged := false
+		if req.Purge && removed && folder != "" && folder != repo.GlobalFolder && !folderEnrolled(registry.Units, folder) {
+			if err := e.PurgeProject(ctx, folder); err != nil {
+				return nil, err
+			}
+			purged = true
+		}
+		return api.UntrackResponse{Removed: removed, Purged: purged}, nil
+	})
+	if err != nil {
+		return api.UntrackResponse{}, err
+	}
+	return result.(api.UntrackResponse), nil
+}
+
+// Migrate implements controller: register → seed → enroll, ORDER-SENSITIVELY
+// (spec §10), so the loop's post-migrate cycle overlays live state onto the
+// seed layer.
+func (d *Daemon) Migrate(ctx context.Context, req api.MigrateRequest) (api.MigrateResponse, error) {
+	result, err := d.submitAdmin(ctx, "migrate", func(ctx context.Context, e *engine.Engine) (any, error) {
+		folder, err := d.resolveFolder(ctx, e, req.Provider, req.ProjectID, req.PreferredFolder)
+		if err != nil {
+			return nil, err
+		}
+		report, err := e.SeedProject(ctx, folder, req.Provider, req.Slug, req.SeedDir)
+		if err != nil {
+			return nil, err
+		}
+		registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
+		if err != nil {
+			return nil, err
+		}
+		unit := repo.Unit{Provider: req.Provider, ProjectID: req.ProjectID, Folder: folder, LocalDir: req.LocalDir}
+		if err := registry.Enroll(unit); err != nil {
+			return nil, err
+		}
+		if err := registry.Save(d.cfg.Paths.LocalRegistryFile()); err != nil {
+			return nil, err
+		}
+		return api.MigrateResponse{Folder: folder, Files: report.Files, Skipped: report.Skipped}, nil
+	})
+	if err != nil {
+		return api.MigrateResponse{}, err
+	}
+	return result.(api.MigrateResponse), nil
 }

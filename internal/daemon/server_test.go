@@ -19,13 +19,27 @@ type fakeController struct {
 	status   api.StatusResponse
 	sync     api.SyncResponse
 	projects api.ProjectsResponse
+	track    api.TrackResponse
+	untrack  api.UntrackResponse
+	migrate  api.MigrateResponse
 }
 
 func (f *fakeController) Status() api.StatusResponse { return f.status }
-func (f *fakeController) TriggerSync(context.Context) (api.SyncResponse, error) {
+func (f *fakeController) TriggerSync(context.Context, string) (api.SyncResponse, error) {
 	return f.sync, nil
 }
 func (f *fakeController) Projects() api.ProjectsResponse { return f.projects }
+func (f *fakeController) Track(context.Context, api.TrackRequest) (api.TrackResponse, error) {
+	return f.track, nil
+}
+
+func (f *fakeController) Untrack(context.Context, api.UntrackRequest) (api.UntrackResponse, error) {
+	return f.untrack, nil
+}
+
+func (f *fakeController) Migrate(context.Context, api.MigrateRequest) (api.MigrateResponse, error) {
+	return f.migrate, nil
+}
 
 // shortSocketDir avoids t.TempDir(): test names inflate the path past
 // the ~104-byte sun_path limit.
@@ -79,7 +93,7 @@ func TestStatusSyncProjectsRoundtrip(t *testing.T) {
 	if diff := cmp.Diff(want.status, status); diff != "" {
 		t.Fatalf("status (-want +got):\n%s", diff)
 	}
-	syncResp, err := client.Sync(ctx)
+	syncResp, err := client.Sync(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,11 +40,67 @@ type StatusResponse struct {
 	LastSync  *SyncSummary `json:"last_sync,omitempty"`
 }
 
+// SyncRequest is the optional POST /v0/sync body (spec §7:
+// `sync [--project X]`). An empty Project means whole-fleet; a non-empty
+// one filters the triggered cycle to that repo folder (unknown folder = 400).
+type SyncRequest struct {
+	Project string `json:"project,omitempty"`
+}
+
 // SyncResponse answers POST /v0/sync. Status is "completed" when the
 // triggered cycle finished within the wait window, "running" otherwise.
 type SyncResponse struct {
 	Status  string       `json:"status"`
 	Summary *SyncSummary `json:"summary,omitempty"`
+}
+
+// TrackRequest enrolls one provider dir. ProjectID is "" for global scope
+// (the daemon maps it to repo.GlobalFolder and skips registration);
+// PreferredFolder is ignored for global scope.
+type TrackRequest struct {
+	Provider        string `json:"provider"`
+	ProjectID       string `json:"project_id"`
+	PreferredFolder string `json:"preferred_folder"`
+	LocalDir        string `json:"local_dir"`
+	RepoSubdir      string `json:"repo_subdir,omitempty"`
+}
+
+// TrackResponse reports the repo folder the enrollment landed in
+// (collision-disambiguated).
+type TrackResponse struct {
+	Folder string `json:"folder"`
+}
+
+// UntrackRequest removes the enrollment for (Provider, LocalDir). Purge also
+// deletes the repo folder + its projects.toml entry when this machine was its
+// last local tracker.
+type UntrackRequest struct {
+	Provider string `json:"provider"`
+	LocalDir string `json:"local_dir"`
+	Purge    bool   `json:"purge"`
+}
+
+// UntrackResponse reports what untrack did.
+type UntrackResponse struct {
+	Removed bool `json:"removed"`
+	Purged  bool `json:"purged"`
+}
+
+// MigrateRequest seeds a bash-era memory tree then enrolls the live dir.
+type MigrateRequest struct {
+	Provider        string `json:"provider"`
+	ProjectID       string `json:"project_id"`
+	PreferredFolder string `json:"preferred_folder"`
+	LocalDir        string `json:"local_dir"` // live memory dir to ENROLL (may not exist yet)
+	Slug            string `json:"slug"`      // bash-era slug (marker key)
+	SeedDir         string `json:"seed_dir"`  // legacy tree to import
+}
+
+// MigrateResponse mirrors the engine's SeedReport.
+type MigrateResponse struct {
+	Folder  string `json:"folder"`
+	Files   int    `json:"files"`
+	Skipped bool   `json:"skipped"`
 }
 
 // UnitInfo is one enrolled (provider, dir) pair and its health.
