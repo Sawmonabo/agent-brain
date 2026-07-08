@@ -73,6 +73,9 @@ func ValidateGlob(glob string) error {
 		return fmt.Errorf("glob %q: whitespace, quotes, and '#' are unrepresentable in .gitattributes lines", glob)
 	}
 	for _, seg := range strings.Split(glob, "/") {
+		if seg == "" {
+			return fmt.Errorf("glob %q: empty segment (leading/trailing '/' or '//') would corrupt a .gitattributes line", glob)
+		}
 		if seg == "**" {
 			continue
 		}

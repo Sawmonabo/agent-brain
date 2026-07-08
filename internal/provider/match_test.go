@@ -47,7 +47,8 @@ func TestValidateGlob(t *testing.T) {
 	// Whitespace / '#' / leading '!' / empty would corrupt or invert the
 	// generated .gitattributes lines this glob eventually becomes
 	// (Task 2's repo.GenerateAttributes) — the same table drives both.
-	invalid := []string{"bad[range.md", "has space.md", "has\ttab.md", "#comment.md", "!negated.md", ""}
+	// Empty segments (leading/trailing/doubled '/') would do the same.
+	invalid := []string{"bad[range.md", "has space.md", "has\ttab.md", "#comment.md", "!negated.md", "", "a/", "/a", "a//b"}
 	for _, glob := range invalid {
 		if err := provider.ValidateGlob(glob); err == nil {
 			t.Fatalf("ValidateGlob(%q) = nil, want error", glob)

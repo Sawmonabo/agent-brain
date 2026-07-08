@@ -8,6 +8,50 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
 
+func TestClassString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		c    provider.Class
+		want string
+	}{
+		{"fact", provider.ClassFact, "fact"},
+		{"derived index", provider.ClassDerivedIndex, "derived-index"},
+		{"regenerated", provider.ClassRegenerated, "regenerated"},
+		{"ignore", provider.ClassIgnore, "ignore"},
+		{"unknown out-of-range value", provider.Class(99), "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.c.String(); got != tt.want {
+				t.Fatalf("Class(%d).String() = %q, want %q", tt.c, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScopeString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		s    provider.Scope
+		want string
+	}{
+		{"per-project", provider.ScopePerProject, "per-project"},
+		{"global", provider.ScopeGlobal, "global"},
+		{"unknown out-of-range value", provider.Scope(99), "unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.s.String(); got != tt.want {
+				t.Fatalf("Scope(%d).String() = %q, want %q", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
 // claudeLikeTable mirrors the spec §6 Claude classification so the contract
 // is exercised against the real Phase-3 shape without shipping the adapter.
 func claudeLikeTable() []provider.Pattern {

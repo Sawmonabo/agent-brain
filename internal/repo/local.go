@@ -72,6 +72,26 @@ func LoadLocalRegistry(path string) (*LocalRegistry, error) {
 			return nil, fmt.Errorf("local registry %s: unit %d: %w", path, i, err)
 		}
 	}
+	// Enroll upholds two cross-unit invariants that a hand-edited file can
+	// smuggle past the per-unit checks above: no two units feed the same
+	// (provider, folder), and no two units record the same (provider,
+	// local dir). Check both here so a corrupt state fails loudly at
+	// load — never silently at sync time.
+	seenFolder := make(map[[2]string]string, len(r.Units))   // [provider, folder] -> local dir
+	seenLocalDir := make(map[[2]string]string, len(r.Units)) // [provider, local dir] -> folder
+	for _, u := range r.Units {
+		folderKey := [2]string{u.Provider, u.Folder}
+		if existing, dup := seenFolder[folderKey]; dup {
+			return nil, fmt.Errorf("local registry %s: folder %q fed by %s from two local dirs (%s and %s)", path, u.Folder, u.Provider, existing, u.LocalDir)
+		}
+		seenFolder[folderKey] = u.LocalDir
+
+		localDirKey := [2]string{u.Provider, u.LocalDir}
+		if existing, dup := seenLocalDir[localDirKey]; dup {
+			return nil, fmt.Errorf("local registry %s: local dir %q for provider %s feeds two folders (%s and %s)", path, u.LocalDir, u.Provider, existing, u.Folder)
+		}
+		seenLocalDir[localDirKey] = u.Folder
+	}
 	return &r, nil
 }
 

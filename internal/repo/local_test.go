@@ -117,3 +117,56 @@ func TestLoadLocalRegistryMissingAndInvalid(t *testing.T) {
 		t.Fatal("invalid unit accepted at load; want error")
 	}
 }
+
+func TestLoadLocalRegistryRejectsCrossUnitDuplicates(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Two units sharing (provider, folder): Enroll rejects this, but a
+	// hand-edited file can list both entries directly.
+	dupFolder := filepath.Join(dir, "dup-folder.toml")
+	dupFolderContent := `version = 1
+
+[[units]]
+provider = "claude"
+project_id = "x"
+folder = "agent-brain"
+local_dir = "/home/u/one"
+
+[[units]]
+provider = "claude"
+project_id = "x"
+folder = "agent-brain"
+local_dir = "/home/u/two"
+`
+	if err := os.WriteFile(dupFolder, []byte(dupFolderContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.LoadLocalRegistry(dupFolder); err == nil {
+		t.Fatal("two units sharing (provider, folder) accepted at load; want error")
+	}
+
+	// Two units sharing (provider, local_dir): the same source feeding
+	// two different folders is equally nonsensical.
+	dupLocalDir := filepath.Join(dir, "dup-local-dir.toml")
+	dupLocalDirContent := `version = 1
+
+[[units]]
+provider = "claude"
+project_id = "x"
+folder = "agent-brain"
+local_dir = "/home/u/shared"
+
+[[units]]
+provider = "claude"
+project_id = "y"
+folder = "other-project"
+local_dir = "/home/u/shared"
+`
+	if err := os.WriteFile(dupLocalDir, []byte(dupLocalDirContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.LoadLocalRegistry(dupLocalDir); err == nil {
+		t.Fatal("two units sharing (provider, local_dir) accepted at load; want error")
+	}
+}

@@ -62,6 +62,22 @@ func LoadProjects(path string) (*Projects, error) {
 			return nil, fmt.Errorf("projects registry %s: folder %q has empty id", path, folder)
 		}
 	}
+	// FolderFor assumes each id names exactly one folder; two folders
+	// sharing an id would make its result depend on Go's randomized map
+	// iteration order. Add can never produce this — enforce it here too,
+	// against a hand-edited file. Folder names are compared, not iterated
+	// in map order, so the message is deterministic.
+	folderByID := make(map[string]string, len(p.Entries))
+	for folder, entry := range p.Entries {
+		if existing, dup := folderByID[entry.ID]; dup {
+			first, second := existing, folder
+			if second < first {
+				first, second = second, first
+			}
+			return nil, fmt.Errorf("projects registry %s: id %q claimed by both folder %q and folder %q", path, entry.ID, first, second)
+		}
+		folderByID[entry.ID] = folder
+	}
 	return &p, nil
 }
 

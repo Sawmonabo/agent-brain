@@ -114,6 +114,74 @@ func TestLoadProjectsMissingFileIsEmptyRegistry(t *testing.T) {
 	}
 }
 
+func TestLoadProjectsRejectsDuplicateID(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "dup-id.toml")
+	content := `version = 1
+
+[projects.alpha]
+id = "github.com/sawmonabo/shared"
+
+[projects.zeta]
+id = "github.com/sawmonabo/shared"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.LoadProjects(path); err == nil {
+		t.Fatal("two folders sharing an id accepted at load; want error (FolderFor would be map-order nondeterministic)")
+	}
+}
+
+// TestProjectsRoundtripDottedFolderName pins the dotted-folder case flagged
+// but not committed by Task 3's review: ValidateFolderName allows dots
+// (names_test.go's "Repo.Name"), and go-toml/v2 quotes such a key
+// ([projects.'Repo.Name']) rather than nesting it as three tables. Both
+// the roundtrip and Save's determinism must hold for that quoted form too.
+func TestProjectsRoundtripDottedFolderName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "projects.toml")
+
+	p := repo.NewProjects()
+	folder, err := p.Add("git@github.com:User/Repo.Name.git", "Repo.Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if folder != "Repo.Name" {
+		t.Fatalf("Add folder = %q, want Repo.Name", folder)
+	}
+
+	if err := p.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deterministic bytes: save again, expect identical output — same
+	// contract as TestProjectsRoundtripDeterministic, exercised here
+	// against the quoted-key form.
+	if err := p.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("Save is nondeterministic for a dotted folder name:\n--- first\n%s\n--- second\n%s", first, second)
+	}
+
+	loaded, err := repo.LoadProjects(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(p, loaded); diff != "" {
+		t.Fatalf("roundtrip mismatch (-saved +loaded):\n%s", diff)
+	}
+}
+
 func TestLoadProjectsRejectsUnknownVersionAndCorruptTOML(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
