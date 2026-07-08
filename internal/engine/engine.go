@@ -74,10 +74,14 @@ type MirrorStats struct {
 
 // Report is one cycle's outcome; the daemon exposes the latest one.
 type Report struct {
-	Commits    []string
-	MirrorIn   MirrorStats
-	MirrorOut  MirrorStats
-	Degraded   []string
+	Commits   []string
+	MirrorIn  MirrorStats
+	MirrorOut MirrorStats
+	Degraded  []string
+	// Scrubbed lists git-meta paths removed (or the root .gitattributes
+	// healed) after integrate — nonzero means a remote pushed something
+	// hostile or corrupted.
+	Scrubbed   []string
 	Pushed     bool
 	PushQueued bool
 }

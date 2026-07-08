@@ -71,15 +71,25 @@ func (e *Engine) Sync(ctx context.Context, units []repo.Unit) (Report, error) {
 	report.Degraded = sortedKeys(skip)
 
 	if integ.Integrated {
-		// SECURITY CONTRACT (spec §5): integrate may have delivered
-		// git-meta poison (a nested .gitattributes/.gitignore) that the
-		// pre-integrate mirror-in scrub has not seen; it is scrubbed next
-		// cycle. Safe today only because reconcile writes no memory
-		// content, so this commitProjects finds a clean tree. Any future
-		// reconcile that writes files into the checkout MUST scrub
-		// git-meta from its target subtrees first — git consults worktree
-		// .gitattributes at add time, so committing beside poison stores
-		// plaintext.
+		// SECURITY CONTRACT (spec §5), now ENFORCED by scrubIntegrated:
+		// integrate may have delivered git-meta poison — a
+		// .gitattributes/.gitignore at ANY depth (including folder level,
+		// one above the unit dirs mirror-in's scrub covers) or a rewritten
+		// root .gitattributes that unscopes the encryption filter. git
+		// consults the WORKTREE .gitattributes at add time, so committing
+		// beside poison stores plaintext. scrubIntegrated runs FIRST here,
+		// before any post-integrate write: it deletes every non-root
+		// git-meta path and heals the root file byte-identical to the
+		// canonical generation. Any post-integrate writer (reconcile's
+		// index writes, Task 7's seed) is covered ONLY while it stays inside
+		// this block's ordering: scrub → write → commit. The commitProjects
+		// below commits both the scrub's healing and reconcile's output, so
+		// fixes propagate on push.
+		healed, err := e.scrubIntegrated(ctx)
+		if err != nil {
+			return report, err
+		}
+		report.Scrubbed = append(report.Scrubbed, healed...)
 		if err := e.reconcile(ctx, units, skip); err != nil {
 			return report, err
 		}
