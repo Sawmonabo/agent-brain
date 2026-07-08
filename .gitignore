@@ -1,0 +1,23 @@
+# Never commit private keys — age (legacy, live until ADR 13 scrub) or Tink.
+*key.txt
+*age-key*
+**/private_*
+keyset.json
+
+# Go build/test artifacts
+/agent-brain
+dist/
+coverage.out
+*.test
+
+# Transient agent scratch (surface-forward-then-delete convention)
+.agents/
+
+# Per-user / per-machine Claude Code state
+.claude/settings.local.json
+.claude/tmp/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
