@@ -28,9 +28,9 @@ func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
 	var healed []string
 	root := e.layout.Root()
 	// A root-scoped handle makes the directory removal below refuse to
-	// follow a symlink component out of the checkout (gosec G122): WalkDir
-	// lstats an entry, but a concurrent swap could repoint a path component
-	// before we act. os.Root re-resolves every component within the checkout
+	// follow a symlink component out of the checkout: WalkDir lstats an
+	// entry, but a concurrent swap could repoint a path component before
+	// we act. os.Root re-resolves every component within the checkout
 	// and errors on any escape.
 	checkoutRoot, err := os.OpenRoot(root)
 	if err != nil {
