@@ -6,7 +6,9 @@ toolchain go1.26.5
 
 require (
 	charm.land/fang/v2 v2.0.1
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/gofrs/flock v0.13.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/renameio/v2 v2.0.2
 	github.com/pelletier/go-toml/v2 v2.4.3
