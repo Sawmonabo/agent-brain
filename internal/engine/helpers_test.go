@@ -44,7 +44,7 @@ func mustGit(t *testing.T, dir string, args ...string) gitx.Result {
 // newTestCheckout builds the two-repo shape every engine test needs: a
 // bare "remote" and a cloned checkout seeded the way Phase-3 init will
 // seed it (attributes file committed on main, pushed upstream).
-func newTestCheckout(t *testing.T) (checkout, bare string) { //nolint:unparam // bare (the fake remote path) is consumed by later engine tasks' push/integrate tests
+func newTestCheckout(t *testing.T) (checkout, bare string) {
 	t.Helper()
 	root := t.TempDir()
 	bare = filepath.Join(root, "remote.git")
