@@ -68,6 +68,16 @@ func (e *Engine) mirrorOutUnit(_ context.Context, u repo.Unit, manifest *repo.Ma
 		}
 		rel = filepath.ToSlash(rel)
 		repoRel := unitPrefix + rel
+		if isGitMetaPath(rel) {
+			// SECURITY (spec §5): never write a git-meta file into a provider
+			// dir. A poisoned .gitattributes that reaches the checkout via
+			// integrate AFTER this cycle's mirror-in scrub must not surface in
+			// the user's provider dir; next cycle's scrub removes it from the
+			// checkout. Not recorded in inCheckout (it is not a real synced
+			// path) and never given a manifest entry. See isGitMetaPath.
+			stats.Skipped++
+			return nil
+		}
 		inCheckout[rel] = true
 
 		checkoutEntry, err := repo.HashFile(fullPath)

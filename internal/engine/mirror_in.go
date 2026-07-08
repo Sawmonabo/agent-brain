@@ -17,6 +17,54 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
+// isGitMetaPath reports whether any slash-separated segment of the
+// unit-relative rel is a git metadata name — `.gitattributes`,
+// `.gitignore`, or `.git` — compared case-insensitively.
+//
+// SECURITY (spec §5, absolute invariant): a `.gitattributes` mirrored into
+// a unit subtree overrides the checkout-root attributes for that subtree by
+// git's deepest-file-wins precedence. A single `* -filter` line unsets the
+// encryption clean filter — no filter runs, `filter.agentbrain.required`
+// never fires — so sibling memory files commit as PLAINTEXT and push to the
+// remote in the clear. A `.gitignore` sibling silently stops files syncing;
+// a `.git` segment embeds a gitlink or nested repo. The invariant must not
+// depend on provider classification tables, so the engine refuses these
+// names unconditionally in every sync path (mirror-in inbound, checkout
+// scrub, mirror-out outbound). EqualFold because case-insensitive
+// filesystems (macOS) resolve `.GITATTRIBUTES` when git opens
+// `.gitattributes`. rel is unit-relative, so the checkout-root
+// `.gitattributes` (managed by repo.WriteAttributes) is never in scope.
+func isGitMetaPath(rel string) bool {
+	for _, seg := range strings.Split(rel, "/") {
+		if strings.EqualFold(seg, ".gitattributes") ||
+			strings.EqualFold(seg, ".gitignore") ||
+			strings.EqualFold(seg, ".git") {
+			return true
+		}
+	}
+	return false
+}
+
+// scrubCheckoutFile removes a checkout file both from git's index and from
+// disk. git rm --ignore-unmatch silently no-ops on an untracked file: a
+// prior cycle can crash after mirror-in wrote it but before commit, or the
+// engine plants it this cycle. Remove it directly too, or the orphan reads
+// as new-from-remote next cycle and gets copied back to the provider dir —
+// resurrecting a file the user deleted (or, for git-meta, re-poisoning).
+func (e *Engine) scrubCheckoutFile(ctx context.Context, repoRel, fullPath string) error {
+	if _, err := gitx.Run(ctx, e.checkout, "rm", "--quiet", "--ignore-unmatch", "--", repoRel); err != nil {
+		return err
+	}
+	if _, statErr := os.Lstat(fullPath); statErr == nil {
+		// fullPath comes from walking this unit's own checkout dir, and
+		// os.Remove doesn't follow symlinks — no TOCTOU exfiltration path.
+		if err := os.Remove(fullPath); err != nil {
+			return fmt.Errorf("remove untracked orphan %s: %w", fullPath, err)
+		}
+	}
+	return nil
+}
+
 // mirrorIn implements spec §4 step 1 for every unit: compare provider
 // dir ↔ checkout (manifest mtime+size fast path, hash confirm), copy
 // local changes in, and resolve deletions through the manifest —
@@ -62,6 +110,14 @@ func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Pr
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if isGitMetaPath(rel) {
+			// SECURITY (spec §5): refuse git-meta files BEFORE Classify so
+			// the invariant never rides the provider table. Not recorded in
+			// localFiles: the checkout scrub (pass 2) must treat any such
+			// path as removable, not "present locally, not ours to delete".
+			stats.Skipped++
+			return nil
+		}
 		if provider.Classify(prov, rel) == provider.ClassIgnore {
 			return nil
 		}
@@ -117,24 +173,30 @@ func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Pr
 		}
 		rel = filepath.ToSlash(rel)
 		repoRel := unitPrefix + rel
+		if isGitMetaPath(rel) {
+			// SECURITY (spec §5): scrub any git-meta file from the checkout
+			// UNCONDITIONALLY — not manifest-gated. A hostile .gitattributes
+			// that arrived via integrate is new-from-remote (absent from this
+			// host's manifest), which the gate below would preserve. Removing
+			// it here blocks freshly-integrated poison AND heals an
+			// already-poisoned repo: the removal commits at the existing
+			// commit points and propagates fleet-wide. This pass walks the
+			// checkout side, so the scrub runs whether or not the provider
+			// dir holds such a file. See isGitMetaPath.
+			if err := e.scrubCheckoutFile(ctx, repoRel, fullPath); err != nil {
+				return err
+			}
+			manifest.Delete(repoRel)
+			stats.Deleted++
+			return nil
+		}
 		if localFiles[rel] || !manifest.Has(repoRel) {
 			// Present locally, or never synced by this host
 			// (new-from-remote): not ours to delete.
 			return nil
 		}
-		if _, err := gitx.Run(ctx, e.checkout, "rm", "--quiet", "--ignore-unmatch", "--", repoRel); err != nil {
+		if err := e.scrubCheckoutFile(ctx, repoRel, fullPath); err != nil {
 			return err
-		}
-		if _, statErr := os.Lstat(fullPath); statErr == nil {
-			// git rm --ignore-unmatch silently no-ops on an untracked
-			// file: a prior cycle can crash after mirror-in wrote it but
-			// before commit. Remove it directly here, or the orphan
-			// reads as new-from-remote next cycle and gets copied back
-			// to the provider dir — resurrecting a file the user
-			// deleted.
-			if err := os.Remove(fullPath); err != nil { //nolint:gosec // G122: fullPath comes from walking this unit's own checkout dir, and Remove doesn't follow symlinks — no TOCTOU exfiltration path
-				return fmt.Errorf("remove untracked orphan %s: %w", fullPath, err)
-			}
 		}
 		manifest.Delete(repoRel)
 		stats.Deleted++

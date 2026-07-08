@@ -134,6 +134,44 @@ func TestMirrorOutDeletionSkippedWhenLocalChanged(t *testing.T) {
 	}
 }
 
+// TestMirrorOutRefusesGitMetaFiles pins the outbound guard (spec §5): a
+// git-meta file that reaches the checkout via integrate AFTER this cycle's
+// mirror-in scrub must never be written into the user's provider dir, and
+// must not earn a manifest entry. Next cycle's scrub removes it from the
+// checkout.
+func TestMirrorOutRefusesGitMetaFiles(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+	manifest, snapshot := repo.NewManifest(), localSnapshot{}
+
+	unitDir := engine.layout.UnitDir("alpha", "claude")
+	if err := os.MkdirAll(filepath.Join(unitDir, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "x", ".gitignore"), []byte("memories/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "-m", "poisoned .gitignore in checkout")
+
+	stats, err := engine.mirrorOut(context.Background(), []repo.Unit{u}, manifest, snapshot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1 (the git-meta file)", stats.Skipped)
+	}
+	if _, err := os.Stat(filepath.Join(u.LocalDir, "x", ".gitignore")); !os.IsNotExist(err) {
+		t.Fatal("git-meta file was written into the provider dir")
+	}
+	if manifest.Has("alpha/claude/x/.gitignore") {
+		t.Fatal("git-meta file got a manifest entry on mirror-out")
+	}
+}
+
 func TestMirrorOutWithheldForDegradedProjects(t *testing.T) {
 	t.Parallel()
 	checkout, _ := newTestCheckout(t)

@@ -138,6 +138,51 @@ func TestTwoMachineConvergenceWithCiphertextOnTheWire(t *testing.T) {
 	}
 }
 
+// TestHostileGitattributesCannotDisableEncryption is the spec §5 wire
+// regression: a .gitattributes planted in a provider dir must never reach
+// the memories repo. Were it mirrored into the unit subtree, its `* -filter`
+// would override the checkout-root attributes and unset the encryption
+// clean filter for its siblings — a sibling fact would then commit as
+// PLAINTEXT and push to the remote in the clear.
+func TestHostileGitattributesCannotDisableEncryption(t *testing.T) {
+	t.Parallel()
+	a, b, bare := newTwoMachines(t)
+
+	const plaintext = "the vault combination is left-seven-right-two-two\n"
+	a.write(t, ".gitattributes", "* -filter -diff -merge\n")
+	a.write(t, "memories/secret-fact.md", plaintext)
+
+	reportA := a.sync(t)
+	if !reportA.Pushed {
+		t.Fatalf("A did not push: %+v", reportA)
+	}
+
+	// (a) The fact is still ciphertext on the wire and never leaks plaintext.
+	blob := remoteBlob(t, bare, "alpha/claude/memories/secret-fact.md")
+	if !strings.HasPrefix(blob, magicPrefix) {
+		t.Fatal("fact blob is not agent-brain ciphertext — the hostile .gitattributes disabled encryption")
+	}
+	if strings.Contains(blob, "vault combination") {
+		t.Fatal("SAFETY VIOLATION: plaintext memory content reached a git object")
+	}
+
+	// (b) The hostile file never reached the remote tree at all. cat-file -e
+	// exits non-zero when the path is absent from main's tree.
+	if _, err := gitRunEnv(t, bare, nil, "cat-file", "-e", "main:alpha/claude/.gitattributes"); err == nil {
+		t.Fatal("hostile .gitattributes reached the remote — nested attributes could override the root filter wiring")
+	}
+
+	// (c) B integrates: the fact arrives intact, the poison does not reach
+	// B's provider dir.
+	b.sync(t)
+	if got := b.read(t, "memories/secret-fact.md"); got != plaintext {
+		t.Fatalf("B's fact = %q, want %q", got, plaintext)
+	}
+	if _, err := os.Stat(filepath.Join(b.unit.LocalDir, ".gitattributes")); !os.IsNotExist(err) {
+		t.Fatal("hostile .gitattributes propagated to B's provider dir")
+	}
+}
+
 func TestConcurrentFactEditsRetainBoth(t *testing.T) {
 	t.Parallel()
 	a, b, _ := newTwoMachines(t)

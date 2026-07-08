@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,110 @@ func TestMirrorInDeletesViaManifestOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(fromRemote); err != nil {
 		t.Fatal("new-from-remote file was wrongly removed:", err)
+	}
+}
+
+// TestMirrorInRefusesGitMetaFiles pins the inbound guard (spec §5): a
+// git-meta file in the provider dir — most dangerously a .gitattributes
+// whose `* -filter` would override the checkout-root attributes for the
+// unit subtree and disable the encryption clean filter — must never be
+// mirrored into the checkout, regardless of provider classification. A
+// normal fact sibling must still sync.
+func TestMirrorInRefusesGitMetaFiles(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+
+	writeLocal(t, u, ".gitattributes", "* -filter\n")
+	writeLocal(t, u, ".gitignore", "memories/\n")
+	// Case variant lives in its own dir: a case-insensitive filesystem
+	// (macOS) would collide it with a lowercase sibling in the same dir.
+	writeLocal(t, u, "caps/.GITATTRIBUTES", "* -filter\n")
+	writeLocal(t, u, "sub/.gitattributes", "* -filter\n")
+	// A normal fact sibling MUST still sync.
+	writeLocal(t, u, "memories/real.md", "# real fact\n")
+
+	manifest := repo.NewManifest()
+	stats, snapshot, err := engine.mirrorIn(context.Background(), []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitMeta := []string{".gitattributes", ".gitignore", "caps/.GITATTRIBUTES", "sub/.gitattributes"}
+	for _, rel := range gitMeta {
+		if _, err := os.Stat(filepath.Join(checkout, "alpha", "claude", filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("git-meta file %q reached the checkout — encryption filter can be disabled", rel)
+		}
+		if manifest.Has("alpha/claude/" + rel) {
+			t.Fatalf("git-meta file %q entered the manifest", rel)
+		}
+		if _, ok := snapshot["alpha/claude/"+rel]; ok {
+			t.Fatalf("git-meta file %q entered the snapshot", rel)
+		}
+	}
+	if stats.Skipped != len(gitMeta) {
+		t.Fatalf("Skipped = %d, want %d (every git-meta file)", stats.Skipped, len(gitMeta))
+	}
+	if stats.Copied != 1 {
+		t.Fatalf("Copied = %d, want 1 (only the normal fact)", stats.Copied)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "alpha", "claude", "memories", "real.md")); err != nil {
+		t.Fatal("normal fact sibling did not sync:", err)
+	}
+	if !manifest.Has("alpha/claude/memories/real.md") {
+		t.Fatal("manifest missing the normal fact")
+	}
+}
+
+// TestMirrorInScrubsGitMetaFromCheckout pins the checkout scrub (spec §5):
+// a git-meta file that arrived from a poisoned remote (tracked + committed,
+// absent from this host's manifest) is new-from-remote, so the ordinary
+// manifest-gated deletion path leaves it alone. The unconditional scrub
+// must remove it anyway — healing an already-poisoned repo — while leaving
+// an innocent tracked fact untouched.
+func TestMirrorInScrubsGitMetaFromCheckout(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+	ctx := context.Background()
+
+	unitDir := engine.layout.UnitDir("alpha", "claude")
+	if err := os.MkdirAll(filepath.Join(unitDir, "evil"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "evil", ".gitattributes"), []byte("* -filter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(unitDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "memories", "keep.md"), []byte("innocent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "-m", "simulate poisoned integrate")
+
+	manifest := repo.NewManifest()
+	stats, _, err := engine.mirrorIn(ctx, []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if stats.Deleted != 1 {
+		t.Fatalf("Deleted = %d, want 1 (the scrubbed .gitattributes)", stats.Deleted)
+	}
+	evil := filepath.Join(unitDir, "evil", ".gitattributes")
+	if _, err := os.Stat(evil); !os.IsNotExist(err) {
+		t.Fatal("poisoned .gitattributes still on disk after scrub")
+	}
+	status := strings.TrimSpace(mustGit(t, checkout, "status", "--porcelain", "--", "alpha/claude/evil/.gitattributes").Stdout)
+	if !strings.HasPrefix(status, "D") {
+		t.Fatalf("scrub did not stage the deletion: status = %q", status)
+	}
+	if got, err := os.ReadFile(filepath.Join(unitDir, "memories", "keep.md")); err != nil || string(got) != "innocent\n" {
+		t.Fatalf("innocent tracked file disturbed: %q, %v", got, err)
 	}
 }
 
