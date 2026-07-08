@@ -228,7 +228,13 @@ leak, GitHub-side scanning). Does NOT protect local disk — worktree and provid
 dirs are plaintext by design, the same posture as today's runtime copy. Does not
 hide structure, filenames, sizes, or timing, and accepts the deterministic
 equality leak (identical plaintext ⇒ identical ciphertext) — ADR 00's documented
-trade for mergeability and no-churn commits.
+trade for mergeability and no-churn commits. One further accepted limitation of
+the in-band discriminator: plaintext that itself begins with the codec's magic
+prefix (`agb1\x00`) is indistinguishable from ciphertext, so the clean filter
+would store it unencrypted and the smudge filter would then fail closed
+(visible checkout error, never a silent wrong roundtrip) — unreachable for
+markdown memory content, which never opens with a NUL-embedded header; the
+behavior is pinned by codec tests.
 
 ## 6. Provider adapters
 
