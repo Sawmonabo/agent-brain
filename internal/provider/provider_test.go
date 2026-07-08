@@ -39,6 +39,39 @@ func TestClassString(t *testing.T) {
 	}
 }
 
+// TestClassFromString pins ClassFromString as the exact inverse of
+// String(): every valid class string round-trips, and an unrecognized
+// string is a load-time error naming the bad value (config-overridable
+// classification tables, spec §6, validate strictly at LoadSettings).
+func TestClassFromString(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		s       string
+		want    provider.Class
+		wantErr bool
+	}{
+		{"fact", "fact", provider.ClassFact, false},
+		{"derived index", "derived-index", provider.ClassDerivedIndex, false},
+		{"regenerated", "regenerated", provider.ClassRegenerated, false},
+		{"ignore", "ignore", provider.ClassIgnore, false},
+		{"unknown string", "bogus", 0, true},
+		{"empty string", "", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := provider.ClassFromString(tt.s)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ClassFromString(%q) error = %v, wantErr %v", tt.s, err, tt.wantErr)
+			}
+			if err == nil && got != tt.want {
+				t.Fatalf("ClassFromString(%q) = %v, want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestScopeString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

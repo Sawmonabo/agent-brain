@@ -1,4 +1,7 @@
 // Package config resolves agent-brain's on-disk locations (spec §3, §5).
+// It imports provider (ValidateGlob, ClassFromString) to validate
+// per-provider classify overrides at load time; provider imports
+// nothing internal, so config → provider is not a cycle.
 package config
 
 import (

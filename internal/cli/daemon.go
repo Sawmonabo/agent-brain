@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -9,14 +10,7 @@ import (
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon"
-	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
-
-// buildRegistry is THE provider composition site. Phase 2 ships no
-// adapters; Phase 3 registers claude and codex here and nowhere else.
-func buildRegistry() (*provider.Registry, error) {
-	return provider.NewRegistry()
-}
 
 func newDaemonCmd() *cobra.Command {
 	daemonCmd := &cobra.Command{
@@ -35,7 +29,11 @@ func newDaemonCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			registry, err := buildRegistry()
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			registry, err := buildRegistry(settings, home)
 			if err != nil {
 				return err
 			}

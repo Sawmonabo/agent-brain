@@ -9,6 +9,8 @@ import (
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
 
 // Duration is a time.Duration that unmarshals from TOML strings ("5m").
@@ -34,11 +36,31 @@ type SyncSettings struct {
 	Poll Duration `toml:"poll"`
 }
 
+// ClassifyRule overrides one classification pattern for a provider.
+// Class is one of provider.Class.String()'s exact values ("fact",
+// "derived-index", "regenerated", "ignore") — LoadSettings rejects
+// anything else.
+type ClassifyRule struct {
+	Glob  string `toml:"glob"`
+	Class string `toml:"class"`
+}
+
+// ProviderSettings is one provider's config.toml override section.
+// Currently only classification tables are overridable (spec §6: Codex's
+// on-disk layout is partly third-party-documented, so its table absorbs
+// upstream format drift without a release; Claude's is deliberately not
+// overridable and so has no entry here).
+type ProviderSettings struct {
+	Classify []ClassifyRule `toml:"classify"`
+}
+
 // Settings is ~/.config/agent-brain/config.toml — user-edited, read-only
 // to the program (ADR 17: init writes it once from a template in Phase 3;
 // nothing ever rewrites it, so user comments survive).
 type Settings struct {
 	Sync SyncSettings `toml:"sync"`
+	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.
+	Providers map[string]ProviderSettings `toml:"providers"`
 }
 
 // DefaultSettings returns the documented defaults.
@@ -70,6 +92,16 @@ func LoadSettings(path string) (Settings, error) {
 	}
 	if err := settings.validate(); err != nil {
 		return Settings{}, fmt.Errorf("settings %s: %w", path, err)
+	}
+	for providerName, ps := range settings.Providers {
+		for i, rule := range ps.Classify {
+			if err := provider.ValidateGlob(rule.Glob); err != nil {
+				return Settings{}, fmt.Errorf("providers.%s.classify[%d]: %w", providerName, i, err)
+			}
+			if _, err := provider.ClassFromString(rule.Class); err != nil {
+				return Settings{}, fmt.Errorf("providers.%s.classify[%d]: %w", providerName, i, err)
+			}
+		}
 	}
 	return settings, nil
 }

@@ -6,7 +6,10 @@
 // enrollment, their first consumer.
 package provider
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Class is a file's merge-policy class (spec §3 "File classes").
 type Class int
@@ -37,6 +40,29 @@ func (c Class) String() string {
 		return "ignore"
 	default:
 		return "unknown"
+	}
+}
+
+// ClassFromString parses s — one of the exact String() values ("fact",
+// "derived-index", "regenerated", "ignore") — back into a Class. It is
+// the inverse of String(), used to validate and load config-overridable
+// classification tables (spec §6): an adapter's classify overrides
+// travel through config.toml as strings, never as the unexported Class
+// int, so loading them must reject anything String() would not itself
+// produce.
+func ClassFromString(s string) (Class, error) {
+	switch s {
+	case ClassFact.String():
+		return ClassFact, nil
+	case ClassDerivedIndex.String():
+		return ClassDerivedIndex, nil
+	case ClassRegenerated.String():
+		return ClassRegenerated, nil
+	case ClassIgnore.String():
+		return ClassIgnore, nil
+	default:
+		return 0, fmt.Errorf("class %q: not one of %q, %q, %q, %q",
+			s, ClassFact, ClassDerivedIndex, ClassRegenerated, ClassIgnore)
 	}
 }
 
