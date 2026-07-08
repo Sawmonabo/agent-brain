@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
@@ -439,6 +441,121 @@ func TestMirrorInRefreshesLedgerOnIdenticalContentTouch(t *testing.T) {
 	}
 	if after.MTimeUnixNano != wantMTime {
 		t.Fatalf("manifest MTimeUnixNano = %d, want %d (refreshed to the new mtime)", after.MTimeUnixNano, wantMTime)
+	}
+}
+
+// TestMirrorInSeparatesManifestKeysAcrossRepoSubdirUnits pins the
+// namespace fix that goes with Task 2's RepoSubdir plumbing: two units
+// sharing one (folder, provider) but mapped to different RepoSubdirs
+// (the codex memories+chronicle shape, spec §3) must never alias each
+// other's manifest entries. Without RepoSubdir folded into the
+// per-unit manifest-key prefix, pass 3's dangling-entry cleanup for one
+// unit would walk the OTHER unit's entries too (same prefix) and,
+// finding no file at ITS OWN unitDir for that rel, silently delete the
+// other unit's still-valid ledger entry every cycle.
+func TestMirrorInSeparatesManifestKeysAcrossRepoSubdirUnits(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	memoriesLocal, chronicleLocal := t.TempDir(), t.TempDir()
+	// Provider is "claude" (the only provider the test registry knows)
+	// purely so the engine can resolve it; the mechanism under test —
+	// per-unit manifest-key separation — is provider-agnostic.
+	memories := repo.Unit{Provider: "claude", ProjectID: "codex-memories", Folder: "shared", LocalDir: memoriesLocal, RepoSubdir: "memories"}
+	chronicle := repo.Unit{Provider: "claude", ProjectID: "codex-chronicle", Folder: "shared", LocalDir: chronicleLocal, RepoSubdir: "chronicle"}
+
+	if err := os.WriteFile(filepath.Join(memoriesLocal, "note.md"), []byte("from memories\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(chronicleLocal, "note.md"), []byte("from chronicle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := repo.NewManifest()
+	if _, _, err := engine.mirrorIn(context.Background(), []repo.Unit{memories, chronicle}, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	if !manifest.Has("shared/claude/memories/note.md") {
+		t.Fatal("manifest missing the memories unit's entry — key collided with chronicle's")
+	}
+	if !manifest.Has("shared/claude/chronicle/note.md") {
+		t.Fatal("manifest missing the chronicle unit's entry — key collided with memories'")
+	}
+
+	memData, err := os.ReadFile(filepath.Join(checkout, "shared", "claude", "memories", "note.md"))
+	if err != nil || string(memData) != "from memories\n" {
+		t.Fatalf("memories content = %q, %v", memData, err)
+	}
+	chronData, err := os.ReadFile(filepath.Join(checkout, "shared", "claude", "chronicle", "note.md"))
+	if err != nil || string(chronData) != "from chronicle\n" {
+		t.Fatalf("chronicle content = %q, %v", chronData, err)
+	}
+
+	// A second cycle must be a clean no-op for BOTH units: pass 3
+	// (ledger hygiene) must not cross-contaminate and drop either
+	// unit's entry.
+	stats, _, err := engine.mirrorIn(context.Background(), []repo.Unit{memories, chronicle}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Copied != 0 || stats.Deleted != 0 {
+		t.Fatalf("second run stats = %+v, want zero copies/deletes", stats)
+	}
+	if !manifest.Has("shared/claude/memories/note.md") || !manifest.Has("shared/claude/chronicle/note.md") {
+		t.Fatal("a manifest entry was dropped by the OTHER unit's ledger-hygiene pass")
+	}
+}
+
+// TestMirrorInClassifiesThroughRepoSubdirNamespace pins the
+// pattern-namespace contract end-to-end through the REAL mirrorInUnit
+// call site — not just the standalone classifyRel function
+// (TestUnitDirAndClassifyRel covers that in isolation). A provider's
+// Patterns() globs are written against the provider-dir-relative shape
+// (spec: "**/<provider>/<glob>", the same namespace GenerateAttributes
+// emits), so a codex-shaped glob like "memories/*.tmp" only ignores a
+// file at the LOCAL root of a RepoSubdir:"memories" unit if
+// mirrorInUnit folds RepoSubdir into the rel it hands to Classify. If
+// that wrapping were ever dropped from the call site, this test — not
+// just the pure-function one — would catch it.
+func TestMirrorInClassifiesThroughRepoSubdirNamespace(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	fake := providertest.New("codexlike", provider.ScopeGlobal, []provider.Pattern{
+		{Glob: "memories/*.tmp", Class: provider.ClassIgnore},
+	})
+	registry, err := provider.NewRegistry(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := New(checkout, "host-a", registry, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	localDir := t.TempDir()
+	u := repo.Unit{Provider: "codexlike", Folder: repo.GlobalFolder, LocalDir: localDir, RepoSubdir: "memories"}
+	if err := os.WriteFile(filepath.Join(localDir, "scratch.tmp"), []byte("ignore me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "keep.md"), []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := repo.NewManifest()
+	stats, _, err := engine.mirrorIn(context.Background(), []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Copied != 1 {
+		t.Fatalf("Copied = %d, want 1 (only keep.md — scratch.tmp must be ignored)", stats.Copied)
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "_global", "codexlike", "memories", "scratch.tmp")); !os.IsNotExist(err) {
+		t.Fatal("scratch.tmp synced despite matching \"memories/*.tmp\" once RepoSubdir-namespaced — classifyRel not wired at the real call site")
+	}
+	if _, err := os.Stat(filepath.Join(checkout, "_global", "codexlike", "memories", "keep.md")); err != nil {
+		t.Fatal("keep.md should have synced:", err)
 	}
 }
 

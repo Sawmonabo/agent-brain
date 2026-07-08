@@ -2,11 +2,19 @@ package provider_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
+
+// var _ provider.Provider = (*providertest.Fake)(nil) pins the fake
+// against the full interface at compile time: Discover/Identify joining
+// Provider must fail this build until the fake implements them too.
+var _ provider.Provider = (*providertest.Fake)(nil)
 
 func TestClassString(t *testing.T) {
 	t.Parallel()
@@ -121,5 +129,73 @@ func TestFakeRecordsReconcileCalls(t *testing.T) {
 	}
 	if got := fake.ReconcileCalls(); len(got) != 1 || got[0] != "/tmp/x" {
 		t.Fatalf("ReconcileCalls() = %v, want [/tmp/x]", got)
+	}
+}
+
+func TestFakeDiscoverReturnsConfiguredResultAndRecordsCalls(t *testing.T) {
+	t.Parallel()
+	fake := providertest.New("claude", provider.ScopePerProject, nil)
+	want := []provider.Discovered{
+		{LocalDir: "/home/u/.claude/projects/x/memory", Label: "x", PathGuess: "/home/u/dev/x"},
+	}
+	fake.DiscoverResult = want
+
+	got, err := fake.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Discover() (-want +got):\n%s", diff)
+	}
+	// Second call: same result, call count accumulates.
+	if _, err := fake.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fake.DiscoverCalls(); calls != 2 {
+		t.Fatalf("DiscoverCalls() = %d, want 2", calls)
+	}
+}
+
+func TestFakeDiscoverPropagatesConfiguredError(t *testing.T) {
+	t.Parallel()
+	fake := providertest.New("claude", provider.ScopePerProject, nil)
+	fake.DiscoverErr = errors.New("scan failed")
+
+	got, err := fake.Discover(context.Background())
+	if err == nil {
+		t.Fatal("Discover() error = nil, want the configured error")
+	}
+	if got != nil {
+		t.Fatalf("Discover() result = %v, want nil alongside the error", got)
+	}
+}
+
+func TestFakeIdentifyReturnsConfiguredResultAndRecordsCalls(t *testing.T) {
+	t.Parallel()
+	fake := providertest.New("claude", provider.ScopePerProject, nil)
+	fake.IdentifyResult = provider.Identity{ProjectID: "github.com/o/r", PreferredFolder: "r"}
+	d := provider.Discovered{LocalDir: "/home/u/.claude/projects/x/memory", Label: "x"}
+
+	got, err := fake.Identify(context.Background(), d, "/home/u/dev/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(fake.IdentifyResult, got); diff != "" {
+		t.Fatalf("Identify() (-want +got):\n%s", diff)
+	}
+	want := []providertest.IdentifyCall{{Discovered: d, ProjectPath: "/home/u/dev/r"}}
+	if diff := cmp.Diff(want, fake.IdentifyCalls()); diff != "" {
+		t.Fatalf("IdentifyCalls() (-want +got):\n%s", diff)
+	}
+}
+
+func TestFakeIdentifyPropagatesConfiguredError(t *testing.T) {
+	t.Parallel()
+	fake := providertest.New("claude", provider.ScopePerProject, nil)
+	fake.IdentifyErr = errors.New("no remote")
+
+	_, err := fake.Identify(context.Background(), provider.Discovered{}, "/home/u/dev/r")
+	if err == nil {
+		t.Fatal("Identify() error = nil, want the configured error")
 	}
 }

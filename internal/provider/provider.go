@@ -1,9 +1,9 @@
 // Package provider defines the contract every memory-provider adapter
 // implements, plus the class/pattern model driving merge policy and
-// .gitattributes generation (spec §6; ADRs 02/03). Phase 2 ships the
+// .gitattributes generation (spec §6; ADRs 02/03). Phase 2 shipped the
 // contract and a test fake; the claude/codex adapters are Phase 3.
-// DiscoverProjects/ResolveIdentity (spec §6) join the interface in
-// Phase 3 alongside enrollment, their first consumer.
+// Discover/Identify (spec §6) join the interface in Phase 3 alongside
+// enrollment, their first consumer.
 package provider
 
 import "context"
@@ -68,6 +68,37 @@ type Pattern struct {
 	Class Class
 }
 
+// Discovered is one enrollable memory root an adapter found on this
+// machine. For per-project providers each project yields one entry; a
+// global provider may yield several (one per RepoSubdir root).
+type Discovered struct {
+	// LocalDir is the absolute local memory root to mirror/watch.
+	LocalDir string
+	// RepoSubdir is the slash-separated subdir under <folder>/<provider>/
+	// this root maps to ("" = the provider dir itself). Mirrors
+	// repo.Unit.RepoSubdir.
+	RepoSubdir string
+	// Label is what the enrollment picker shows (a slug, "codex memories", …).
+	Label string
+	// PathGuess is the adapter's best guess at the PROJECT path the memory
+	// belongs to (per-project scope; "" for global). The picker shows it
+	// for confirmation — it is a GUESS (slug reversal is lossy).
+	PathGuess string
+}
+
+// Identity is the cross-machine binding for one discovered root
+// (spec §3 "Project identity"). Global-scope providers return the zero
+// Identity — their folder is repo.GlobalFolder by construction.
+type Identity struct {
+	// ProjectID is the canonical machine-independent id
+	// (host/owner/repo from the normalized git remote), or "" when the
+	// project has no remote — the caller must then ask the user to name
+	// the folder and uses name:<folder> as the id.
+	ProjectID string
+	// PreferredFolder is the repo folder to propose (repo basename).
+	PreferredFolder string
+}
+
 // Provider is the Phase-2 adapter contract. Implementations must be
 // safe for concurrent use by multiple goroutines (the daemon reads them
 // from its API server while the engine syncs).
@@ -85,6 +116,15 @@ type Provider interface {
 	// index inside dir — a <project>/<provider>/ dir in the checkout —
 	// after integrate (spec §4 step 4). No-op when nothing applies.
 	ReconcileIndex(ctx context.Context, dir string) error
+	// Discover enumerates this machine's enrollable memory roots. Roots
+	// already enrolled are included — the caller filters against its
+	// registry (the adapter is stateless).
+	Discover(ctx context.Context) ([]Discovered, error)
+	// Identify resolves a Discovered root to its cross-machine identity,
+	// confirming/deriving the project path (reads the git remote for
+	// per-project scope). projectPath is the user-confirmed project
+	// directory (equal to d.PathGuess unless the user corrected it).
+	Identify(ctx context.Context, d Discovered, projectPath string) (Identity, error)
 }
 
 // Classify resolves rel (slash-separated, relative to the memory root)

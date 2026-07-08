@@ -9,8 +9,14 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
 
+// IdentifyCall records one Identify invocation's arguments.
+type IdentifyCall struct {
+	Discovered  provider.Discovered
+	ProjectPath string
+}
+
 // Fake implements provider.Provider with a fixed table and recorded
-// ReconcileIndex calls. Safe for concurrent use.
+// ReconcileIndex/Discover/Identify calls. Safe for concurrent use.
 type Fake struct {
 	name     string
 	scope    provider.Scope
@@ -21,6 +27,18 @@ type Fake struct {
 	// ReconcileFunc, when non-nil, runs inside ReconcileIndex after the
 	// call is recorded — lets tests mutate the dir or inject errors.
 	ReconcileFunc func(ctx context.Context, dir string) error
+
+	discoverCalls int
+	// DiscoverResult is returned by Discover; DiscoverErr, when non-nil,
+	// short-circuits it instead.
+	DiscoverResult []provider.Discovered
+	DiscoverErr    error
+
+	identifyCalls []IdentifyCall
+	// IdentifyResult is returned by Identify; IdentifyErr, when non-nil,
+	// short-circuits it instead.
+	IdentifyResult provider.Identity
+	IdentifyErr    error
 }
 
 // New constructs a Fake. patterns may be nil (everything ClassFact).
@@ -54,4 +72,42 @@ func (f *Fake) ReconcileCalls() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.reconcileCalls...)
+}
+
+// Discover records the call, then returns DiscoverResult, or
+// DiscoverErr instead when set.
+func (f *Fake) Discover(_ context.Context) ([]provider.Discovered, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.discoverCalls++
+	if f.DiscoverErr != nil {
+		return nil, f.DiscoverErr
+	}
+	return f.DiscoverResult, nil
+}
+
+// DiscoverCalls returns how many times Discover was called.
+func (f *Fake) DiscoverCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discoverCalls
+}
+
+// Identify records d and projectPath, then returns IdentifyResult, or
+// IdentifyErr instead when set.
+func (f *Fake) Identify(_ context.Context, d provider.Discovered, projectPath string) (provider.Identity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.identifyCalls = append(f.identifyCalls, IdentifyCall{Discovered: d, ProjectPath: projectPath})
+	if f.IdentifyErr != nil {
+		return provider.Identity{}, f.IdentifyErr
+	}
+	return f.IdentifyResult, nil
+}
+
+// IdentifyCalls returns the arguments Identify was called with, in order.
+func (f *Fake) IdentifyCalls() []IdentifyCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]IdentifyCall(nil), f.identifyCalls...)
 }

@@ -13,12 +13,17 @@ import (
 )
 
 // Unit binds one enrolled local provider directory to its repo location.
-// This is the engine's work item: mirror LocalDir ↔ <Folder>/<Provider>.
+// This is the engine's work item: mirror LocalDir ↔
+// <Folder>/<Provider>[/<RepoSubdir>].
 type Unit struct {
 	Provider  string `toml:"provider"`
 	ProjectID string `toml:"project_id"` // canonical id; empty for global scope
 	Folder    string `toml:"folder"`     // repo folder, or GlobalFolder
 	LocalDir  string `toml:"local_dir"`  // absolute, machine-local
+	// RepoSubdir maps this unit under a subdirectory of the provider dir
+	// (<folder>/<provider>/<repo_subdir>). Empty for providers with one
+	// root (claude). Validated by ValidateRelPath when set.
+	RepoSubdir string `toml:"repo_subdir,omitempty"`
 }
 
 func (u Unit) validate() error {
@@ -32,6 +37,11 @@ func (u Unit) validate() error {
 	}
 	if !filepath.IsAbs(u.LocalDir) {
 		return fmt.Errorf("unit local_dir %q is not absolute", u.LocalDir)
+	}
+	if u.RepoSubdir != "" {
+		if err := ValidateRelPath(u.RepoSubdir); err != nil {
+			return fmt.Errorf("unit repo_subdir: %w", err)
+		}
 	}
 	return nil
 }
@@ -74,15 +84,19 @@ func LoadLocalRegistry(path string) (*LocalRegistry, error) {
 	}
 	// Enroll upholds two cross-unit invariants that a hand-edited file can
 	// smuggle past the per-unit checks above: no two units feed the same
-	// (provider, folder), and no two units record the same (provider,
-	// local dir). Check both here so a corrupt state fails loudly at
-	// load — never silently at sync time.
-	seenFolder := make(map[[2]string]string, len(r.Units))   // [provider, folder] -> local dir
+	// (provider, folder, repo_subdir), and no two units record the same
+	// (provider, local dir). Check both here so a corrupt state fails
+	// loudly at load — never silently at sync time. RepoSubdir is part
+	// of the first key (not just provider+folder) because one global
+	// provider legitimately maps several local roots under its provider
+	// dir via DIFFERENT RepoSubdirs (codex: memories + chronicle, spec
+	// §3) — those are disjoint checkout subtrees, not a collision.
+	seenFolder := make(map[[3]string]string, len(r.Units))   // [provider, folder, repo_subdir] -> local dir
 	seenLocalDir := make(map[[2]string]string, len(r.Units)) // [provider, local dir] -> folder
 	for _, u := range r.Units {
-		folderKey := [2]string{u.Provider, u.Folder}
+		folderKey := [3]string{u.Provider, u.Folder, u.RepoSubdir}
 		if existing, dup := seenFolder[folderKey]; dup {
-			return nil, fmt.Errorf("local registry %s: folder %q fed by %s from two local dirs (%s and %s)", path, u.Folder, u.Provider, existing, u.LocalDir)
+			return nil, fmt.Errorf("local registry %s: folder %q repo_subdir %q fed by %s from two local dirs (%s and %s)", path, u.Folder, u.RepoSubdir, u.Provider, existing, u.LocalDir)
 		}
 		seenFolder[folderKey] = u.LocalDir
 
@@ -123,9 +137,12 @@ func (r *LocalRegistry) Save(path string) error {
 }
 
 // Enroll adds u. Re-enrolling the same (provider, local dir) is an
-// idempotent no-op. A DIFFERENT local dir for an already-fed
-// (provider, folder) is rejected: two local sources mirroring into one
-// checkout dir would ping-pong overwrite each other.
+// idempotent no-op. A DIFFERENT local dir for an already-fed (provider,
+// folder, repo_subdir) is rejected: two local sources mirroring into one
+// checkout dir would ping-pong overwrite each other. A DIFFERENT
+// RepoSubdir under the same (provider, folder) is NOT a collision — it
+// is the codex two-root shape (memories + chronicle both under
+// _global/codex/, spec §3): disjoint checkout subtrees, both allowed.
 func (r *LocalRegistry) Enroll(u Unit) error {
 	if err := u.validate(); err != nil {
 		return err
@@ -134,7 +151,7 @@ func (r *LocalRegistry) Enroll(u Unit) error {
 		if existing.Provider == u.Provider && existing.LocalDir == u.LocalDir {
 			return nil
 		}
-		if existing.Provider == u.Provider && existing.Folder == u.Folder {
+		if existing.Provider == u.Provider && existing.Folder == u.Folder && existing.RepoSubdir == u.RepoSubdir {
 			return fmt.Errorf("folder %q already fed by %s on this machine (%s); untrack it first", u.Folder, u.Provider, existing.LocalDir)
 		}
 	}

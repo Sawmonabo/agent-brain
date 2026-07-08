@@ -86,8 +86,14 @@ func (e *Engine) mirrorIn(ctx context.Context, units []repo.Unit, manifest *repo
 }
 
 func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Provider, manifest *repo.Manifest, stats *MirrorStats, snapshot localSnapshot) error {
-	unitDir := e.layout.UnitDir(u.Folder, u.Provider)
-	unitPrefix := path.Join(u.Folder, u.Provider) + "/"
+	unitDir := e.unitDir(u)
+	// unitPrefix folds in RepoSubdir so two units sharing one (folder,
+	// provider) but mapped to different RepoSubdirs (codex memories +
+	// chronicle, spec §3) never alias each other's manifest entries —
+	// pass 3 below filters manifest.Files by this prefix, and a shared
+	// prefix would let one unit's ledger hygiene delete the other's
+	// still-valid entries.
+	unitPrefix := path.Join(u.Folder, u.Provider, u.RepoSubdir) + "/"
 
 	// Pass 1: local → checkout.
 	localFiles := map[string]bool{}
@@ -118,7 +124,7 @@ func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Pr
 			stats.Skipped++
 			return nil
 		}
-		if provider.Classify(prov, rel) == provider.ClassIgnore {
+		if provider.Classify(prov, classifyRel(u, rel)) == provider.ClassIgnore {
 			return nil
 		}
 		localFiles[rel] = true

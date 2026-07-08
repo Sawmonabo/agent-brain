@@ -35,8 +35,11 @@ func (e *Engine) mirrorOut(ctx context.Context, units []repo.Unit, manifest *rep
 }
 
 func (e *Engine) mirrorOutUnit(_ context.Context, u repo.Unit, manifest *repo.Manifest, snapshot localSnapshot, stats *MirrorStats) error {
-	unitDir := e.layout.UnitDir(u.Folder, u.Provider)
-	unitPrefix := path.Join(u.Folder, u.Provider) + "/"
+	unitDir := e.unitDir(u)
+	// unitPrefix folds in RepoSubdir — see the identical comment in
+	// mirror_in.go's mirrorInUnit; the manifest-gated deletion pass
+	// below has the same cross-unit-aliasing risk without it.
+	unitPrefix := path.Join(u.Folder, u.Provider, u.RepoSubdir) + "/"
 
 	// localUnchanged reports whether the provider file at rel is safe to
 	// replace: absent entirely, or byte-identical to the cycle snapshot.

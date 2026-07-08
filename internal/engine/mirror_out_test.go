@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 
@@ -10,11 +11,14 @@ import (
 )
 
 // seedSyncedFile establishes "this host synced rel before": content in
-// LocalDir and checkout, manifest entry, snapshot entry.
+// LocalDir and checkout, manifest entry, snapshot entry. Routes through
+// engine.unitDir/the folder+provider+repo_subdir key shape so it stays
+// correct for RepoSubdir-mapped units too (a no-op change in shape for
+// every existing RepoSubdir=="" caller).
 func seedSyncedFile(t *testing.T, engine *Engine, u repo.Unit, manifest *repo.Manifest, snapshot localSnapshot, rel, content string) {
 	t.Helper()
 	writeLocal(t, u, rel, content)
-	dest := filepath.Join(engine.layout.UnitDir(u.Folder, u.Provider), filepath.FromSlash(rel))
+	dest := filepath.Join(engine.unitDir(u), filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +29,7 @@ func seedSyncedFile(t *testing.T, engine *Engine, u repo.Unit, manifest *repo.Ma
 	if err != nil {
 		t.Fatal(err)
 	}
-	repoRel := u.Folder + "/" + u.Provider + "/" + rel
+	repoRel := path.Join(u.Folder, u.Provider, u.RepoSubdir, rel)
 	if err := manifest.Set(repoRel, entry); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +173,37 @@ func TestMirrorOutRefusesGitMetaFiles(t *testing.T) {
 	}
 	if manifest.Has("alpha/claude/x/.gitignore") {
 		t.Fatal("git-meta file got a manifest entry on mirror-out")
+	}
+}
+
+// TestMirrorOutSeparatesManifestKeysAcrossRepoSubdirUnits is the
+// mirror-out counterpart to the mirror-in test of the same shape: two
+// units sharing (folder, provider) but different RepoSubdir must not
+// let one unit's manifest-gated deletion pass see — and potentially
+// drop — the other's ledger entries.
+func TestMirrorOutSeparatesManifestKeysAcrossRepoSubdirUnits(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	manifest, snapshot := repo.NewManifest(), localSnapshot{}
+
+	memories := repo.Unit{Provider: "claude", ProjectID: "a", Folder: "shared", LocalDir: t.TempDir(), RepoSubdir: "memories"}
+	chronicle := repo.Unit{Provider: "claude", ProjectID: "b", Folder: "shared", LocalDir: t.TempDir(), RepoSubdir: "chronicle"}
+	seedSyncedFile(t, engine, memories, manifest, snapshot, "note.md", "memories content\n")
+	seedSyncedFile(t, engine, chronicle, manifest, snapshot, "note.md", "chronicle content\n")
+
+	stats, err := engine.mirrorOut(context.Background(), []repo.Unit{memories, chronicle}, manifest, snapshot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Copied != 0 || stats.Deleted != 0 {
+		t.Fatalf("stats = %+v, want a no-op — nothing changed since seeding", stats)
+	}
+	if !manifest.Has("shared/claude/memories/note.md") {
+		t.Fatal("manifest lost the memories unit's entry — key collided with chronicle's")
+	}
+	if !manifest.Has("shared/claude/chronicle/note.md") {
+		t.Fatal("manifest lost the chronicle unit's entry — key collided with memories'")
 	}
 }
 
