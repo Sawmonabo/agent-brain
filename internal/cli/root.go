@@ -16,6 +16,16 @@ func Root() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newGitCleanCmd(), newGitSmudgeCmd(), newGitTextconvCmd(), newGitMergeCmd())
+	root.AddCommand(
+		newGitCleanCmd(),
+		newGitSmudgeCmd(),
+		newGitTextconvCmd(),
+		newGitMergeCmd(),
+		newDaemonCmd(),
+		newServiceCmd(),
+		newStatusCmd(),
+		newSyncCmd(),
+		newProjectsCmd(),
+	)
 	return root
 }
