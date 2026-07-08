@@ -6,7 +6,9 @@ toolchain go1.26.5
 
 require (
 	charm.land/fang/v2 v2.0.1
+	github.com/google/renameio/v2 v2.0.2
 	github.com/spf13/cobra v1.10.2
+	github.com/tink-crypto/tink-go/v2 v2.7.0
 )
 
 require (
@@ -34,4 +36,5 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	google.golang.org/protobuf v1.36.8 // indirect
 )
