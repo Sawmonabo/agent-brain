@@ -308,7 +308,7 @@ func toSummary(report engine.Report) *api.SyncSummary {
 }
 
 func (d *Daemon) checkoutState() string {
-	if info, err := os.Stat(filepath.Join(d.cfg.Paths.MemoriesDir(), ".git")); err == nil && info.IsDir() { //nolint:gosec // G703: MemoriesDir is the program-derived data-dir checkout location (config.Paths), not untrusted input
+	if info, err := os.Stat(filepath.Join(d.cfg.Paths.MemoriesDir(), ".git")); err == nil && info.IsDir() { //nolint:gosec // G304: MemoriesDir is the program-derived data-dir checkout location (config.Paths), not untrusted input
 		return "ready"
 	}
 	return "uninitialized"
