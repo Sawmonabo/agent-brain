@@ -43,3 +43,35 @@ func TestDefaultPathsPerOS(t *testing.T) {
 		t.Fatalf("DataDir = %q, want %q", paths.DataDir, wantData)
 	}
 }
+
+// TestDefaultPathsOverrideWithoutHome pins the filter-subprocess hardening:
+// when both dirs are injected via env, DefaultPaths must not depend on $HOME.
+// os.UserHomeDir returns "$HOME is not defined" for an empty HOME on
+// darwin/linux (verified against the installed os.UserHomeDir source,
+// go1.26.5), so an empty HOME models a git-spawned filter process that has no
+// home in its environment.
+func TestDefaultPathsOverrideWithoutHome(t *testing.T) {
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", "/tmp/cfg")
+	t.Setenv("AGENT_BRAIN_DATA_DIR", "/tmp/data")
+	t.Setenv("HOME", "")
+	paths, err := DefaultPaths()
+	if err != nil {
+		t.Fatalf("DefaultPaths() with both overrides must not depend on $HOME, got err: %v", err)
+	}
+	if paths.ConfigDir != "/tmp/cfg" || paths.DataDir != "/tmp/data" {
+		t.Fatalf("got %+v, want env-injected dirs", paths)
+	}
+}
+
+// TestDefaultPathsPartialOverrideNeedsHome guards that the override-first
+// reorder does not weaken the partial case: with only one dir injected, the
+// other still needs its OS default, so an unresolvable $HOME must still error
+// rather than silently yield an empty path.
+func TestDefaultPathsPartialOverrideNeedsHome(t *testing.T) {
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", "/tmp/cfg")
+	t.Setenv("AGENT_BRAIN_DATA_DIR", "")
+	t.Setenv("HOME", "")
+	if _, err := DefaultPaths(); err == nil {
+		t.Fatal("DefaultPaths() with only ConfigDir overridden and no $HOME must error; DataDir needs the OS default")
+	}
+}

@@ -17,27 +17,30 @@ type Paths struct {
 
 // DefaultPaths resolves per-OS defaults. AGENT_BRAIN_CONFIG_DIR and
 // AGENT_BRAIN_DATA_DIR override — required by tests and by filter processes
-// git spawns without our process environment conventions.
+// git spawns without our process environment conventions. The overrides are
+// consulted first: when both are set, $HOME is never read, so a fully-injected
+// filter subprocess resolves paths even with no home in its environment.
 func DefaultPaths() (Paths, error) {
+	configDir := os.Getenv("AGENT_BRAIN_CONFIG_DIR")
+	dataDir := os.Getenv("AGENT_BRAIN_DATA_DIR")
+	if configDir != "" && dataDir != "" {
+		return Paths{ConfigDir: configDir, DataDir: dataDir}, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return Paths{}, err
 	}
-	paths := Paths{
-		ConfigDir: filepath.Join(xdgDir("XDG_CONFIG_HOME", filepath.Join(home, ".config")), "agent-brain"),
+	if configDir == "" {
+		configDir = filepath.Join(xdgDir("XDG_CONFIG_HOME", filepath.Join(home, ".config")), "agent-brain")
 	}
-	if runtime.GOOS == "darwin" {
-		paths.DataDir = filepath.Join(home, "Library", "Application Support", "agent-brain")
-	} else {
-		paths.DataDir = filepath.Join(xdgDir("XDG_DATA_HOME", filepath.Join(home, ".local", "share")), "agent-brain")
+	if dataDir == "" {
+		if runtime.GOOS == "darwin" {
+			dataDir = filepath.Join(home, "Library", "Application Support", "agent-brain")
+		} else {
+			dataDir = filepath.Join(xdgDir("XDG_DATA_HOME", filepath.Join(home, ".local", "share")), "agent-brain")
+		}
 	}
-	if dir := os.Getenv("AGENT_BRAIN_CONFIG_DIR"); dir != "" {
-		paths.ConfigDir = dir
-	}
-	if dir := os.Getenv("AGENT_BRAIN_DATA_DIR"); dir != "" {
-		paths.DataDir = dir
-	}
-	return paths, nil
+	return Paths{ConfigDir: configDir, DataDir: dataDir}, nil
 }
 
 // Keyset returns the Tink keyset location (spec §5: beside config.toml).
