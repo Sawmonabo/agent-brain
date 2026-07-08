@@ -101,7 +101,10 @@ func write(path string, handle *keyset.Handle) error {
 		return fmt.Errorf("serialize keyset: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+		return fmt.Errorf("create config dir: %w", err)
 	}
-	return renameio.WriteFile(path, buf.Bytes(), 0o600)
+	if err := renameio.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write keyset: %w", err)
+	}
+	return nil
 }
