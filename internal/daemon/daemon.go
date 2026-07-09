@@ -18,6 +18,7 @@ import (
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
+	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/engine"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
@@ -59,6 +60,14 @@ type Config struct {
 	// Logger overrides the file logger (tests). nil → JSON logger on
 	// the size-rotated DaemonLogFile.
 	Logger *slog.Logger
+	// BinaryPath overrides what doctor.SafetyGate expects the filter wiring
+	// to point at. Empty (production) means Run resolves os.Executable()
+	// itself. A test that spawns a real git filter subprocess must set this
+	// to a genuine binary — never a compiled test binary: os.Executable()
+	// inside a test process IS that test binary, and wiring a git filter at
+	// it recurses the whole suite without bound (internal/daemon/
+	// daemon_test.go's TestMain tripwire and testBinaryPath doc comment).
+	BinaryPath string
 }
 
 type syncRequest struct {
@@ -88,11 +97,17 @@ type adminReply struct {
 type Daemon struct {
 	cfg Config
 
-	mu        sync.Mutex
-	startedAt time.Time
-	state     string
-	lastSync  *api.SyncSummary
-	degraded  map[string]bool
+	// binaryPath is os.Executable(), resolved once at the top of Run and
+	// read-only thereafter (set before the API server or loop goroutine
+	// starts) — what doctor.SafetyGate checks the filter wiring points at.
+	binaryPath string
+
+	mu          sync.Mutex
+	startedAt   time.Time
+	state       string
+	stateDetail string
+	lastSync    *api.SyncSummary
+	degraded    map[string]bool
 
 	syncRequests  chan syncRequest
 	adminRequests chan adminRequest
@@ -129,6 +144,16 @@ func SocketPathForClient() (string, error) {
 // startup fails. Startup order matters: runtime dir → flock → logging →
 // rlimit → engine → registry → API → loop (which owns the watcher).
 func (d *Daemon) Run(ctx context.Context) error {
+	binaryPath := d.cfg.BinaryPath
+	if binaryPath == "" {
+		resolved, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve binary path: %w", err)
+		}
+		binaryPath = resolved
+	}
+	d.binaryPath = binaryPath
+
 	runtimeDir, err := config.RuntimeDir()
 	if err != nil {
 		return err
@@ -198,6 +223,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
+	// The gate must be evaluated, and d.state/d.stateDetail populated,
+	// BEFORE the API server starts accepting connections: a client hitting
+	// /v0/status the instant the socket opens must never observe the
+	// constructor's "uninitialized" default racing a SafetyGate check that
+	// spawns several git subprocesses and can take a perceptible moment,
+	// rather than the real, current answer.
+	d.mu.Lock()
+	d.startedAt = time.Now().UTC()
+	d.mu.Unlock()
+	state, _ := d.refreshState(ctx)
+
 	listener, err := listenSocket(socketPath)
 	if err != nil {
 		return err
@@ -209,11 +245,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		}
 	}()
 
-	d.mu.Lock()
-	d.startedAt = time.Now().UTC()
-	d.state = d.checkoutState()
-	d.mu.Unlock()
-	logger.Info("daemon started", "version", d.cfg.Version, "socket", socketPath, "state", d.checkoutState())
+	logger.Info("daemon started", "version", d.cfg.Version, "socket", socketPath, "state", state)
 
 	d.loop(ctx, syncEngine, logger, initial.Units)
 
@@ -424,17 +456,14 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 	if err := rotateIfOversized(d.cfg.Paths.ConflictLogFile(), maxConflictLogSize); err != nil {
 		logger.Warn("rotate conflict log", "error", err)
 	}
-	if d.checkoutState() != "ready" {
-		d.mu.Lock()
-		d.state = "uninitialized"
-		d.mu.Unlock()
+	if state, _ := d.refreshState(ctx); state != "ready" {
 		return nil, nil, false
 	}
 	registry, err := repo.LoadLocalRegistry(d.cfg.Paths.LocalRegistryFile())
 	if err != nil {
 		logger.Error("load local registry", "error", err)
 		summary := &api.SyncSummary{At: time.Now().UTC(), Error: err.Error()}
-		d.record(summary)
+		d.record(ctx, summary)
 		return summary, nil, false
 	}
 	// A filtered manual cycle syncs only the named folder's units, but the
@@ -453,7 +482,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 		logger.Info("sync cycle", "reason", reason,
 			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
 	}
-	d.record(summary)
+	d.record(ctx, summary)
 	return summary, registry.Units, true
 }
 
@@ -493,10 +522,10 @@ func enrolledFolders(units []repo.Unit) []string {
 	return folders
 }
 
-func (d *Daemon) record(summary *api.SyncSummary) {
+func (d *Daemon) record(ctx context.Context, summary *api.SyncSummary) {
+	d.refreshState(ctx)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.state = d.checkoutState()
 	d.lastSync = summary
 	d.degraded = map[string]bool{}
 	for _, folder := range summary.Degraded {
@@ -517,11 +546,31 @@ func toSummary(report engine.Report) *api.SyncSummary {
 	}
 }
 
-func (d *Daemon) checkoutState() string {
-	if info, err := os.Stat(filepath.Join(d.cfg.Paths.MemoriesDir(), ".git")); err == nil && info.IsDir() { //nolint:gosec // G304: MemoriesDir is the program-derived data-dir checkout location (config.Paths), not untrusted input
-		return "ready"
+// checkoutState IS the daemon's readiness gate (spec §5: "the daemon
+// refuses to sync until doctor passes"), evaluated fresh before every
+// cycle and admin op via doctor.SafetyGate's checkout+keyset+filters+
+// attributes battery. detail names the broken axis (e.g. "doctor:
+// keyset: ...") and is "" when state is "ready".
+func (d *Daemon) checkoutState(ctx context.Context) (state, detail string) {
+	if err := doctor.SafetyGate(ctx, d.cfg.Paths, d.cfg.Registry, d.binaryPath); err != nil {
+		return "uninitialized", err.Error()
 	}
-	return "uninitialized"
+	return "ready", ""
+}
+
+// refreshState evaluates checkoutState and records the result for Status
+// (StateDetail is part of the wire contract, api.StatusResponse), then
+// returns it so the caller can act on it immediately. Every call site that
+// pays for a gate evaluation refreshes what Status reports through this —
+// a failed TriggerSync/submitAdmin probe must be visible to the NEXT
+// client that asks, not just embedded in the error the asking client got.
+func (d *Daemon) refreshState(ctx context.Context) (state, detail string) {
+	state, detail = d.checkoutState(ctx)
+	d.mu.Lock()
+	d.state = state
+	d.stateDetail = detail
+	d.mu.Unlock()
+	return state, detail
 }
 
 func hostname() string {
@@ -539,11 +588,12 @@ func (d *Daemon) Status() api.StatusResponse {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return api.StatusResponse{
-		Version:   d.cfg.Version,
-		State:     d.state,
-		PID:       os.Getpid(),
-		StartedAt: d.startedAt,
-		LastSync:  d.lastSync,
+		Version:     d.cfg.Version,
+		State:       d.state,
+		StateDetail: d.stateDetail,
+		PID:         os.Getpid(),
+		StartedAt:   d.startedAt,
+		LastSync:    d.lastSync,
 	}
 }
 
@@ -552,8 +602,8 @@ func (d *Daemon) Status() api.StatusResponse {
 // cancels the cycle itself. A non-empty project filters the cycle to that
 // repo folder; an unknown folder is a 400 naming the enrolled folders.
 func (d *Daemon) TriggerSync(ctx context.Context, project string) (api.SyncResponse, error) {
-	if d.checkoutState() != "ready" {
-		return api.SyncResponse{}, errNotInitialized
+	if state, detail := d.refreshState(ctx); state != "ready" {
+		return api.SyncResponse{}, fmt.Errorf("%w: %s", errNotInitialized, detail)
 	}
 	if project != "" {
 		// Validate the folder off the engine goroutine (a read, like
@@ -613,8 +663,8 @@ func (d *Daemon) Projects() api.ProjectsResponse {
 // bounded for its reply. The op itself is fast local git work; the wait
 // absorbs the time it queues behind any running cycle.
 func (d *Daemon) submitAdmin(ctx context.Context, reason string, run func(context.Context, *engine.Engine) (any, error)) (any, error) {
-	if d.checkoutState() != "ready" {
-		return nil, errNotInitialized
+	if state, detail := d.refreshState(ctx); state != "ready" {
+		return nil, fmt.Errorf("%w: %s", errNotInitialized, detail)
 	}
 	request := adminRequest{reason: reason, run: run, reply: make(chan adminReply, 1)}
 	timeout := time.After(adminWaitTimeout)

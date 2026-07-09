@@ -31,13 +31,15 @@ type SyncSummary struct {
 // memories checkout exists and cycles run, "uninitialized" when the
 // daemon is up but the repo hasn't been provisioned yet (init is a
 // Phase-3 command; the Phase-2 daemon must be honest about that state,
-// not crash-loop on it).
+// not crash-loop on it). StateDetail names the specific broken axis (e.g.
+// "doctor: keyset: ...") when State is "uninitialized" — empty when ready.
 type StatusResponse struct {
-	Version   string       `json:"version"`
-	State     string       `json:"state"`
-	PID       int          `json:"pid"`
-	StartedAt time.Time    `json:"started_at"`
-	LastSync  *SyncSummary `json:"last_sync,omitempty"`
+	Version     string       `json:"version"`
+	State       string       `json:"state"`
+	StateDetail string       `json:"state_detail,omitempty"`
+	PID         int          `json:"pid"`
+	StartedAt   time.Time    `json:"started_at"`
+	LastSync    *SyncSummary `json:"last_sync,omitempty"`
 }
 
 // SyncRequest is the optional POST /v0/sync body (spec §7:

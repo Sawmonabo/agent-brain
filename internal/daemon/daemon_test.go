@@ -3,7 +3,9 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,10 +16,63 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/daemon"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
+	"github.com/Sawmonabo/agent-brain/internal/keys"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
+
+// testBinaryPath is a REAL, freshly built agent-brain binary (see TestMain).
+// Every fixture that wires filter.agentbrain.clean/smudge (gitx.InstallFilters)
+// must point it at THIS, never at os.Executable(). Inside a test process,
+// os.Executable() IS the compiled daemon.test binary — wiring a git filter
+// at it means git invokes daemon.test as its own clean/smudge driver. A Go
+// test binary given an unrecognized positional arg ("git-clean") does not
+// error; it falls through to running the whole suite again, and with no
+// -test.timeout (only `go test` injects that — a git-spawned subprocess
+// bypasses it entirely), each nested run reinstalls filters pointing at
+// itself and recurses without bound. That is what happened on 2026-07-08:
+// ~70GB of nested `go test` processes and a hard reboot. testBinaryPath
+// removes the cause; TestMain's tripwire below is the backstop that turns
+// any recurrence into one loud, immediate failure instead of a repeat.
+var testBinaryPath string
+
+// TestMain's FIRST action, before the testing package's own flag parsing or
+// m.Run(), must be the tripwire above: a git filter invocation would arrive
+// as a bare positional arg, which nothing else in this file inspects this
+// early. See testBinaryPath's doc comment for the incident this prevents.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "git-clean", "git-smudge", "git-textconv", "git-merge":
+			fmt.Fprintln(os.Stderr, "daemon.test invoked as a git filter — a fixture wired filter config at the test binary; see the 2026-07-08 fork-bomb incident (testBinaryPath's doc comment, this file)")
+			os.Exit(1)
+		}
+	}
+	os.Exit(testMain(m))
+}
+
+// testMain builds the real binary testBinaryPath points at, then runs the
+// suite. Building once per package-test-run (not per fixture) keeps every
+// daemon test's filter wiring pointed at the same real binary at near-zero
+// added cost.
+func testMain(m *testing.M) int {
+	root, err := os.MkdirTemp("", "agent-brain-daemon-test-*")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+
+	testBinaryPath = filepath.Join(root, "agent-brain")
+	build := exec.Command("go", "build", "-o", testBinaryPath, "../../cmd/agent-brain")
+	if out, err := build.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "build: %v\n%s", err, out)
+		return 1
+	}
+
+	return m.Run()
+}
 
 // Settings floors are a LoadSettings contract; tests construct the
 // struct directly to run fast cycles.
@@ -82,6 +137,12 @@ func provisionMemories(t *testing.T) (config.Paths, string) {
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	paths := config.Paths{ConfigDir: filepath.Join(base, "cfg"), DataDir: filepath.Join(base, "data")}
 	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", filepath.Join(base, "run"))
+	// The git-spawned filter/merge subprocess (testBinaryPath) is a separate
+	// real process — it resolves its own keyset location via
+	// config.DefaultPaths(), inheriting only the environment, not this
+	// test's paths variable. AGENT_BRAIN_CONFIG_DIR is how it finds THIS
+	// fixture's keyset rather than falling through to a real one.
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", paths.ConfigDir)
 
 	bare := filepath.Join(base, "remote.git")
 	checkout := paths.MemoriesDir()
@@ -92,6 +153,19 @@ func provisionMemories(t *testing.T) (config.Paths, string) {
 	mustGit(t, base, "clone", bare, checkout)
 	mustGit(t, checkout, "config", "user.name", "daemon-test")
 	mustGit(t, checkout, "config", "user.email", "daemon-test@example.invalid")
+
+	// checkoutState is doctor.SafetyGate (spec §5): every fixture needs a
+	// real keyset and filter wiring, or every daemon test would find the
+	// machine "uninitialized" regardless of what it actually exercises.
+	// binaryPath is testBinaryPath (see its doc comment) — NEVER
+	// os.Executable(), which inside this test process is daemon.test itself.
+	if err := keys.Generate(paths.Keyset()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitx.InstallFilters(context.Background(), checkout, testBinaryPath); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := repo.WriteAttributes(repo.NewLayout(checkout), testRegistry(t)); err != nil {
 		t.Fatal(err)
 	}
@@ -124,10 +198,11 @@ func newDaemonEnv(t *testing.T) (config.Paths, repo.Unit) {
 func startDaemon(t *testing.T, paths config.Paths) *api.Client {
 	t.Helper()
 	d, err := daemon.New(daemon.Config{
-		Paths:    paths,
-		Settings: fastSettings(),
-		Registry: testRegistry(t),
-		Version:  "test",
+		Paths:      paths,
+		Settings:   fastSettings(),
+		Registry:   testRegistry(t),
+		Version:    "test",
+		BinaryPath: testBinaryPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +304,7 @@ func TestSecondDaemonRefusesToStart(t *testing.T) {
 	paths, _ := newDaemonEnv(t)
 	startDaemon(t, paths)
 
-	second, err := daemon.New(daemon.Config{Paths: paths, Settings: fastSettings(), Registry: testRegistry(t), Version: "test"})
+	second, err := daemon.New(daemon.Config{Paths: paths, Settings: fastSettings(), Registry: testRegistry(t), Version: "test", BinaryPath: testBinaryPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +333,68 @@ func TestDaemonUninitializedRepoIsHonest(t *testing.T) {
 	if _, err := client.Sync(context.Background(), ""); err == nil ||
 		!strings.Contains(err.Error(), "not initialized") {
 		t.Fatalf("sync on uninitialized repo: err = %v, want actionable message", err)
+	}
+}
+
+// TestDaemonStateDetailNamesBrokenAxisAndClearsOnHeal exercises StateDetail
+// (api.StatusResponse) end to end: a machine that goes bad WHILE the daemon
+// is running must have the broken axis visible to the next Status() caller,
+// not just embedded in the error the probe that discovered it received. That
+// is what refreshState (daemon.go) exists for — every checkoutState call
+// site persists what it saw before acting on it.
+func TestDaemonStateDetailNamesBrokenAxisAndClearsOnHeal(t *testing.T) {
+	paths, _ := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "ready" || status.StateDetail != "" {
+		t.Fatalf("status = %+v, want ready with empty StateDetail", status)
+	}
+
+	attributesFile := repo.NewLayout(paths.MemoriesDir()).AttributesFile()
+	if err := os.WriteFile(attributesFile, []byte("corrupted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sync attempt is what evaluates the gate (TriggerSync ->
+	// refreshState) and discovers the breakage; its error names the axis...
+	if _, err := client.Sync(context.Background(), ""); err == nil ||
+		!strings.Contains(err.Error(), "attributes") {
+		t.Fatalf("sync on corrupted attributes: err = %v, want a message naming attributes", err)
+	}
+
+	// ...and a Status() call that follows, with no sync in between, must
+	// report the SAME finding — proving refreshState persisted it rather
+	// than the caller only learning it from the returned error.
+	status, err = client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "uninitialized" || !strings.Contains(status.StateDetail, "attributes") {
+		t.Fatalf("status = %+v, want uninitialized with StateDetail naming attributes", status)
+	}
+
+	if err := repo.WriteAttributes(repo.NewLayout(paths.MemoriesDir()), testRegistry(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	syncResp, err := client.Sync(context.Background(), "")
+	if err != nil {
+		t.Fatalf("sync after healing attributes: %v", err)
+	}
+	if syncResp.Status != "completed" {
+		t.Fatalf("sync after heal = %+v, want completed", syncResp)
+	}
+
+	status, err = client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "ready" || status.StateDetail != "" {
+		t.Fatalf("status after heal = %+v, want ready with empty StateDetail", status)
 	}
 }
 
