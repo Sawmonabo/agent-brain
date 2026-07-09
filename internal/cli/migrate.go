@@ -17,13 +17,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/claude"
 )
-
-// preflightTimeout bounds the chezmoi diff subprocess (spec §10).
-const preflightTimeout = 30 * time.Second
 
 func newMigrateCmd() *cobra.Command {
 	var skipPreflight, yes bool
@@ -47,8 +45,13 @@ func newMigrateCmd() *cobra.Command {
 					return err
 				}
 			} else {
+				settings, err := config.LoadSettings(deps.paths.SettingsFile())
+				if err != nil {
+					return err
+				}
 				chezmoiConfigPath := filepath.Join(deps.paths.ConfigDir, "chezmoi.toml")
-				if err := runMigratePreflight(cmd.Context(), chezmoiConfigPath); err != nil {
+				preflightTimeout := time.Duration(settings.Migrate.PreflightTimeout)
+				if err := runMigratePreflight(cmd.Context(), chezmoiConfigPath, preflightTimeout); err != nil {
 					return err
 				}
 			}
@@ -90,8 +93,11 @@ type migrateCallbacks struct {
 // source-only orphan straight into the seed this command is about to
 // read. Absent config (this machine never ran the bash system, or already
 // retired it) passes silently; present config demands an EMPTY diff —
-// anything else, or a missing chezmoi binary, refuses.
-func runMigratePreflight(ctx context.Context, chezmoiConfigPath string) error {
+// anything else, or a missing chezmoi binary, refuses. timeout comes from
+// config.MigrateSettings.PreflightTimeout (default 30s) — a cold NFS home
+// or a huge legacy tree can exceed a fixed timeout with no operator
+// recourse, so the caller resolves it from settings rather than a const.
+func runMigratePreflight(ctx context.Context, chezmoiConfigPath string, timeout time.Duration) error {
 	if _, err := os.Stat(chezmoiConfigPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -99,7 +105,7 @@ func runMigratePreflight(ctx context.Context, chezmoiConfigPath string) error {
 		return err
 	}
 
-	timeoutCtx, cancel := context.WithTimeout(ctx, preflightTimeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	//nolint:gosec // G204: "chezmoi" is a constant; chezmoiConfigPath is program-resolved (config.DefaultPaths), not untrusted input

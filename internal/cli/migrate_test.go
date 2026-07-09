@@ -38,9 +38,15 @@ func withFakeChezmoiOnPath(t *testing.T, script string) {
 
 // --- runMigratePreflight ---
 
+// defaultTestPreflightTimeout stands in for config.DefaultSettings()'s
+// migrate.preflight_timeout (30s) wherever a test doesn't care about the
+// timeout value itself — only TestRunMigratePreflightHonorsConfiguredTimeout
+// exercises the deadline directly.
+const defaultTestPreflightTimeout = 30 * time.Second
+
 func TestRunMigratePreflightPassesWhenConfigAbsent(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "chezmoi.toml") // never created
-	if err := runMigratePreflight(context.Background(), configPath); err != nil {
+	if err := runMigratePreflight(context.Background(), configPath, defaultTestPreflightTimeout); err != nil {
 		t.Fatalf("runMigratePreflight with absent config: %v", err)
 	}
 }
@@ -51,7 +57,7 @@ func TestRunMigratePreflightPassesOnEmptyDiff(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runMigratePreflight(context.Background(), configPath); err != nil {
+	if err := runMigratePreflight(context.Background(), configPath, defaultTestPreflightTimeout); err != nil {
 		t.Fatalf("runMigratePreflight with empty diff: %v", err)
 	}
 }
@@ -62,7 +68,7 @@ func TestRunMigratePreflightRefusesOnNonEmptyDiff(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := runMigratePreflight(context.Background(), configPath)
+	err := runMigratePreflight(context.Background(), configPath, defaultTestPreflightTimeout)
 	if err == nil {
 		t.Fatal("runMigratePreflight: want refusal on non-empty diff")
 	}
@@ -77,8 +83,33 @@ func TestRunMigratePreflightRefusesWhenChezmoiBinaryMissing(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := runMigratePreflight(context.Background(), configPath); err == nil {
+	if err := runMigratePreflight(context.Background(), configPath, defaultTestPreflightTimeout); err == nil {
 		t.Fatal("runMigratePreflight: want refusal when chezmoi binary is missing")
+	}
+}
+
+// TestRunMigratePreflightHonorsConfiguredTimeout proves the timeout
+// argument — not a hardcoded const — bounds the chezmoi subprocess: a
+// fake chezmoi that sleeps far longer than the configured timeout must
+// still make runMigratePreflight return well before the sleep elapses
+// (spec §10; a cold NFS home or a huge legacy tree must be able to raise
+// this past the old fixed 30s via config.MigrateSettings).
+func TestRunMigratePreflightHonorsConfiguredTimeout(t *testing.T) {
+	withFakeChezmoiOnPath(t, `sleep 2; exit 0`)
+	configPath := filepath.Join(t.TempDir(), "chezmoi.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	err := runMigratePreflight(context.Background(), configPath, 50*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("runMigratePreflight: want a timeout error, got nil")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("runMigratePreflight took %v to return — the configured 50ms timeout was not honored (fake chezmoi sleeps 2s)", elapsed)
 	}
 }
 

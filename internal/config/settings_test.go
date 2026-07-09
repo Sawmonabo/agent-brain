@@ -64,6 +64,85 @@ func TestLoadSettingsParsesAndValidates(t *testing.T) {
 	}
 }
 
+// TestLoadSettingsMigratePreflightTimeoutDefaultsTo30s pins spec §10's
+// pre-flight timeout default absent any [migrate] table — the same
+// treatment TestLoadSettingsMissingFileYieldsDefaults gives [sync].
+func TestLoadSettingsMigratePreflightTimeoutDefaultsTo30s(t *testing.T) {
+	t.Parallel()
+	got, err := config.LoadSettings(filepath.Join(t.TempDir(), "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Duration(got.Migrate.PreflightTimeout) != 30*time.Second {
+		t.Fatalf("default migrate.preflight_timeout = %v, want 30s", time.Duration(got.Migrate.PreflightTimeout))
+	}
+}
+
+// TestLoadSettingsMigratePreflightTimeoutParses proves a [migrate] table
+// overrides the default exactly like [sync]'s durations do.
+func TestLoadSettingsMigratePreflightTimeoutParses(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[migrate]\npreflight_timeout = \"2m\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.LoadSettings(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Duration(got.Migrate.PreflightTimeout) != 2*time.Minute {
+		t.Fatalf("migrate.preflight_timeout = %v, want 2m", time.Duration(got.Migrate.PreflightTimeout))
+	}
+}
+
+// TestLoadSettingsMigratePreflightTimeoutAcceptsCeilingExactly proves the
+// ≤10m bound is inclusive.
+func TestLoadSettingsMigratePreflightTimeoutAcceptsCeilingExactly(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[migrate]\npreflight_timeout = \"10m\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadSettings(p); err != nil {
+		t.Fatalf("LoadSettings() rejected preflight_timeout = 10m (bound is inclusive): %v", err)
+	}
+}
+
+// TestLoadSettingsMigratePreflightTimeoutValidation proves out-of-bounds
+// values are rejected with an error naming the violated bound — a typo'd
+// "11m" or a "0s" must never silently apply (same strictness rationale
+// as LoadSettings' doc comment: an ignored setting is worse than a loud
+// refusal).
+func TestLoadSettingsMigratePreflightTimeoutValidation(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, content string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	cases := []struct{ name, content, wantErrSubstr string }{
+		{"zero", "[migrate]\npreflight_timeout = \"0s\"\n", "greater than 0"},
+		{"negative", "[migrate]\npreflight_timeout = \"-1s\"\n", "greater than 0"},
+		{"over ceiling", "[migrate]\npreflight_timeout = \"11m\"\n", "10m0s ceiling"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.LoadSettings(write(t, tc.content))
+			if err == nil {
+				t.Fatalf("LoadSettings() accepted %s; want error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+				t.Fatalf("LoadSettings() error = %q, want it to contain %q (bounds must be named)", err, tc.wantErrSubstr)
+			}
+		})
+	}
+}
+
 // TestLoadSettingsProviderOverridesRoundTrip pins the [providers.codex]
 // override shape (spec §6: Codex's classification table is
 // config-overridable so upstream format drift is absorbed without a
