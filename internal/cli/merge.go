@@ -66,10 +66,10 @@ func logConflict(pathname string) {
 		return
 	}
 	defer func() { _ = file.Close() }()
-	line, err := json.Marshal(map[string]string{
-		"time": time.Now().UTC().Format(time.RFC3339),
-		"path": pathname,
-		"mode": "fact",
+	line, err := json.Marshal(conflictRecord{
+		Time: time.Now().UTC().Format(time.RFC3339),
+		Path: pathname,
+		Mode: "fact",
 	})
 	if err != nil {
 		return

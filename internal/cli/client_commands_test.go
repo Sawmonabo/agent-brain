@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
@@ -118,5 +122,98 @@ func TestClientCommandsExplainDeadDaemon(t *testing.T) {
 		t.Fatal("status against dead daemon succeeded")
 	} else if !bytes.Contains([]byte(err.Error()), []byte("service install")) {
 		t.Fatalf("error lacks guidance: %v", err)
+	}
+}
+
+func TestProjectsEmptyStateNamesTrack(t *testing.T) {
+	startFakeDaemon(t, api.StatusResponse{}, api.SyncResponse{}, api.ProjectsResponse{})
+	out := runCommand(t, "projects")
+	if !strings.Contains(out, "agent-brain track") {
+		t.Fatalf("empty-projects message must name `agent-brain track`:\n%s", out)
+	}
+}
+
+// TestStatusJSONDecodesToAPIType proves `status --json` marshals the exact
+// daemon/api.StatusResponse the client received — not a hand-shaped subset.
+func TestStatusJSONDecodesToAPIType(t *testing.T) {
+	want := api.StatusResponse{
+		Version: "9.9.9", State: "ready", PID: 123,
+		LastSync: &api.SyncSummary{Pushed: true, Commits: []string{"memory: a"}},
+	}
+	startFakeDaemon(t, want, api.SyncResponse{}, api.ProjectsResponse{})
+	out := runCommand(t, "status", "--json")
+	var got api.StatusResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("status --json output does not decode into api.StatusResponse: %v\n%s", err, out)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("status --json (-want +got):\n%s", diff)
+	}
+}
+
+// TestProjectsJSONDecodesToAPIType proves `projects --json` marshals the
+// exact daemon/api.ProjectsResponse, including on the empty-units case
+// (--json must never substitute the friendly empty-state text).
+func TestProjectsJSONDecodesToAPIType(t *testing.T) {
+	want := api.ProjectsResponse{Units: []api.UnitInfo{
+		{Provider: "claude", Folder: "alpha", LocalDir: "/p/.claude/memory", Degraded: true},
+	}}
+	startFakeDaemon(t, api.StatusResponse{}, api.SyncResponse{}, want)
+	out := runCommand(t, "projects", "--json")
+	var got api.ProjectsResponse
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("projects --json output does not decode into api.ProjectsResponse: %v\n%s", err, out)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("projects --json (-want +got):\n%s", diff)
+	}
+}
+
+// TestNewAPIClientPreChecksSocketPath proves the socket path is validated
+// BEFORE any dial is attempted: an oversized AGENT_BRAIN_RUNTIME_DIR must
+// fail with guidance naming the env var, not a bare dial/EINVAL error.
+func TestNewAPIClientPreChecksSocketPath(t *testing.T) {
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", strings.Repeat("x", 200))
+	_, err := newAPIClient()
+	if err == nil {
+		t.Fatal("newAPIClient with an oversized runtime dir must fail before dialing")
+	}
+	if !strings.Contains(err.Error(), "AGENT_BRAIN_RUNTIME_DIR") {
+		t.Fatalf("socket pre-check error must name the fix: %v", err)
+	}
+}
+
+// TestSyncProjectFlagSendsFilter proves `sync --project x` reaches the
+// daemon as Task 7's SyncRequest{Project: "x"} body.
+func TestSyncProjectFlagSendsFilter(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", dir)
+
+	var gotBody string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/sync", func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		gotBody = string(data)
+		_ = json.NewEncoder(w).Encode(api.SyncResponse{Status: "completed"})
+	})
+	listener, err := net.Listen("unix", filepath.Join(dir, "agent-brain.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	})
+
+	runCommand(t, "sync", "--project", "x")
+	if !strings.Contains(gotBody, `"project":"x"`) {
+		t.Fatalf("sync --project x did not send the filter in the request body: %q", gotBody)
 	}
 }

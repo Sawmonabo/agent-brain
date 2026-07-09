@@ -27,6 +27,8 @@ func Root() *cobra.Command {
 		newSyncCmd(),
 		newProjectsCmd(),
 		newDoctorCmd(),
+		newKeyCmd(),
+		newConflictsCmd(),
 	)
 	return root
 }
