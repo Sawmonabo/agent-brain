@@ -1,0 +1,26 @@
+# doctor_fix.txt — doctor detects a corrupted root .gitattributes and repairs
+# it. The daemon runs so the daemon check passes; with the attributes healed
+# and no project enrolled, every remaining check is OK/WARN, so --fix exits 0.
+
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+exec agent-brain daemon run &daemon&
+waitdaemon
+
+# Corrupt the checkout's root .gitattributes. Nothing is enrolled, so no daemon
+# cycle rewrites it before doctor reads it (the post-integrate heal only runs
+# after a real integrate, which a single machine never triggers).
+cp corrupt-attrs.txt $WORK/data/memories/.gitattributes
+
+# doctor exits non-zero and names the attributes check as FAIL.
+! exec agent-brain doctor
+stdout 'FAIL\s+attributes'
+
+# --fix rewrites .gitattributes to canonical content and re-checks clean.
+exec agent-brain doctor --fix
+stdout 'attributes'
+! stdout 'FAIL\s+attributes'
+
+stopdaemon
+
+-- corrupt-attrs.txt --
+* -filter -diff -merge

@@ -1,0 +1,27 @@
+# init_first_machine.txt — the first-run wizard, then a second run to prove
+# init is idempotent (re-running never re-provisions or errors).
+
+# First run: full provisioning against the fake gh + local bare mirror.
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+stdout 'gh: authenticated as fakeuser'
+stdout 'repo: created fakeuser/agent-brain-memories'
+stdout 'repo state: initialized a fresh checkout'
+stdout 'config: wrote defaults to'
+stdout 'service: skipped'
+stdout 'enroll: no new memory roots discovered'
+
+# The local clone left origin at the file mirror; real `gh` leaves it at the
+# GitHub URL. Point it there so the idempotent re-run's origin-identity check
+# (verifyExistingCheckoutOrigin) sees exactly what production sees. This
+# mirrors internal/cli/init_test.go's own between-runs origin fixup.
+exec git -C $WORK/data/memories remote set-url origin https://github.com/fakeuser/agent-brain-memories
+
+# Second run: idempotent. No repo creation, no re-provision — the keyset is
+# validated (never regenerated), the checkout is recognized as ours, and the
+# config file is left untouched (ADR 17 write-once).
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+stdout 'keyset: found at .* validated'
+stdout 'repo: existing checkout at .* matches fakeuser/agent-brain-memories'
+stdout 'repo state: joined existing checkout'
+stdout 'config: found at .* left untouched'
+! stdout 'repo: created'

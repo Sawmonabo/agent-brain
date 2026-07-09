@@ -1,0 +1,39 @@
+# key_roundtrip.txt — export the keyset, import it under a SECOND config dir,
+# and prove parity functionally: the imported keyset smudges a file that was
+# cleaned (encrypted) under the original keyset back to its exact plaintext.
+
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+
+# Commit a secret into the memories checkout. The default `* filter=agentbrain`
+# line cleans (encrypts) it under machine A's keyset.
+cp secret.md $WORK/data/memories/secret.md
+exec git -C $WORK/data/memories add secret.md
+exec git -C $WORK/data/memories commit --quiet -m 'memory: secret under keyset A'
+
+# The stored object is ciphertext (magic prefix), never the plaintext.
+exec git -C $WORK/data/memories cat-file blob HEAD:secret.md
+stdout 'agb1'
+! stdout 'launch code'
+
+# Export the armored keyset; capture ONLY stdout (the recovery reminder goes to
+# stderr, so it never pollutes the pipe).
+exec agent-brain key export
+cp stdout armored.txt
+
+# Point config at a fresh, keyset-less dir and import the armored keyset there.
+env AGENT_BRAIN_CONFIG_DIR=$WORK/config2
+stdin armored.txt
+exec agent-brain key import --force
+stdout 'keyset imported'
+
+# Parity: with config now resolving ONLY the imported keyset, force a fresh
+# smudge of the committed ciphertext. If it reproduces the original plaintext
+# byte-for-byte, the imported keyset decrypts what the original encrypted.
+rm $WORK/data/memories/secret.md
+exec git -C $WORK/data/memories checkout -- secret.md
+cmp $WORK/data/memories/secret.md secret.md
+
+-- secret.md --
+# memory
+
+the launch code is swordfish

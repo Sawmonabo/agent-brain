@@ -1,0 +1,41 @@
+# track_and_sync.txt — the daily-driver loop end-to-end: init, start the
+# daemon, enroll a real project's memory dir, sync, and prove the memory blob
+# lands on the remote as ciphertext (never plaintext).
+
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+exec agent-brain daemon run &daemon&
+waitdaemon
+
+# A real project with a git remote (so it is NOT remoteless) and a live Claude
+# memory dir seeded with a sentinel fact. mkclaudememory computes the dynamic
+# ~/.claude/projects/<slug>/memory path (the slug is the dash-encoded absolute
+# project path — impossible to write literally in a txtar file) and drops the
+# fixture there.
+exec git init $WORK/proj
+exec git -C $WORK/proj remote add origin git@github.com:fakeuser/proj.git
+mkclaudememory $WORK/proj memory-fixture.md topic.md
+
+# track <path> confirms the resolved project path through a huh prompt; an
+# empty stdin line accepts the default (the path we passed). The project has a
+# remote, so it enrolls without a folder-name prompt.
+stdin empty.txt
+exec agent-brain track $WORK/proj
+stdout 'enroll: .*/memory -> proj'
+
+# An explicit sync is the synchronization barrier: when it returns, the daemon
+# has completed a full cycle (mirror-in, commit, push) for the enrolled unit.
+exec agent-brain sync
+stdout 'sync completed'
+
+exec agent-brain projects
+stdout 'claude\s+proj\s+ok'
+
+# The load-bearing safety assertion: the memory blob on the remote is
+# agent-brain ciphertext and the plaintext sentinel never appears in it.
+remoteblob proj/claude/topic.md !plaintext sentinel
+
+stopdaemon
+
+-- memory-fixture.md --
+the sentinel memory line
+-- empty.txt --

@@ -1,0 +1,43 @@
+# migrate.txt — the one-time bash-era import (spec §10). A legacy
+# ~/.agent-brain/<slug> tree is seeded as the first commit; the live Claude
+# memory dir then mirrors in as the overlay commit ON TOP of the seed. The
+# slug -work-proj reverses (GuessPath) to the nonexistent /work/proj, so the
+# project is remoteless and migrate prompts for a folder name.
+
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+exec agent-brain daemon run &daemon&
+waitdaemon
+
+# The legacy seed tree (what the retired bash system left behind).
+mkdir $HOME/.agent-brain/-work-proj
+cp legacy-fixture.md $HOME/.agent-brain/-work-proj/legacy-note.md
+
+# The live Claude memory dir for the same project — its content becomes the
+# overlay layer the enrollment cycle mirrors in over the seed.
+mkdir $HOME/.claude/projects/-work-proj/memory
+cp live-fixture.md $HOME/.claude/projects/-work-proj/memory/live-note.md
+
+# --yes auto-accepts the path guess (/work/proj); the remoteless project still
+# prompts for a folder name, which we answer over stdin.
+stdin foldername.txt
+exec agent-brain migrate --yes
+stdout 'migrate: -work-proj -> proj \(seeded 1 file'
+stdout 'migrate: done'
+
+# Ordering proof (spec §10 step 4): in oldest-first history the seed commit
+# lands BEFORE the live overlay's memory commit.
+exec git -C $WORK/data/memories log --format=%s --reverse
+stdout '(?s)migrate: seed proj from.*memory: .* proj '
+
+# Both layers are ciphertext on the remote; neither sentinel leaks.
+remoteblob proj/claude/legacy-note.md !plaintext legacy-sentinel
+remoteblob proj/claude/live-note.md !plaintext live-sentinel
+
+stopdaemon
+
+-- legacy-fixture.md --
+legacy-sentinel from the bash era
+-- live-fixture.md --
+live-sentinel from the current session
+-- foldername.txt --
+proj
