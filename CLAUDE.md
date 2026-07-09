@@ -40,6 +40,12 @@ lefthook install                                # once per clone: git hooks
 - Tests: stdlib `testing` + `go-cmp` ONLY (no assertion frameworks, ADR 15);
   table-driven; `t.Parallel()`; `t.TempDir()`; integration tests use real
   system git with a `git init --bare` fake remote.
+- Never point git filter/merge wiring at a test binary: inside a test
+  process, `os.Executable()` is the `.test` binary, and git executing it as
+  a clean/smudge/merge driver re-runs the entire suite recursively
+  (fork-bombed a dev machine, 2026-07-08). Build the real binary once in
+  `TestMain` and wire filters to that (pattern: `test/e2e/harness_test.go`);
+  run test suites in the foreground, never as background jobs.
 - Conventional Commits. Lint/format enforced by lefthook + CI.
 - Safety: the Tink keyset (`~/.config/agent-brain/keyset.json`) never enters
   any repo. Plaintext memory content must never reach a git object — the
