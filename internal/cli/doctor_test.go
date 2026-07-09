@@ -215,3 +215,34 @@ func TestDoctorCommandFixRepairs(t *testing.T) {
 		t.Fatalf("doctor after --fix still reports a FAIL:\n%s", out)
 	}
 }
+
+// TestDoctorFixQuiescesLiveDaemon pins that `doctor --fix`, like init's
+// repo-state step, holds a resident daemon's cycles during its wiring
+// surgery and releases after — the recording fake daemon (which repoints
+// AGENT_BRAIN_RUNTIME_DIR at its own socket) must see exactly one hold and
+// one resume, and the fix must still land.
+func TestDoctorFixQuiescesLiveDaemon(t *testing.T) {
+	paths := provisionHealthyDoctorMachine(t)
+	fakeGhOnPath(t)
+	hits := startFakeDaemonRecordingQuiesce(t)
+
+	attributesFile := repo.NewLayout(paths.MemoriesDir()).AttributesFile()
+	if err := os.WriteFile(attributesFile, []byte("corrupted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCmd(t, nil, "doctor", "--offline", "--fix")
+	if err != nil {
+		t.Fatalf("doctor --fix: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "fixed") {
+		t.Fatalf("doctor --fix did not repair:\n%s", out)
+	}
+	got := hits()
+	if len(got.held) != 1 || got.held[0] != quiesceHoldForInit {
+		t.Fatalf("quiesce holds = %v, want exactly one of %d seconds", got.held, quiesceHoldForInit)
+	}
+	if got.resumed != 1 {
+		t.Fatalf("resume count = %d, want 1", got.resumed)
+	}
+}

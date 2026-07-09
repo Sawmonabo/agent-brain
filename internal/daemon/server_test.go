@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,10 @@ type fakeController struct {
 	track    api.TrackResponse
 	untrack  api.UntrackResponse
 	migrate  api.MigrateResponse
+	quiesce  api.QuiesceResponse
+
+	quiescedSeconds int  // last Quiesce arg, for the route's method-switch test
+	resumed         bool // set by Resume
 }
 
 func (f *fakeController) Status() api.StatusResponse { return f.status }
@@ -39,6 +44,16 @@ func (f *fakeController) Untrack(context.Context, api.UntrackRequest) (api.Untra
 
 func (f *fakeController) Migrate(context.Context, api.MigrateRequest) (api.MigrateResponse, error) {
 	return f.migrate, nil
+}
+
+func (f *fakeController) Quiesce(seconds int) api.QuiesceResponse {
+	f.quiescedSeconds = seconds
+	return f.quiesce
+}
+
+func (f *fakeController) Resume() api.QuiesceResponse {
+	f.resumed = true
+	return api.QuiesceResponse{}
 }
 
 // shortSocketDir avoids t.TempDir(): test names inflate the path past
@@ -106,6 +121,41 @@ func TestStatusSyncProjectsRoundtrip(t *testing.T) {
 	}
 	if diff := cmp.Diff(want.projects, projects); diff != "" {
 		t.Fatalf("projects (-want +got):\n%s", diff)
+	}
+}
+
+// TestQuiesceRouteMethodSwitch pins /v0/quiesce's single-route/two-verb
+// wiring: POST reaches Quiesce (carrying the requested seconds) and returns
+// its deadline, DELETE reaches Resume, and any other verb is a 405.
+func TestQuiesceRouteMethodSwitch(t *testing.T) {
+	t.Parallel()
+	until := time.Date(2026, 7, 9, 12, 5, 0, 0, time.UTC)
+	fake := &fakeController{quiesce: api.QuiesceResponse{Until: until}}
+	socketPath := startServer(t, fake, defaultPeerUID)
+	client := api.NewClient(socketPath)
+	ctx := context.Background()
+
+	resp, err := client.Quiesce(ctx, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.quiescedSeconds != 120 {
+		t.Fatalf("controller saw Seconds=%d, want 120", fake.quiescedSeconds)
+	}
+	if !resp.Until.Equal(until) {
+		t.Fatalf("Until = %s, want %s", resp.Until, until)
+	}
+
+	if _, err := client.Resume(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.resumed {
+		t.Fatal("DELETE /v0/quiesce did not reach Resume")
+	}
+
+	if err := client.GetForTest(ctx, "/v0/quiesce"); err == nil ||
+		!strings.Contains(err.Error(), "405") {
+		t.Fatalf("GET /v0/quiesce err = %v, want a 405", err)
 	}
 }
 

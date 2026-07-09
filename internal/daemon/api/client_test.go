@@ -149,6 +149,60 @@ func TestClientSyncCarriesProjectFilter(t *testing.T) {
 	}
 }
 
+func TestClientQuiesceRoundtrip(t *testing.T) {
+	t.Parallel()
+	var got QuiesceRequest
+	until := time.Now().Add(120 * time.Second).UTC()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/quiesce", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(QuiesceResponse{Until: until})
+	})
+	client := NewClient(serveUDS(t, mux))
+
+	resp, err := client.Quiesce(context.Background(), 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Seconds != 120 {
+		t.Fatalf("server received Seconds=%d, want 120", got.Seconds)
+	}
+	if !resp.Until.Equal(until) {
+		t.Fatalf("Until = %s, want %s", resp.Until, until)
+	}
+}
+
+// TestClientResumeSendsDelete proves Resume uses the DELETE verb on the
+// shared /v0/quiesce route and decodes the zero-deadline (released) reply.
+func TestClientResumeSendsDelete(t *testing.T) {
+	t.Parallel()
+	methods := make(chan string, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/quiesce", func(w http.ResponseWriter, r *http.Request) {
+		methods <- r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(QuiesceResponse{}) // zero Until = released
+	})
+	client := NewClient(serveUDS(t, mux))
+
+	resp, err := client.Resume(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method := <-methods; method != http.MethodDelete {
+		t.Fatalf("resume used %s, want DELETE", method)
+	}
+	if !resp.Until.IsZero() {
+		t.Fatalf("resume Until = %s, want zero", resp.Until)
+	}
+}
+
 func TestClientDecodesErrorEnvelope(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()

@@ -587,6 +587,11 @@ func TestStepRepoStateFirstMachineWritesSkeletonCommitsAndPushes(t *testing.T) {
 	dataDir := filepath.Join(base, "data")
 	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
 	t.Setenv("AGENT_BRAIN_DATA_DIR", dataDir)
+	// Isolate the runtime dir at an empty path: stepRepoState now probes for a
+	// resident daemon to quiesce, and without this the probe could reach a
+	// real per-user daemon socket. An empty dir means "no daemon" — this test
+	// is the no-daemon path, which must behave exactly as before.
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", filepath.Join(base, "run"))
 	if err := keys.Generate(filepath.Join(configDir, "keyset.json")); err != nil {
 		t.Fatal(err)
 	}
@@ -653,6 +658,64 @@ func TestStepRepoStateFirstMachineWritesSkeletonCommitsAndPushes(t *testing.T) {
 	}
 }
 
+// TestStepRepoStateQuiescesLiveDaemonDuringSurgery pins the Phase-3 F2 fix:
+// when a daemon is already resident (a prior init installed the service), the
+// repo-state step holds its cycles for the checkout surgery and releases them
+// after. The recording fake daemon (which sets AGENT_BRAIN_RUNTIME_DIR) proves
+// exactly one 120s hold and one resume bracket the step, and the skeleton is
+// still committed under the hold.
+func TestStepRepoStateQuiescesLiveDaemonDuringSurgery(t *testing.T) {
+	base := t.TempDir()
+	bareRemote := filepath.Join(base, "remote.git")
+	mustGitCLI(t, base, "init", "--bare", "-b", "main", bareRemote)
+
+	configDir := filepath.Join(base, "cfg")
+	dataDir := filepath.Join(base, "data")
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
+	t.Setenv("AGENT_BRAIN_DATA_DIR", dataDir)
+	if err := keys.Generate(filepath.Join(configDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := buildRegistry(config.DefaultSettings(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The recorder points AGENT_BRAIN_RUNTIME_DIR at its own socket, so
+	// stepRepoState's probe finds this fake daemon.
+	hits := startFakeDaemonRecordingQuiesce(t)
+
+	var out bytes.Buffer
+	state := &initState{
+		out:        &out,
+		paths:      config.Paths{ConfigDir: configDir, DataDir: dataDir},
+		registry:   registry,
+		binaryPath: testBinaryPath,
+		login:      "alice",
+		repoName:   "agent-brain-memories",
+		gh:         ghx.NewClientWithRunner(newFakeGHRunner(t, "alice", "agent-brain-memories", bareRemote), "/usr/bin/gh"),
+	}
+	if err := stepRepo(context.Background(), state); err != nil {
+		t.Fatalf("stepRepo: %v", err)
+	}
+	if err := stepWiring(context.Background(), state); err != nil {
+		t.Fatalf("stepWiring: %v", err)
+	}
+	if err := stepRepoState(context.Background(), state); err != nil {
+		t.Fatalf("stepRepoState: %v", err)
+	}
+
+	got := hits()
+	if len(got.held) != 1 || got.held[0] != quiesceHoldForInit {
+		t.Fatalf("quiesce holds = %v, want exactly one of %d seconds", got.held, quiesceHoldForInit)
+	}
+	if got.resumed != 1 {
+		t.Fatalf("resume count = %d, want 1", got.resumed)
+	}
+	if !strings.Contains(out.String(), "initialized a fresh checkout") {
+		t.Fatalf("repo-state surgery did not run under the hold:\n%s", out.String())
+	}
+}
+
 // TestStepRepoStateJoiningMachineMaterializesAndDecryptsExistingMemory is
 // the joining-machine scenario end to end: a first machine (alice-a)
 // provisions the repo and seeds one real, filter-encrypted memory file;
@@ -679,6 +742,11 @@ func TestStepRepoStateJoiningMachineMaterializesAndDecryptsExistingMemory(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Isolate the runtime dir (empty — no daemon) so stepRepoState's quiesce
+	// probe never reaches a real per-user daemon socket. Both machine phases
+	// share it; neither runs a daemon.
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", filepath.Join(base, "run"))
 
 	// --- machine A: first machine ---
 	aConfigDir := filepath.Join(base, "a-config")
@@ -940,6 +1008,69 @@ func startFakeDaemonForEnrollment(t *testing.T, folderFor func(api.TrackRequest)
 		mu.Lock()
 		defer mu.Unlock()
 		return append([]api.TrackRequest(nil), requests...)
+	}
+}
+
+// quiesceHits records what a fake daemon's /v0/quiesce route observed: the
+// requested Seconds of each POST (a hold) and the count of DELETEs (resumes).
+type quiesceHits struct {
+	held    []int
+	resumed int
+}
+
+// startFakeDaemonRecordingQuiesce serves /v0/status (always ready) plus
+// /v0/quiesce (POST records the requested Seconds and replies with a deadline;
+// DELETE counts a resume) on a short-path socket, pointing the CLI at it via
+// AGENT_BRAIN_RUNTIME_DIR. It returns an accessor for what init's repo-state
+// step or doctor --fix hit. Modeled on startFakeDaemonForEnrollment (this
+// file); os.MkdirTemp keeps the socket under the sun_path limit.
+func startFakeDaemonRecordingQuiesce(t *testing.T) func() quiesceHits {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", dir)
+
+	var mu sync.Mutex
+	var hits quiesceHits
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(api.StatusResponse{State: "ready"})
+	})
+	mux.HandleFunc("/v0/quiesce", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodPost:
+			var req api.QuiesceRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			hits.held = append(hits.held, req.Seconds)
+			_ = json.NewEncoder(w).Encode(api.QuiesceResponse{Until: time.Now().Add(time.Duration(req.Seconds) * time.Second)})
+		case http.MethodDelete:
+			hits.resumed++
+			_ = json.NewEncoder(w).Encode(api.QuiesceResponse{})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	listener, err := net.Listen("unix", filepath.Join(dir, "agent-brain.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	})
+	return func() quiesceHits {
+		mu.Lock()
+		defer mu.Unlock()
+		return quiesceHits{held: append([]int(nil), hits.held...), resumed: hits.resumed}
 	}
 }
 
