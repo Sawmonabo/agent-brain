@@ -79,3 +79,22 @@ func GuessPath(slug string, dirExists func(string) bool) string {
 	}
 	return filepath.ToSlash(naive)
 }
+
+// SlugFor encodes path the way Claude Code itself does when it creates
+// ~/.claude/projects/<slug>: every '/' becomes '-'. This is the exact
+// forward direction — unlike GuessPath's lossy reverse, no directory
+// probing is needed because the encoding has no ambiguity in this
+// direction. track's path-argument resolution uses it to compute the
+// slug a given project path would have produced, rather than reversing
+// every discovered slug looking for a match.
+func SlugFor(path string) string {
+	return strings.ReplaceAll(filepath.ToSlash(path), "/", "-")
+}
+
+// MemoryDirFor returns the memory directory Claude Code uses for path
+// under home. Shared by Discover (which lists every slug already on
+// disk) and track/migrate's path-argument resolution (which probes one
+// specific path directly via SlugFor, without listing anything).
+func MemoryDirFor(home, path string) string {
+	return filepath.Join(home, ".claude", "projects", SlugFor(path), "memory")
+}

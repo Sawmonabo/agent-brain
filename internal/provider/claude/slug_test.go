@@ -1,6 +1,7 @@
 package claude_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Sawmonabo/agent-brain/internal/provider/claude"
@@ -80,5 +81,43 @@ func TestGuessPathHyphenatedLeafWithoutDecoy(t *testing.T) {
 	got := claude.GuessPath("-Users-u-dev-agent-brain", func(path string) bool { return dirExists[path] })
 	if want := "/Users/u/dev/agent-brain"; got != want {
 		t.Fatalf("GuessPath(%q) = %q, want %q", "-Users-u-dev-agent-brain", got, want)
+	}
+}
+
+func TestSlugFor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "simple path", path: "/Users/u/dev/proj", want: "-Users-u-dev-proj"},
+		{name: "hyphenated leaf", path: "/Users/u/dev/agent-brain", want: "-Users-u-dev-agent-brain"},
+		{name: "root", path: "/", want: "-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := claude.SlugFor(tt.path); got != tt.want {
+				t.Fatalf("SlugFor(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSlugForAndGuessPathRoundTripWhenDirectoryExists pins the relationship
+// track's path-argument resolution depends on: SlugFor is the exact
+// forward encoding Claude Code itself applies, so feeding it back through
+// GuessPath — with every real ancestor of the project directory reported
+// as existing, exactly what os.Stat sees on an actual filesystem — must
+// recover the original path, even for a hyphenated leaf like
+// "agent-brain" where the naive all-slash branch alone would not.
+func TestSlugForAndGuessPathRoundTripWhenDirectoryExists(t *testing.T) {
+	t.Parallel()
+	path := "/Users/u/dev/agent-brain"
+	slug := claude.SlugFor(path)
+	dirExists := func(p string) bool { return p == path || strings.HasPrefix(path, p+"/") }
+	if got := claude.GuessPath(slug, dirExists); got != path {
+		t.Fatalf("GuessPath(SlugFor(%q)) = %q, want %q", path, got, path)
 	}
 }
