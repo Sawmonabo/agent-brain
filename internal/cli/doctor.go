@@ -16,13 +16,29 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
+// testBinaryPathEnv lets a test point doctor's filter/credential-helper
+// wiring checks at a real built binary instead of os.Executable() — which,
+// inside a test process, IS the compiled cli.test binary itself, the exact
+// anti-pattern CLAUDE.md's fork-bomb rule (commit 8624631) forbids (Q3 gate
+// finding I1). There is no per-invocation parameter to thread this through:
+// newDoctorCmd is built once, argument-less, inside root.go's Root() — the
+// same Root() every cli test drives via runCmd (filter_test.go) — so
+// changing buildDoctorDeps' signature alone cannot reach a test; an env var
+// is the seam that can, mirroring how config.DefaultPaths already resolves
+// AGENT_BRAIN_CONFIG_DIR et al. for the identical class of problem. Unlike
+// those, this is not a real user-facing setting — there is no legitimate
+// production reason to override your own running binary's path — so the
+// name says TEST explicitly. See testmain_test.go's testBinaryPath doc
+// comment for the incident this exists to prevent.
+const testBinaryPathEnv = "AGENT_BRAIN_TEST_BINARY_PATH"
+
 func newDoctorCmd() *cobra.Command {
 	var fix, jsonOut, offline bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check (and optionally repair) this machine's agent-brain wiring",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			deps, err := buildDoctorDeps(offline)
+			deps, err := buildDoctorDeps(offline, os.Getenv(testBinaryPathEnv))
 			if err != nil {
 				return err
 			}
@@ -69,7 +85,13 @@ func newDoctorCmd() *cobra.Command {
 // check runs — doctor's whole point is reporting on a half-broken machine,
 // not refusing to look at one. gh/daemon/local-registry are each best-effort:
 // their own checks (or applicability guards) handle a nil/absent dependency.
-func buildDoctorDeps(offline bool) (doctor.Deps, error) {
+// binaryPath mirrors daemon.Config.BinaryPath's empty-means-default
+// convention: "" resolves os.Executable() here, same as production always
+// did; a non-empty value (RunE passes testBinaryPathEnv's value) is used
+// as-is, letting a test inject a real built binary instead (Q3 gate finding
+// I1) — never os.Executable(), which inside a test process is the compiled
+// cli.test binary itself.
+func buildDoctorDeps(offline bool, binaryPath string) (doctor.Deps, error) {
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		return doctor.Deps{}, err
@@ -86,9 +108,12 @@ func buildDoctorDeps(offline bool) (doctor.Deps, error) {
 	if err != nil {
 		return doctor.Deps{}, err
 	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		return doctor.Deps{}, err
+	if binaryPath == "" {
+		resolved, err := os.Executable()
+		if err != nil {
+			return doctor.Deps{}, err
+		}
+		binaryPath = resolved
 	}
 
 	gh, err := ghx.NewClient()

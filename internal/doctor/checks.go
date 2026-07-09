@@ -123,6 +123,16 @@ func localConfig(ctx context.Context, dir string) (map[string]string, bool) {
 
 func checkFilters(ctx context.Context, deps Deps) (CheckResult, bool) {
 	const name = "filters"
+	// strings.Contains(x, "") is always true — without this guard an empty
+	// BinaryPath would make the clean-filter comparison below vacuously
+	// pass regardless of what filter.agentbrain.clean actually holds.
+	// Never empty via daemon/CLI (both resolve a real path before building
+	// Deps), but Deps/SafetyGate are exported, so a caller that forgets to
+	// set BinaryPath must get a named failure, not a silent pass (Q3 gate
+	// finding M4).
+	if deps.BinaryPath == "" {
+		return CheckResult{Name: name, Status: StatusFail, Detail: "BinaryPath is empty — cannot verify filter.agentbrain.clean points at a real binary"}, true
+	}
 	dir := deps.Paths.MemoriesDir()
 
 	config, ok := localConfig(ctx, dir)

@@ -244,6 +244,23 @@ func TestRunFiltersMissingMergeEntry(t *testing.T) {
 	}
 }
 
+// TestRunFiltersEmptyBinaryPathFailsClosed pins Q3 gate finding M4:
+// strings.Contains(anything, "") is always true, so an unguarded
+// containment comparison against an empty BinaryPath would report
+// "filters" ok no matter what filter.agentbrain.clean actually holds.
+// Never reachable via daemon/CLI (both always resolve a real path before
+// building Deps), but Deps and SafetyGate are exported — a caller that
+// forgets to set BinaryPath must get a named failure, not a silent pass.
+func TestRunFiltersEmptyBinaryPathFailsClosed(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	fx.deps.BinaryPath = ""
+	got := result(t, doctor.Run(context.Background(), fx.deps), "filters")
+	if got.Status != doctor.StatusFail {
+		t.Fatalf("filters check with empty BinaryPath = %+v, want fail", got)
+	}
+}
+
 // TestRunCheckoutNotAGitRepo pins that a totally uninitialized machine
 // (no checkout at all) degrades every dependent check to a named fail
 // rather than panicking.
@@ -557,5 +574,27 @@ func TestFixSkipsCredentialHelperWithoutGH(t *testing.T) {
 		if got.Fixed {
 			t.Errorf("credential-helper marked Fixed with a nil GH client: %+v", got)
 		}
+	}
+}
+
+// TestFixDoesNotClaimAttributesFixedWithNilRegistry pins Q3 gate finding M2:
+// Fix skips repo.WriteAttributes when deps.Registry is nil (nothing to
+// generate canonical content from), so Fixed must follow that same
+// condition — exactly as credential-helper's Fixed already follows
+// deps.GH != nil above. Reporting Fixed:true for a repair that did not run
+// is a false claim to whoever reads the report (CLI operator or --json
+// consumer).
+func TestFixDoesNotClaimAttributesFixedWithNilRegistry(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	fx.deps.Registry = nil
+
+	report, err := doctor.Fix(context.Background(), fx.deps)
+	if err != nil {
+		t.Fatalf("Fix() error = %v", err)
+	}
+	attributes := result(t, report, "attributes")
+	if attributes.Fixed {
+		t.Errorf("attributes marked Fixed with a nil Registry (WriteAttributes never ran): %+v", attributes)
 	}
 }

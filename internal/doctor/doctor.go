@@ -181,8 +181,14 @@ func Fix(ctx context.Context, deps Deps) (Report, error) {
 	report := Run(ctx, deps)
 	for i := range report.Results {
 		switch report.Results[i].Name {
-		case "filters", "attributes":
+		case "filters":
 			report.Results[i].Fixed = true
+		case "attributes":
+			// WriteAttributes only ran above when deps.Registry != nil —
+			// Fixed must follow that same condition (Q3 gate finding M2),
+			// exactly as credential-helper's Fixed already follows
+			// deps.GH != nil below.
+			report.Results[i].Fixed = deps.Registry != nil
 		case "credential-helper":
 			report.Results[i].Fixed = deps.GH != nil
 		}

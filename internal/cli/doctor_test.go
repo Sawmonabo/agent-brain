@@ -43,14 +43,34 @@ func fakeGhOnPath(t *testing.T) {
 // provisionHealthyDoctorMachine builds a from-scratch machine that passes
 // every check in the battery: a real checkout with a local bare remote (git
 // happily ls-remotes a filesystem path — no network involved), a generated
-// keyset, installed filter/merge wiring (binaryPath = os.Executable(), the
-// same value buildDoctorDeps will independently resolve in this same test
-// process), and a canonical .gitattributes for the identical registry
-// buildRegistry(config.DefaultSettings(), home) will construct later. HOME
-// and the AGENT_BRAIN_*_DIR overrides make every path hermetic — no real
-// home directory is ever touched.  AGENT_BRAIN_RUNTIME_DIR is set here too
-// (even though most callers don't care about the "daemon" check) so
-// newAPIClient never falls back to a real per-user runtime dir.
+// keyset, installed filter/merge wiring, and a canonical .gitattributes for
+// the identical registry buildRegistry(config.DefaultSettings(), home) will
+// construct later. HOME and the AGENT_BRAIN_*_DIR overrides make every path
+// hermetic — no real home directory is ever touched. AGENT_BRAIN_RUNTIME_DIR
+// is set here too (even though most callers don't care about the "daemon"
+// check) so newAPIClient never falls back to a real per-user runtime dir.
+//
+// Filter wiring points at testBinaryPath (testmain_test.go), a REAL built
+// binary — never os.Executable(), which inside this test process is the
+// cli.test binary itself (Q3 gate finding I1; see testBinaryPath's doc
+// comment for the incident this avoids). AGENT_BRAIN_TEST_BINARY_PATH
+// mirrors that same value into the doctor COMMAND's own resolution
+// (buildDoctorDeps, doctor.go) so checkFilters' containment comparison —
+// exercised when tests below run `doctor` via runCmd, not by calling
+// buildDoctorDeps directly — checks against the identical binary the git
+// config was actually wired with, not a fresh os.Executable() resolution
+// that would again be cli.test.
+//
+// Only .gitattributes is staged and committed here — never a memory file
+// under the registry's `*` glob — which is why the clean filter is never
+// actually invoked by this fixture: repo.GenerateAttributes emits
+// `.gitattributes -filter -diff -merge text eol=lf` AFTER the catch-all
+// `* filter=agentbrain …` line, and gitattributes resolves last-match-wins,
+// so .gitattributes exempts itself from its own filter. That is what keeps
+// this fixture latent-safe even before testBinaryPath existed; the fix
+// above closes the margin so a future test that DOES stage a filtered file
+// (e.g. Task 10/11's track/untrack cycles) fails loud instead of
+// fork-bombing if it copies this fixture.
 func provisionHealthyDoctorMachine(t *testing.T) config.Paths {
 	t.Helper()
 	base, err := os.MkdirTemp("", "ab-doctor")
@@ -67,6 +87,7 @@ func provisionHealthyDoctorMachine(t *testing.T) config.Paths {
 	t.Setenv("AGENT_BRAIN_CONFIG_DIR", filepath.Join(base, "cfg"))
 	t.Setenv("AGENT_BRAIN_DATA_DIR", filepath.Join(base, "data"))
 	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", filepath.Join(base, "run"))
+	t.Setenv(testBinaryPathEnv, testBinaryPath)
 
 	paths, err := config.DefaultPaths()
 	if err != nil {
@@ -90,11 +111,7 @@ func provisionHealthyDoctorMachine(t *testing.T) config.Paths {
 	if err := keys.Generate(paths.Keyset()); err != nil {
 		t.Fatal(err)
 	}
-	binaryPath, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := gitx.InstallFilters(context.Background(), checkout, binaryPath); err != nil {
+	if err := gitx.InstallFilters(context.Background(), checkout, testBinaryPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.WriteAttributes(repo.NewLayout(checkout), registry); err != nil {
