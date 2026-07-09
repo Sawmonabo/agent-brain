@@ -39,15 +39,22 @@ func (e *Engine) recoverState(ctx context.Context) error {
 	// and the folder wedges (Phase-3 final review F3). The index is wholly
 	// derived state — every entry point re-stages what it needs — so clear
 	// residue with a MIXED reset (worktree untouched). Unborn HEAD (a brand
-	// new checkout before its first commit) has nothing to reset or wedge.
-	if _, err := gitx.Run(ctx, e.checkout, "rev-parse", "--verify", "HEAD"); err == nil {
-		staged, err := gitx.RunStatus(ctx, e.checkout, "diff", "--cached", "--quiet")
-		if err != nil {
-			return fmt.Errorf("recover: git diff --cached: %w", err)
+	// new checkout before its first commit) has nothing to reset or wedge —
+	// and it is the ONLY skip: rev-parse's nonzero exit is data (RunStatus),
+	// while a real execution failure (canceled context, spawn, signal-kill)
+	// propagates instead of masquerading as "nothing staged".
+	head, err := gitx.RunStatus(ctx, e.checkout, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return fmt.Errorf("recover: git rev-parse HEAD: %w", err)
+	}
+	if head.ExitCode == 0 {
+		staged, diffErr := gitx.RunStatus(ctx, e.checkout, "diff", "--cached", "--quiet")
+		if diffErr != nil {
+			return fmt.Errorf("recover: git diff --cached: %w", diffErr)
 		}
 		if staged.ExitCode != 0 {
-			if _, err := gitx.Run(ctx, e.checkout, "reset", "--quiet"); err != nil {
-				return fmt.Errorf("recover: git reset: %w", err)
+			if _, resetErr := gitx.Run(ctx, e.checkout, "reset", "--quiet"); resetErr != nil {
+				return fmt.Errorf("recover: git reset: %w", resetErr)
 			}
 		}
 	}

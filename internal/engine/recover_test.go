@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -161,5 +162,27 @@ func TestRecoverStateSurvivesUnbornHead(t *testing.T) {
 
 	if err := engine.recoverState(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRecoverStatePropagatesExecutionFailure pins the unborn-HEAD gate's
+// error contract: only rev-parse's nonzero EXIT CODE may skip the reset
+// (benign unborn HEAD). A genuine execution failure — here a canceled
+// context killing the git child before it reports — must propagate, not
+// masquerade as "nothing to recover" and silently strand a crash-staged
+// index.
+func TestRecoverStatePropagatesExecutionFailure(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := engine.recoverState(ctx)
+	if err == nil {
+		t.Fatal("recoverState returned nil under a canceled context; execution failure must propagate")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("recoverState error does not wrap context.Canceled: %v", err)
 	}
 }
