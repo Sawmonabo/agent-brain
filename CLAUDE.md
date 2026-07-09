@@ -25,6 +25,8 @@ go test ./...                                   # all tests
 go test ./internal/crypto/ -run TestName -v     # one test
 go test ./... -race                             # what pre-push runs
 go test ./internal/crypto/ -fuzz FuzzRoundtrip -fuzztime 30s  # fuzz (-fuzz takes exactly ONE package)
+go test ./test/e2e/ -run TestScripts -v         # testscript CLI flows (five txtar scripts)
+go test ./test/e2e/ -run TestAdversarialContainment -race -v  # standing adversarial corpus
 golangci-lint run                               # lint (config: .golangci.yml)
 gofumpt -l -w .                                 # format
 lefthook install                                # once per clone: git hooks
@@ -37,6 +39,10 @@ lefthook install                                # once per clone: git hooks
 - Package boundaries (spec §8): `engine` depends on `gitx`/`crypto`/
   `provider`/`repo` interfaces — never on `cli` or `daemon`. `daemon/api`
   types are the only daemon↔CLI shared surface.
+- CLI never writes inside the memories checkout — mutations go through the
+  daemon API and its single engine writer (ADR 03 as-built, Phase 3); the
+  only exceptions are `init` creating the checkout and `doctor --fix`
+  re-wiring `.git/config`.
 - Tests: stdlib `testing` + `go-cmp` ONLY (no assertion frameworks, ADR 15);
   table-driven; `t.Parallel()`; `t.TempDir()`; integration tests use real
   system git with a `git init --bare` fake remote.

@@ -138,7 +138,10 @@ their repo's slug (July 2026 behavior), so they need no special handling.
 `~/.local/share/agent-brain/` (XDG) on Linux — holds the `memories/` checkout,
 `registry-local.toml` (slug mappings + enrollment), and `daemon.log`. Config lives
 at `~/.config/agent-brain/config.toml` (TOML, ADR 17) beside the keyset (§5).
-Socket and lock live in the runtime dir per ADR 09.
+Socket and lock live in the runtime dir per ADR 09. A `registry-local.toml` unit
+may carry a `repo_subdir` that maps its local root under `<folder>/<provider>/<subdir>`
+in the checkout — codex enrolls two such units, `memories` and `chronicle` (the
+layout above).
 
 **File classes** (drive merge policy, §4): *fact* (Claude topic files, Codex
 `raw_memories.md`, Chronicle) → 3-way merge + retain-both; *derived index*
@@ -221,7 +224,14 @@ clean/smudge/textconv/driver entries with **`filter.agentbrain.required = true`*
 fail-closed. Git refuses to commit plaintext when the filter is missing or broken,
 and a clone without the binary shows ciphertext with an erroring smudge instead of
 silently degrading. `merge.renormalize = true`. The daemon refuses to sync until
-`doctor` passes.
+`doctor` passes. HTTPS credential lookups in the checkout are wired to gh's own
+helper repo-locally: `credential.helper` is cleared to git's empty-reset sentinel
+(dropping any global/system helper — e.g. a stale keychain PAT for github.com),
+then set to `!<absolute gh path> auth git-credential` in the hidden checkout's
+`.git/config` **only**, never the user's global gitconfig — whose absolute-path
+write is the `gh auth setup-git` synced-dotfiles hazard ADR 08 avoids
+(cli/cli#9438). SSH remotes never invoke it, and `doctor --fix` re-wires it if gh
+moves.
 
 **Threat model:** protects the repo at rest on GitHub (account compromise, token
 leak, GitHub-side scanning). Does NOT protect local disk — worktree and provider
@@ -240,11 +250,17 @@ never opens with a NUL-embedded header; the behavior is pinned by codec tests.
 
 ## 6. Provider adapters
 
-**Adapter interface** (conceptual): `Name`; `Scope` (PerProject | Global);
-`WatchRoots`; `DiscoverProjects`; `ResolveIdentity` (slug → path guess + remote URL
-at enrollment); `Classify(path)` → Fact | DerivedIndex | Regenerated | Ignore;
-`ReconcileIndex`; repo-path mapping. Adding Gemini later means implementing the
-interface plus a classification table — zero core changes.
+**Adapter interface** (as shipped, spec §6): `Name`; `Scope` (PerProject | Global);
+`Patterns` — the ordered classification table driving `Classify` → Fact |
+DerivedIndex | Regenerated | Ignore and `.gitattributes` generation; `Discover` —
+enumerate this machine's enrollable memory roots; `Identify` — resolve a discovered
+root to its cross-machine identity (path guess + remote URL at enrollment);
+`ReconcileIndex`. Adding Gemini later means implementing the interface plus a
+classification table — zero core changes. `WatchRoots` was folded into enrollment
+rather than shipping as a method: each enrolled unit's LocalDir IS its watch root,
+and discovery-time watching of provider-parent dirs is dashboard-era work, not v1.
+A global-scope provider yields one `Discovered` per root, so codex enrolls as two
+`repo_subdir` units (`memories`, `chronicle`).
 
 **Claude adapter:** watches `~/.claude/projects/` for new `<slug>/memory/`
 directories; enrolled memory dirs are watched fully. Per-project scope.
@@ -270,21 +286,25 @@ propagates as normal deletions via the manifest.
 
 ## 7. CLI & UX
 
-Bare `agent-brain` in a TTY opens the dashboard. Command tree:
+Bare `agent-brain` prints help. Command tree:
 
 - **`init`** — first-run wizard (huh forms): gh detect/auth → create-or-clone
   `agent-brain-memories` → keyset generate (first machine) or import (joining) with
   the password-manager prompt → service install → discovery scan → enrollment
-  picker.
-- **`dashboard`** — bubbletea client of the UDS API. Views: **Projects**
-  (discovered vs enrolled, provider badges, sync state, last-sync), **Conflicts**
-  (retained blocks → open file / mark tidied), **Activity** (recent
-  syncs/commits), **Doctor** (live checks). Daemon down → offers to start it.
-- **`track [path] | track --all`**, **`untrack [--purge]`** — enrollment; `--purge`
-  also removes the project folder from the repo (history retains it).
-- **`sync [--project X]`**, **`status [--json]`**, **`conflicts [list|show]`**,
-  **`doctor [--fix]`**, **`service install|uninstall|start|stop|status|logs`**,
-  **`key export|import`** (rotate = v1.1), **`migrate`** (§10), **`daemon`**
+  picker. Flags make it fully scriptable: `--non-interactive`,
+  `--generate-key`/`--import-key` (mutually exclusive), `--skip-service`,
+  `--enroll all|none`, `--repo-name`.
+- **`dashboard`** — **deferred out of Phase 3**; Phase-4 planning decides whether it
+  lands in P4 or v1.1 (every UDS API seam it needs already exists). Planned
+  bubbletea client of the UDS API: **Projects**, **Conflicts**, **Activity**,
+  **Doctor** views, offering to start the daemon when it is down.
+- **`track [path] | track --all`**, **`untrack <path|folder> [--purge]`** —
+  enrollment; `--purge` also removes the project folder from the repo (history
+  retains it).
+- **`sync [--project X]`**, **`status [--json]`**, **`projects [--json]`**,
+  **`conflicts [list | show <path>]`**, **`doctor [--fix | --json | --offline]`**,
+  **`service install|uninstall|start|stop|status|logs`**, **`key export`** /
+  **`key import [--force]`** (rotate = v1.1), **`migrate`** (§10), **`daemon`**
   (foreground).
 - Hidden plumbing invoked by git: `git-clean`, `git-smudge`, `git-textconv`,
   `git-merge`.
@@ -476,10 +496,15 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
 - **Unit:** stdlib `testing` + google/go-cmp for equality diffs — no assertion
   frameworks (Google's style guide permits stdlib testing only and warns against
   `reflect.DeepEqual`; ADR 15). Table-driven, `t.Parallel()`, `t.TempDir()`.
-- **CLI/e2e:** rogpeppe/go-internal **testscript** — txtar scripts using the
-  harness the `go` command itself is tested with; runs under `go test` with
-  coverage integration and golden-file auto-update. Scripts cover the
-  init/track/sync/migrate/doctor flows.
+- **CLI/e2e:** rogpeppe/go-internal **testscript** (implemented, `test/e2e/`,
+  `TestScripts`) — txtar scripts that drive the REAL binary as a subprocess against
+  `git init --bare` remotes with a faked `gh`, zero network. Five flows:
+  `init_first_machine`, `track_and_sync`, `migrate`, `doctor_fix`, `key_roundtrip`.
+- **Adversarial containment:** a STANDING corpus (`TestAdversarialContainment`, nine
+  rows as of 2026-07-09) that raw-pushes hostile input from a clone with NO filters
+  wired — an attacker who never ran agent-brain — and pins each engine containment
+  invariant, every row ending on the universal no-plaintext-on-the-wire assertion.
+  Later phases only APPEND rows, never delete (spec §11).
 - **Integration:** real system git in `t.TempDir()` — `git init --bare` as the
   fake remote, zero network. The critical scenario: two simulated "machines" clone
   the bare repo, write divergent memory, and sync — asserting the full
@@ -519,12 +544,15 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
 
 ---
 
-## Appendix: verified version pins (as of 2026-07-07)
+## Appendix: verified version pins (as of 2026-07-09)
 
 Go 1.26.5 (toolchain pin; brew currently 1.26.4) · tink-go v2.7.0 (AES256_SIV) ·
-cobra v1.10.2 · fang v2.0.1 · Charm v2 (bubbletea/lipgloss/bubbles/huh) · fsnotify
-v1.10.1 · kardianos/service v1.3.0 · gofrs/flock · cenkalti/backoff v5.0.3 ·
-google/renameio/v2 · pelletier/go-toml/v2 · go-cmp · rogpeppe/go-internal
-(testscript) · golangci-lint v2.12.2 · lefthook v2.1.9 · gofumpt 0.10.0 ·
-GoReleaser v2.16.0 · gitleaks v8.30.1 · git-filter-repo v2.47.0. Exact go.mod
-versions resolve at implementation; Dependabot keeps them current thereafter.
+cobra v1.10.2 · fang v2.0.1 · huh v2.0.3 (`charm.land/huh/v2`, direct) · bubbletea
+v2.0.2 + lipgloss v2.0.1 + bubbles v2.0.0 (Charm v2 at `charm.land/*`, transitive) ·
+fsnotify v1.10.1 · kardianos/service v1.3.0 · gofrs/flock · cenkalti/backoff v5.0.3 ·
+google/renameio/v2 · pelletier/go-toml/v2 · go-cmp · rogpeppe/go-internal v1.15.0
+(testscript; pulls golang.org/x/tools v0.38.0 transitively) · gh ≥ 2.40 (runtime,
+never vendored; CLI flags verified at v2.96.0) · golangci-lint v2.12.2 · lefthook
+v2.1.9 · gofumpt 0.10.0 · GoReleaser v2.16.0 · gitleaks v8.30.1 · git-filter-repo
+v2.47.0. Exact go.mod versions resolve at implementation; Dependabot keeps them
+current thereafter.
