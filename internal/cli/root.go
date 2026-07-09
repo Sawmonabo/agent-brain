@@ -29,6 +29,7 @@ func Root() *cobra.Command {
 		newDoctorCmd(),
 		newKeyCmd(),
 		newConflictsCmd(),
+		newInitCmd(),
 	)
 	return root
 }

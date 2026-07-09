@@ -119,7 +119,7 @@ type Identity struct {
 	// ProjectID is the canonical machine-independent id
 	// (host/owner/repo from the normalized git remote), or "" when the
 	// project has no remote — the caller must then ask the user to name
-	// the folder and uses name:<folder> as the id.
+	// the folder and uses named/<folder> as the id.
 	ProjectID string
 	// PreferredFolder is the repo folder to propose (repo basename).
 	PreferredFolder string
