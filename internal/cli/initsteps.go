@@ -260,7 +260,8 @@ func stepRepo(ctx context.Context, state *initState) error {
 	// wired yet, so git refuses to write plaintext into a filtered path —
 	// the cycle degrades and heals itself on the next tick once wiring
 	// lands. This is the one place a non-daemon process is allowed to
-	// touch the checkout directly (single-writer invariant, spec §3):
+	// touch the checkout directly (single-writer invariant, spec §2 /
+	// ADR 03):
 	// there is no enrolled unit yet for any daemon to race against until
 	// step 9.
 	_, err = fmt.Fprintf(state.out, "repo: cloned to %s\n", memories)
@@ -518,7 +519,7 @@ func stepService(_ context.Context, state *initState) error {
 // enrollment and submits each accepted one to the daemon via
 // client.Track (Task 7) — the CLI process itself never writes units into
 // the local registry or the checkout directly (single-writer invariant,
-// spec §3). Global-scope providers (codex) group ALL their
+// spec §2 / ADR 03). Global-scope providers (codex) group ALL their
 // still-unenrolled roots into ONE picker entry (buildEnrollCandidates):
 // picking it enrolls every root together, since they are one
 // pseudo-project (_global) on this machine, not independent choices.
