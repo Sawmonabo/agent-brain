@@ -212,6 +212,67 @@ func TestConflictsShowPrintsRetainedBlock(t *testing.T) {
 	}
 }
 
+// TestConflictsShowRefusesOutOfTreePaths proves conflicts show cannot be
+// used to read arbitrary files outside the memories checkout. This matters
+// because the argument users pass here typically comes verbatim from
+// `conflicts list`'s Path column, which is populated from conflict-log
+// entries recorded while processing SYNCED, remote-influenced content — not
+// purely user-authored input — so a hostile remote could try to launder an
+// out-of-tree path through it.
+func TestConflictsShowRefusesOutOfTreePaths(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", t.TempDir())
+	t.Setenv("AGENT_BRAIN_DATA_DIR", dataDir)
+	memoriesDir := filepath.Join(dataDir, "memories")
+	if err := os.MkdirAll(memoriesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(memoriesDir, "clean.md"), []byte("just plain content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A secret file OUTSIDE the checkout that no escape must ever surface.
+	outsideDir := t.TempDir()
+	secretPath := filepath.Join(outsideDir, "secret.md")
+	if err := os.WriteFile(secretPath, []byte("outside the checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relEscape, err := filepath.Rel(memoriesDir, secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		arg       string
+		wantError bool
+	}{
+		{"relative traversal escape", relEscape, true},
+		{"absolute path", secretPath, true},
+		{"valid in-tree path (happy path)", "clean.md", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			out, err := runCmd(t, nil, "conflicts", "show", testCase.arg)
+			if testCase.wantError {
+				if err == nil {
+					t.Fatalf("conflicts show %q must be refused, got output:\n%s", testCase.arg, out)
+				}
+				if strings.Contains(string(out), "outside the checkout") {
+					t.Fatalf("conflicts show %q leaked the out-of-tree file's content:\n%s", testCase.arg, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("conflicts show %q (valid in-tree path) must still work: %v\n%s", testCase.arg, err, out)
+			}
+			if !strings.Contains(string(out), "already tidied") {
+				t.Fatalf("conflicts show %q unexpected output:\n%s", testCase.arg, out)
+			}
+		})
+	}
+}
+
 // TestConflictsShowTidiedFile covers the already-resolved case: a checkout
 // file with no retain-both blocks left in it.
 func TestConflictsShowTidiedFile(t *testing.T) {

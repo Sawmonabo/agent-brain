@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
+	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
 // conflictRecord is the one shape shared by the merge driver's writer
@@ -138,8 +139,11 @@ func runConflictsShow(cmd *cobra.Command, relPath string) error {
 	if err != nil {
 		return err
 	}
-	fullPath := filepath.Join(paths.MemoriesDir(), relPath)
-	data, err := os.ReadFile(fullPath) //nolint:gosec // G304: fullPath joins the program-derived memories checkout root (config.Paths) with a path the interactive user typed at their own CLI — the same trust boundary as any file-path argument a local tool accepts
+	fullPath, err := resolveCheckoutPath(paths, relPath)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(fullPath) //nolint:gosec // G304: fullPath is validated by resolveCheckoutPath (repo.ValidateRelPath + containment check) to resolve strictly inside the memories checkout before this read
 	if err != nil {
 		return err
 	}
@@ -158,6 +162,29 @@ func runConflictsShow(cmd *cobra.Command, relPath string) error {
 		report.printf("%s", block)
 	}
 	return report.err
+}
+
+// resolveCheckoutPath resolves relPath to a path strictly inside the
+// memories checkout, refusing anything else with a clear one-line reason.
+// This is not merely guarding against a careless local user (the "same
+// trust boundary as cat" a first pass assumed): relPath is the value a user
+// copies verbatim out of `conflicts list`'s Path column, which is populated
+// from conflict-log entries the merge driver records while resolving
+// SYNCED, remote-influenced content. A hostile remote controlling a
+// pathname the driver logs could otherwise launder an out-of-tree read
+// through this command. repo.ValidateRelPath rejects absolute paths,
+// backslashes, and any '.'/'..' segment; the containment check after Join
+// is defense in depth against any gap in that validation.
+func resolveCheckoutPath(paths config.Paths, relPath string) (string, error) {
+	if err := repo.ValidateRelPath(relPath); err != nil {
+		return "", fmt.Errorf("refusing conflicts show: %w", err)
+	}
+	root := filepath.Clean(paths.MemoriesDir())
+	full := filepath.Clean(filepath.Join(root, relPath))
+	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("refusing conflicts show %q: resolves outside the memories checkout", relPath)
+	}
+	return full, nil
 }
 
 // extractRetainBlocks scans content for crypto.RewriteRetainBoth's blocks
