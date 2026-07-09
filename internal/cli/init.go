@@ -11,10 +11,8 @@ import (
 
 	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
-	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
 // defaultRepoName is the GitHub repo init provisions absent --repo-name.
@@ -58,7 +56,7 @@ func newInitCmd() *cobra.Command {
 				return err
 			}
 
-			accessible := os.Getenv("ACCESSIBLE") != "" || !term.IsTerminal(int(os.Stdin.Fd()))
+			accessible := isAccessible()
 
 			state := &initState{
 				out:            cmd.OutOrStdout(),
@@ -195,103 +193,4 @@ func confirmKeysetStored(state *initState, accessible bool) error {
 		return errors.New("keyset generated but not confirmed stored — save it (`agent-brain key export` prints it again), then re-run `agent-brain init`")
 	}
 	return nil
-}
-
-// wireEnrollmentCallbacks sets stepEnrollment's three human-interaction
-// seams: a huh-backed picker when interactive, or trivial flag-driven
-// closures for --enroll all/none. --non-interactive with no --enroll
-// given behaves exactly like --enroll none — a non-interactive run must
-// always complete without ANY prompt, and enrollment has no other safe
-// default absent an explicit choice.
-func wireEnrollmentCallbacks(state *initState, accessible bool) {
-	switch {
-	case state.enrollMode == "none", state.nonInteractive && state.enrollMode == "":
-		state.pickEnrollUnits = func([]enrollCandidate) ([]int, error) { return nil, nil }
-		state.confirmProjectPath = func(guess string) (string, error) { return guess, nil }
-		state.nameRemotelessFolder = func(string) (string, error) { return "", errSkipRemoteless }
-
-	case state.enrollMode == "all":
-		state.pickEnrollUnits = func(candidates []enrollCandidate) ([]int, error) {
-			indices := make([]int, len(candidates))
-			for i := range candidates {
-				indices[i] = i
-			}
-			return indices, nil
-		}
-		state.confirmProjectPath = func(guess string) (string, error) { return guess, nil }
-		state.nameRemotelessFolder = func(string) (string, error) { return "", errSkipRemoteless }
-
-	default:
-		state.pickEnrollUnits = func(candidates []enrollCandidate) ([]int, error) {
-			return pickEnrollUnitsInteractive(candidates, accessible)
-		}
-		state.confirmProjectPath = func(guess string) (string, error) {
-			return confirmProjectPathInteractive(guess, accessible)
-		}
-		state.nameRemotelessFolder = func(hint string) (string, error) {
-			return nameRemotelessFolderInteractive(hint, accessible)
-		}
-	}
-}
-
-// pickEnrollUnitsInteractive renders the huh MultiSelect[int] picker
-// over candidate INDICES, not enrollCandidate values directly — huh's
-// type parameter must be comparable, and enrollCandidate embeds a
-// provider.Provider interface plus a []provider.Discovered slice, so it
-// isn't. Options are pre-labeled by buildEnrollCandidates
-// (<provider>  <Label>  -> <PathGuess>, or the grouped global-scope form).
-func pickEnrollUnitsInteractive(candidates []enrollCandidate, accessible bool) ([]int, error) {
-	options := make([]huh.Option[int], len(candidates))
-	for i, candidate := range candidates {
-		options[i] = huh.NewOption(candidate.label, i)
-	}
-	var chosen []int
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewMultiSelect[int]().
-			Title("Select memory roots to enroll (space to toggle, enter to confirm)").
-			Options(options...).
-			Value(&chosen),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
-		return nil, err
-	}
-	return chosen, nil
-}
-
-// confirmProjectPathInteractive prefills the field with the adapter's
-// PathGuess (a slug reversal, which is lossy — hence the confirmation)
-// so the common case is just pressing enter, but lets the user correct
-// it before Identify reads the project's git remote.
-func confirmProjectPathInteractive(guess string, accessible bool) (string, error) {
-	path := guess
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Confirm this project's path").
-			Value(&path),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// nameRemotelessFolderInteractive asks for a folder name for a project
-// Identify could not derive a canonical id for (no git remote).
-// Validated live against repo.ValidateFolderName so a bad name is
-// caught here, not as a wire error surfaced much later from the
-// daemon's own identical check.
-func nameRemotelessFolderInteractive(hint string, accessible bool) (string, error) {
-	name := hint
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("This project has no git remote — choose a folder name for it").
-			Value(&name).
-			Validate(func(s string) error {
-				return repo.ValidateFolderName(strings.TrimSpace(s))
-			}),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(name), nil
 }

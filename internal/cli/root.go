@@ -30,6 +30,9 @@ func Root() *cobra.Command {
 		newKeyCmd(),
 		newConflictsCmd(),
 		newInitCmd(),
+		newTrackCmd(),
+		newUntrackCmd(),
+		newMigrateCmd(),
 	)
 	return root
 }

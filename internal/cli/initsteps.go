@@ -28,20 +28,6 @@ import (
 // tool that created it, not at the memories repo itself.
 const createRepoDescription = "agent-brain encrypted memories (github.com/Sawmonabo/agent-brain)"
 
-// enrollCandidate is one row the enrollment picker (step 9) offers.
-// Normally it is exactly one discovered-but-unenrolled memory root; a
-// global-scope provider (codex) instead collapses ALL of its
-// still-unenrolled roots into a single candidate, since picking it
-// enrolls them together as one pseudo-project (_global) rather than as
-// independent choices. label is precomputed so initsteps.go never needs
-// to format huh option text (that stays in init.go's business, this is
-// just plain data).
-type enrollCandidate struct {
-	provider   provider.Provider
-	discovered []provider.Discovered
-	label      string
-}
-
 // initState threads every value one init step resolves to the steps
 // that follow it. Steps never touch stdin/a TTY or construct huh forms
 // directly (init.go owns all of that) — everything a step needs to make
@@ -528,17 +514,6 @@ func stepService(_ context.Context, state *initState) error {
 	return err
 }
 
-// errSkipRemoteless signals "this unit needs a human-chosen folder name
-// and none is available right now" — the --enroll all closure for
-// nameRemotelessFolder returns it for every remoteless per-project
-// discovery (a project with no git remote has no canonical id to derive
-// one from): "remoteless [units are] skipped with a printed warning —
-// they need a human name". stepEnrollment treats it as "skip this one
-// unit", never as a fatal error for the whole step. The interactive
-// closure (huh Input, wired in init.go) never returns it — a human is
-// present to type the name.
-var errSkipRemoteless = errors.New("remoteless project needs a folder name")
-
 // stepEnrollment offers every discovered-but-unenrolled memory root for
 // enrollment and submits each accepted one to the daemon via
 // client.Track (Task 7) — the CLI process itself never writes units into
@@ -552,10 +527,7 @@ func stepEnrollment(ctx context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	enrolled := make(map[[2]string]bool, len(local.Units))
-	for _, u := range local.Units {
-		enrolled[[2]string{u.Provider, u.LocalDir}] = true
-	}
+	enrolled := enrolledSet(local.Units)
 
 	candidates, err := buildEnrollCandidates(ctx, state.registry, enrolled)
 	if err != nil {
@@ -581,10 +553,11 @@ func stepEnrollment(ctx context.Context, state *initState) error {
 		return err
 	}
 
+	target := enrollTarget{out: state.out, confirmProjectPath: state.confirmProjectPath, nameRemotelessFolder: state.nameRemotelessFolder}
 	for _, index := range chosen {
 		candidate := candidates[index]
 		for _, discovered := range candidate.discovered {
-			err := enrollOne(ctx, state, client, candidate.provider, discovered)
+			err := enrollOne(ctx, target, client, candidate.provider, discovered)
 			if errors.Is(err, errSkipRemoteless) {
 				if _, err := fmt.Fprintf(state.out, "enroll: skipped %s (remoteless; needs a folder name — re-run interactively or `agent-brain track`)\n", discovered.LocalDir); err != nil {
 					return err
@@ -594,110 +567,10 @@ func stepEnrollment(ctx context.Context, state *initState) error {
 			if err != nil {
 				return err
 			}
+			state.enrolledAny = true
 		}
 	}
 	return nil
-}
-
-// buildEnrollCandidates runs Discover on every registered provider,
-// drops roots the local registry already tracks, and groups the rest
-// into picker rows: one row per root for per-project providers, one row
-// for ALL of a global-scope provider's remaining roots together.
-func buildEnrollCandidates(ctx context.Context, registry *provider.Registry, enrolled map[[2]string]bool) ([]enrollCandidate, error) {
-	var candidates []enrollCandidate
-	for _, p := range registry.All() {
-		discovered, err := p.Discover(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("discover %s: %w", p.Name(), err)
-		}
-		var unenrolled []provider.Discovered
-		for _, d := range discovered {
-			if !enrolled[[2]string{p.Name(), d.LocalDir}] {
-				unenrolled = append(unenrolled, d)
-			}
-		}
-		if len(unenrolled) == 0 {
-			continue
-		}
-
-		if p.Scope() == provider.ScopeGlobal {
-			labels := make([]string, len(unenrolled))
-			for i, d := range unenrolled {
-				labels[i] = d.Label
-			}
-			candidates = append(candidates, enrollCandidate{
-				provider:   p,
-				discovered: unenrolled,
-				label:      fmt.Sprintf("%s  %s", p.Name(), strings.Join(labels, ", ")),
-			})
-			continue
-		}
-		for _, d := range unenrolled {
-			candidates = append(candidates, enrollCandidate{
-				provider:   p,
-				discovered: []provider.Discovered{d},
-				label:      fmt.Sprintf("%s  %s  → %s", p.Name(), d.Label, d.PathGuess),
-			})
-		}
-	}
-	return candidates, nil
-}
-
-// enrollOne resolves d's cross-machine identity and submits it to the
-// daemon. Global-scope units (codex) skip identity resolution entirely —
-// TrackRequest's ProjectID/PreferredFolder are documented as ignored for
-// global scope; the daemon maps them to repo.GlobalFolder itself.
-// Per-project units with no git remote (Identify returns "" ProjectID)
-// need a human-chosen folder name: state.nameRemotelessFolder either
-// prompts for one (interactive) or returns errSkipRemoteless
-// (--enroll all), which the caller (stepEnrollment) turns into a
-// skipped-with-a-warning unit rather than failing the whole step.
-func enrollOne(ctx context.Context, state *initState, client *api.Client, p provider.Provider, d provider.Discovered) error {
-	var projectID, preferredFolder string
-
-	if p.Scope() == provider.ScopePerProject {
-		projectPath, err := state.confirmProjectPath(d.PathGuess)
-		if err != nil {
-			return err
-		}
-		identity, err := p.Identify(ctx, d, projectPath)
-		if err != nil {
-			return err
-		}
-		projectID = identity.ProjectID
-		preferredFolder = identity.PreferredFolder
-		if projectID == "" {
-			folderName, err := state.nameRemotelessFolder(filepath.Base(d.LocalDir))
-			if err != nil {
-				return err // includes errSkipRemoteless — caller checks errors.Is
-			}
-			// named/<folderName> can never collide with a canonical
-			// remote-derived id: joinRemoteID (provider/remote.go) requires
-			// a non-empty host AND a path containing "/", so every
-			// remote-derived id has at least 3 slash-separated segments
-			// (host/owner/repo, ...). named/<folderName> has exactly 2 —
-			// provided folderName itself is a single segment, which is
-			// exactly what repo.ValidateFolderName's charset (no "/")
-			// guarantees at the prompt (nameRemotelessFolderInteractive)
-			// and what the daemon re-checks fail-closed on Track.
-			projectID = "named/" + folderName
-			preferredFolder = folderName
-		}
-	}
-
-	response, err := client.Track(ctx, api.TrackRequest{
-		Provider:        p.Name(),
-		ProjectID:       projectID,
-		PreferredFolder: preferredFolder,
-		LocalDir:        d.LocalDir,
-		RepoSubdir:      d.RepoSubdir,
-	})
-	if err != nil {
-		return err
-	}
-	state.enrolledAny = true
-	_, err = fmt.Fprintf(state.out, "enroll: %s -> %s\n", d.LocalDir, response.Folder)
-	return err
 }
 
 // ensureDaemonClient returns state.apiClient if a caller (orchestrator or
