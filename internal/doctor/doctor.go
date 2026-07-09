@@ -123,16 +123,19 @@ type checkFunc func(context.Context, Deps) (CheckResult, bool)
 
 // battery is the full check list, in the deterministic order the CLI/
 // dashboard renders it (spec: settings · keyset · checkout · filters ·
-// attributes · credential-helper · remote · gh · daemon · service ·
-// registry-local · conflict-log · claude-prereqs · codex-prereqs ·
-// legacy-leftovers). SafetyGate (gate.go) reuses these same functions in
-// its own narrower, checkout-first order.
+// attributes · git-meta · credential-helper · remote · gh · daemon ·
+// service · registry-local · conflict-log · claude-prereqs ·
+// codex-prereqs · legacy-leftovers). SafetyGate (gate.go) reuses these
+// same functions in its own narrower, checkout-first order — but
+// deliberately NOT checkGitMeta, whose doc comment explains why gating on
+// it would deadlock the heal.
 var battery = []checkFunc{
 	checkSettings,
 	checkKeyset,
 	checkCheckout,
 	checkFilters,
 	checkAttributes,
+	checkGitMeta,
 	checkCredentialHelper,
 	checkRemote,
 	checkGH,

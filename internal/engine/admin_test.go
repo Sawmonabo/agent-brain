@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
@@ -49,6 +50,143 @@ func assertAbsent(t *testing.T, path string) {
 	t.Helper()
 	if _, err := os.Lstat(path); err == nil {
 		t.Fatalf("expected %s to be absent, but it exists", path)
+	}
+}
+
+// plantResidentPoison commits a git-meta file into the checkout — the state
+// a fresh clone of a poisoned main materializes (F1, Phase-3 final review):
+// no earlier cycle of THIS machine has ever scrubbed it.
+func plantResidentPoison(t *testing.T, checkout, rel string) {
+	t.Helper()
+	writeCheckout(t, checkout, rel, "* -filter\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "simulate poisoned clone")
+}
+
+// assertPoisonHealed asserts rel is gone from the worktree AND from HEAD's
+// tree — the admin op scrubbed it and its own commit carried the heal.
+func assertPoisonHealed(t *testing.T, checkout, rel string) {
+	t.Helper()
+	if _, err := os.Lstat(filepath.Join(checkout, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+		t.Fatalf("resident poison %q still on disk after the admin op", rel)
+	}
+	if _, err := gitx.Run(context.Background(), checkout, "cat-file", "-e", "HEAD:"+rel); err == nil {
+		t.Fatalf("resident poison %q still in HEAD's tree after the admin op", rel)
+	}
+}
+
+// TestAdminOpsScrubResidentGitMetaPoison pins the F1 boundary rule for the
+// three standalone admin commits: every busy-guarded engine entry point that
+// can create a commit scrubs resident git-meta poison FIRST, so no `git add`
+// ever consults hostile attributes. The Sync entry point is pinned at the
+// wire level by the adversarial corpus (fresh_join_resident_folder_poison);
+// these pins are the fast unit-level equivalents for register/purge/seed.
+// The poison sits OUTSIDE each op's own pathspec where that is possible, so
+// the pin proves a WHOLE-CHECKOUT scrub, not an op-scoped one.
+func TestAdminOpsScrubResidentGitMetaPoison(t *testing.T) {
+	t.Parallel()
+
+	t.Run("register", func(t *testing.T) {
+		t.Parallel()
+		checkout, _ := newTestCheckout(t)
+		e := newTestEngine(t, checkout)
+		ctx := context.Background()
+		plantResidentPoison(t, checkout, "alpha/.gitattributes")
+
+		if _, err := e.RegisterProject(ctx, "claude", "id-beta", "beta"); err != nil {
+			t.Fatal(err)
+		}
+		assertPoisonHealed(t, checkout, "alpha/.gitattributes")
+	})
+
+	t.Run("purge", func(t *testing.T) {
+		t.Parallel()
+		checkout, _ := newTestCheckout(t)
+		e := newTestEngine(t, checkout)
+		ctx := context.Background()
+		folder, err := e.RegisterProject(ctx, "claude", "id-alpha", "alpha")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeCheckout(t, checkout, "alpha/claude/note.md", "hi\n")
+		mustGit(t, checkout, "add", "-A")
+		mustGit(t, checkout, "commit", "--quiet", "-m", "seed alpha")
+		plantResidentPoison(t, checkout, "gamma/.gitattributes")
+
+		if err := e.PurgeProject(ctx, folder); err != nil {
+			t.Fatal(err)
+		}
+		assertPoisonHealed(t, checkout, "gamma/.gitattributes")
+	})
+
+	t.Run("seed", func(t *testing.T) {
+		t.Parallel()
+		checkout, _ := newTestCheckout(t)
+		e := newTestEngine(t, checkout)
+		ctx := context.Background()
+		plantResidentPoison(t, checkout, "alpha/.gitattributes")
+		src := t.TempDir()
+		writeSeedFile(t, filepath.Join(src, "imported.md"), "legacy\n")
+
+		report, err := e.SeedProject(ctx, "alpha", "claude", "my-slug", src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Files != 1 || report.Skipped {
+			t.Fatalf("seed report = %+v, want 1 file / not skipped", report)
+		}
+		assertPoisonHealed(t, checkout, "alpha/.gitattributes")
+		assertExists(t, filepath.Join(checkout, "alpha", "claude", "imported.md"))
+	})
+}
+
+// TestAdminOpsRecoverCrashedRebase pins prepareCheckout's other half for the
+// admin entry points. A daemon crash mid-integrate leaves a STOPPED rebase:
+// detached HEAD plus .git/rebase-merge. Sync's recovery aborts it at the next
+// cycle — but an admin op can be the FIRST engine entry after a restart.
+// Without the same recovery, the op would either refuse (unmerged index
+// entries) or commit onto the detached HEAD, and the eventual abort would
+// orphan that commit — a silently lost purge.
+func TestAdminOpsRecoverCrashedRebase(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	e := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	folder, err := e.RegisterProject(ctx, "claude", "id-alpha", "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A genuinely stopped rebase: divergent edits to one memory file.
+	writeCheckout(t, checkout, "alpha/claude/note.md", "base\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "base")
+	mustGit(t, checkout, "checkout", "--quiet", "-b", "side")
+	writeCheckout(t, checkout, "alpha/claude/note.md", "side\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "side edit")
+	mustGit(t, checkout, "checkout", "--quiet", "main")
+	writeCheckout(t, checkout, "alpha/claude/note.md", "main\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "main edit")
+	if _, err := gitx.Run(ctx, checkout, "rebase", "side"); err == nil {
+		t.Fatal("fixture rebase unexpectedly succeeded — it must stop on a conflict")
+	}
+
+	if err := e.PurgeProject(ctx, folder); err != nil {
+		t.Fatalf("purge as the first engine entry after a crashed rebase: %v", err)
+	}
+	// The op recovered first: no rebase in progress, HEAD attached to main,
+	// and the purge commit is ON main, not orphaned on a detached HEAD.
+	if _, err := os.Lstat(filepath.Join(checkout, ".git", "rebase-merge")); !os.IsNotExist(err) {
+		t.Fatal("rebase-merge state still present after the admin op")
+	}
+	branch := strings.TrimSpace(mustGit(t, checkout, "rev-parse", "--abbrev-ref", "HEAD").Stdout)
+	if branch != "main" {
+		t.Fatalf("HEAD = %q after the admin op, want main", branch)
+	}
+	if got := lastSubject(t, checkout); got != "purge: alpha (host-a)" {
+		t.Fatalf("purge commit not at HEAD: subject = %q", got)
 	}
 }
 

@@ -17,33 +17,19 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
-// isGitMetaPath reports whether any slash-separated segment of the
-// unit-relative rel is a git metadata name — `.gitattributes`,
-// `.gitignore`, or `.git` — compared case-insensitively.
+// isGitMetaPath is repo.IsGitMetaPath, the ONE definition both the engine
+// (which enforces the invariant) and doctor (which observes it) share — see
+// that function for the full precedence-attack rationale.
 //
-// SECURITY (spec §5, absolute invariant): a `.gitattributes` mirrored into
-// a unit subtree overrides the checkout-root attributes for that subtree by
-// git's deepest-file-wins precedence. A single `* -filter` line unsets the
-// encryption clean filter — no filter runs, `filter.agentbrain.required`
-// never fires — so sibling memory files commit as PLAINTEXT and push to the
-// remote in the clear. A `.gitignore` sibling silently stops files syncing;
-// a `.git` segment embeds a gitlink or nested repo. The invariant must not
-// depend on provider classification tables, so the engine refuses these
-// names unconditionally in every sync path (mirror-in inbound, checkout
-// scrub, mirror-out outbound). EqualFold because case-insensitive
-// filesystems (macOS) resolve `.GITATTRIBUTES` when git opens
-// `.gitattributes`. rel is unit-relative, so the checkout-root
-// `.gitattributes` (managed by repo.WriteAttributes) is never in scope.
-func isGitMetaPath(rel string) bool {
-	for _, seg := range strings.Split(rel, "/") {
-		if strings.EqualFold(seg, ".gitattributes") ||
-			strings.EqualFold(seg, ".gitignore") ||
-			strings.EqualFold(seg, ".git") {
-			return true
-		}
-	}
-	return false
-}
+// The engine's enforcement is unconditional and never rides the provider
+// classification tables: mirror-in refuses these names inbound BEFORE
+// Classify, the checkout scrub removes them at any depth, mirror-out
+// refuses them outbound, and every commit-creating entry point scrubs the
+// checkout before its first `git add` (prepareCheckout, scrub.go). Callers
+// here pass unit-relative paths, so the checkout-root `.gitattributes`
+// (managed by repo.WriteAttributes) is never in scope; scrubIntegrated
+// walks root-relative and exempts it explicitly.
+func isGitMetaPath(rel string) bool { return repo.IsGitMetaPath(rel) }
 
 // scrubCheckoutFile removes a checkout file both from git's index and from
 // disk. git rm --ignore-unmatch silently no-ops on an untracked file: a

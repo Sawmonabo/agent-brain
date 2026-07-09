@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +38,8 @@ func TestAdversarialContainment(t *testing.T) {
 		{"hostile_manifest_paths", advHostileManifestPaths},
 		{"magic_prefix_memory", advMagicPrefixMemory},
 		{"file_burst_single_cycle", advFileBurstSingleCycle},
+		{"fresh_join_resident_folder_poison", advFreshJoinResidentFolderPoison},
+		{"seed_beside_resident_poison", advSeedBesideResidentPoison},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -291,6 +294,88 @@ func advFileBurstSingleCycle(t *testing.T) {
 		}
 	}
 	// ...and the universal invariant proves NONE of the 5k blobs leaked.
+	assertNoPlaintextOnWire(t, bare, sentinel)
+}
+
+// --- Rows 10, 11: resident poison at the commit boundary (F1, final review) --
+
+func advFreshJoinResidentFolderPoison(t *testing.T) {
+	// Rows 1–5 all poison a machine whose checkout an EARLIER cycle already
+	// scrubbed: the victim integrates the hostile push and the post-integrate
+	// scrub heals before any commit lands beside the poison. This row pins
+	// the window those rows structurally miss (F1, Phase-3 final review):
+	// the poison is ALREADY RESIDENT when the victim's checkout comes into
+	// existence — a fresh machine joins by cloning a poisoned main — and the
+	// victim's FIRST cycle commits new memory beside it. A folder-level
+	// `* -filter` unselects the encryption clean filter for the subtree
+	// (deepest-.gitattributes-wins), `filter.required` never fires for an
+	// unselected filter, and without a scrub at the cycle TOP the first
+	// `git add` stores plaintext.
+	bare := newBareRepo(t)
+	a := newSyncMachine(t, "host-a", bare, true)
+	a.write(t, "memories/steady.md", "benign steady fact\n")
+	a.sync(t)
+
+	// The attacker poisons the existing folder BEFORE the new machine exists.
+	attackerPush(t, bare, "poison: folder attributes before join", func(t *testing.T, dir string) {
+		writeFileRaw(t, dir, "alpha/.gitattributes", "* -filter -diff -merge\n")
+	})
+
+	// A fresh machine joins AFTER the poison landed: its clone materializes
+	// alpha/.gitattributes, and no cycle of its own has ever scrubbed it.
+	const sentinel = "freshjoin-do-not-leak"
+	c := newSyncMachine(t, "host-c", bare, false)
+	c.write(t, "memories/joined.md", "the secret is "+sentinel+"\n")
+	report := c.sync(t) // FIRST cycle: mirror-in + commit with poison resident
+
+	// The scrub ran at the boundary and the cycle log names the heal.
+	if !slices.Contains(report.Scrubbed, "alpha/.gitattributes") {
+		t.Fatalf("first cycle did not report scrubbing the resident poison: Scrubbed = %v", report.Scrubbed)
+	}
+	// The first-cycle commit is ciphertext…
+	if blob := remoteBlob(t, bare, "alpha/claude/memories/joined.md"); !strings.HasPrefix(blob, magicPrefix) {
+		t.Fatal("fresh machine's first commit stored plaintext beside resident folder poison")
+	}
+	// …the poison is gone from the fresh checkout and healed off the remote…
+	if _, err := os.Stat(filepath.Join(c.checkout, "alpha", ".gitattributes")); !os.IsNotExist(err) {
+		t.Fatal("resident folder poison still in the fresh checkout after its first cycle")
+	}
+	if _, err := gitRunEnv(t, bare, nil, "cat-file", "-e", "main:alpha/.gitattributes"); err == nil {
+		t.Fatal("folder poison still on the remote main after the fresh machine's first cycle")
+	}
+	assertNoPlaintextOnWire(t, bare, sentinel)
+}
+
+func advSeedBesideResidentPoison(t *testing.T) {
+	// migrate's seed (SeedProject) is a standalone admin commit OUTSIDE the
+	// sync cycle. Same resident-poison window as the fresh-join row, reached
+	// through the other committing entry point: a fresh machine joins a
+	// poisoned main, then seeds a legacy memory tree into the poisoned
+	// folder. The seed's own source-tree git-meta refusal cannot help — the
+	// poison is already in the CHECKOUT, not the source tree. Without a
+	// scrub before the seed's `git add`, the seed layer commits as plaintext
+	// locally and the daemon's post-migrate cycle pushes those blobs.
+	bare := newBareRepo(t)
+	a := newSyncMachine(t, "host-a", bare, true)
+	a.write(t, "memories/steady.md", "benign steady fact\n")
+	a.sync(t)
+
+	attackerPush(t, bare, "poison: folder attributes before migrate", func(t *testing.T, dir string) {
+		writeFileRaw(t, dir, "alpha/.gitattributes", "* -filter -diff -merge\n")
+	})
+
+	const sentinel = "seedlayer-do-not-leak"
+	c := newSyncMachine(t, "host-c", bare, false)
+	legacy := t.TempDir()
+	writeFileRaw(t, legacy, "imported.md", "legacy secret "+sentinel+"\n")
+	if _, err := c.engine.SeedProject(suiteCtx, "alpha", "claude", "legacy-slug", legacy); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	c.sync(t) // the migrate flow runs a cycle right after the seed — it pushes
+
+	if blob := remoteBlob(t, bare, "alpha/claude/imported.md"); !strings.HasPrefix(blob, magicPrefix) {
+		t.Fatal("seed layer stored plaintext beside resident folder poison")
+	}
 	assertNoPlaintextOnWire(t, bare, sentinel)
 }
 

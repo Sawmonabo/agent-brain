@@ -574,3 +574,26 @@ func TestUntrackCommandWiring(t *testing.T) {
 		t.Fatalf("requests = %+v", getRequests())
 	}
 }
+
+// TestRunUntrackReportsNotEnrolledHonestly pins that the CLI READS
+// UntrackResponse.Removed rather than announcing "removed" unconditionally.
+// The daemon returns Removed=false when the local registry held no such
+// enrollment (a race with another untrack, or a stale `projects` listing);
+// claiming a removal that never happened is a lie the operator acts on.
+func TestRunUntrackReportsNotEnrolledHonestly(t *testing.T) {
+	units := []api.UnitInfo{{Provider: "claude", Folder: "alpha", LocalDir: "/p/alpha/.claude/memory"}}
+	startFakeDaemonForUntrack(t, units, api.UntrackResponse{Removed: false})
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	confirmPurge := func(string) (bool, error) { return false, nil }
+	if err := runUntrack(context.Background(), client, &out, "alpha", false, false, confirmPurge); err != nil {
+		t.Fatalf("runUntrack: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "not enrolled") {
+		t.Fatalf("Removed=false must not report a removal:\n%s", got)
+	}
+}

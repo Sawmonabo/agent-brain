@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
@@ -30,7 +33,96 @@ func checkSettings(_ context.Context, deps Deps) (CheckResult, bool) {
 			Fix:    fmt.Sprintf("fix %s and retry", deps.Paths.SettingsFile()),
 		}, true
 	}
-	return CheckResult{Name: name, Status: StatusOK, Detail: "config.toml loads"}, true
+	// Report the EFFECTIVE cadence, not merely that the file parsed: a
+	// config.toml that loads can still carry a floor-clamped or defaulted
+	// value the user did not expect, and "it loads" would hide that. These
+	// are the values the daemon actually runs on (config.LoadSettings has
+	// already applied defaults and floors).
+	sync := deps.Settings.Sync
+	detail := fmt.Sprintf("config.toml loads (ticker %s, debounce %s, poll %s)",
+		time.Duration(sync.Ticker), time.Duration(sync.Debounce), time.Duration(sync.Poll))
+	if overridden := overriddenProviders(deps.Settings); len(overridden) > 0 {
+		detail += fmt.Sprintf("; classification overridden for %s", strings.Join(overridden, ", "))
+	}
+	return CheckResult{Name: name, Status: StatusOK, Detail: detail}, true
+}
+
+// overriddenProviders names, in deterministic order, the providers whose
+// classification tables config.toml overrides (spec §6). An override that
+// silently misclassifies a fact as ignore stops that file syncing, so
+// doctor states plainly which tables are no longer stock.
+func overriddenProviders(settings config.Settings) []string {
+	var names []string
+	for provider, providerSettings := range settings.Providers {
+		if len(providerSettings.Classify) > 0 {
+			names = append(names, provider)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// checkGitMeta reports git-meta poison RESIDENT in the checkout below its
+// root — a `<folder>/.gitattributes` carrying `* -filter` unselects the
+// encryption clean filter for that subtree (see repo.IsGitMetaPath).
+//
+// ADVISORY BY CONTRACT, and it must NEVER join SafetyGate. The engine heals
+// this automatically: every commit-creating entry point scrubs the checkout
+// first (engine.prepareCheckout). SafetyGate is what the daemon evaluates
+// BEFORE each cycle, so a failing git-meta gate would refuse the very sync
+// whose scrub removes the poison — a deadlock that would strand the repo in
+// exactly the state the check exists to flag. Warn, name the paths, and let
+// the next cycle fix it.
+//
+// The root .gitattributes is legitimate (generated); checkAttributes already
+// verifies its content byte-canonically. `.git` is skipped: it is the
+// checkout's own git dir, not repo content.
+func checkGitMeta(_ context.Context, deps Deps) (CheckResult, bool) {
+	const name = "git-meta"
+	root := deps.Paths.MemoriesDir()
+	if _, err := os.Stat(root); err != nil {
+		return CheckResult{}, false // no checkout yet — checkCheckout owns that
+	}
+	var found []string
+	err := filepath.WalkDir(root, func(abs string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(root, abs)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+		switch {
+		case rel == ".":
+			return nil
+		case rel == ".git":
+			return filepath.SkipDir
+		case rel == ".gitattributes":
+			return nil
+		case !repo.IsGitMetaPath(rel):
+			return nil
+		}
+		found = append(found, rel)
+		if entry.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	if err != nil {
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: fmt.Sprintf("cannot scan %s for git-meta: %s", root, err),
+		}, true
+	}
+	if len(found) > 0 {
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: fmt.Sprintf("git-meta resident in the checkout (encryption filter can be unscoped for its subtree): %s", strings.Join(found, ", ")),
+			Fix:    "the next sync cycle removes it; force one with `agent-brain sync`",
+		}, true
+	}
+	return CheckResult{Name: name, Status: StatusOK, Detail: "no git-meta below the checkout root"}, true
 }
 
 func checkKeyset(_ context.Context, deps Deps) (CheckResult, bool) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -80,9 +82,31 @@ func printSummary(report *reportWriter, summary *api.SyncSummary) {
 	report.printf("  out: %d copied / %d deleted / %d skipped\n",
 		summary.MirrorOut.Copied, summary.MirrorOut.Deleted, summary.MirrorOut.Skipped)
 	report.printf("  pushed: %v  queued: %v\n", summary.Pushed, summary.PushQueued)
+	// A non-empty Scrubbed means the engine removed or healed git-meta —
+	// someone pushed something hostile or corrupted (spec §5). It is the
+	// loudest signal a cycle can carry, so the HUMAN surface must show it,
+	// not just the daemon log and `--json`.
+	if len(summary.Scrubbed) > 0 {
+		report.printf("  scrubbed: %s\n", strings.Join(summary.Scrubbed, ", "))
+		report.println("    ^ git-meta removed/healed — a push tried to unscope the encryption filter")
+	}
 	if len(summary.Degraded) > 0 {
 		report.printf("  degraded: %v\n", summary.Degraded)
 	}
+}
+
+// uptimeSuffix renders ", up 3h12m" for a daemon that reported a start
+// time. A zero StartedAt (an older daemon, or one that never recorded it)
+// renders nothing rather than a nonsense duration since the zero year.
+func uptimeSuffix(startedAt time.Time) string {
+	if startedAt.IsZero() {
+		return ""
+	}
+	uptime := time.Since(startedAt)
+	if uptime < 0 {
+		return "" // clock skew between client and daemon; say nothing
+	}
+	return ", up " + uptime.Round(time.Second).String()
 }
 
 func newStatusCmd() *cobra.Command {
@@ -103,7 +127,14 @@ func newStatusCmd() *cobra.Command {
 				return printJSON(cmd, status)
 			}
 			report := &reportWriter{w: cmd.OutOrStdout()}
-			report.printf("daemon: %s (version %s, pid %d)\n", status.State, status.Version, status.PID)
+			report.printf("daemon: %s (version %s, pid %d%s)\n",
+				status.State, status.Version, status.PID, uptimeSuffix(status.StartedAt))
+			// StateDetail names the broken axis when State is not "ready"
+			// (e.g. "doctor: keyset: ..."). Printing only in --json would
+			// leave the human surface saying "uninitialized" with no reason.
+			if status.StateDetail != "" {
+				report.printf("  detail: %s\n", status.StateDetail)
+			}
 			if status.LastSync == nil {
 				report.println("last sync: never")
 				return report.err

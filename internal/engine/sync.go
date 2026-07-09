@@ -23,9 +23,16 @@ func (e *Engine) Sync(ctx context.Context, units []repo.Unit) (Report, error) {
 	var report Report
 	stamp := e.stamp()
 
-	if err := e.recoverState(ctx); err != nil {
+	// Recover a crashed rebase/merge AND scrub git-meta poison already
+	// resident in the checkout, BEFORE mirror-in copies memory and
+	// commitProjects commits it. On a checkout freshly cloned from a
+	// poisoned main, this is the only scrub that runs before the first
+	// `git add` (see prepareCheckout, spec §5).
+	scrubbed, err := e.prepareCheckout(ctx)
+	if err != nil {
 		return report, err
 	}
+	report.Scrubbed = append(report.Scrubbed, scrubbed...)
 
 	manifestPath := e.layout.ManifestFile(e.host)
 	manifest, err := repo.LoadManifest(manifestPath)
@@ -71,7 +78,7 @@ func (e *Engine) Sync(ctx context.Context, units []repo.Unit) (Report, error) {
 	report.Degraded = sortedKeys(skip)
 
 	if integ.Integrated {
-		// SECURITY CONTRACT (spec §5), now ENFORCED by scrubIntegrated:
+		// SECURITY CONTRACT (spec §5), ENFORCED by scrubIntegrated:
 		// integrate may have delivered git-meta poison — a
 		// .gitattributes/.gitignore at ANY depth (including folder level,
 		// one above the unit dirs mirror-in's scrub covers) or a rewritten
@@ -80,11 +87,17 @@ func (e *Engine) Sync(ctx context.Context, units []repo.Unit) (Report, error) {
 		// beside poison stores plaintext. scrubIntegrated runs FIRST here,
 		// before any post-integrate write: it deletes every non-root
 		// git-meta path and heals the root file byte-identical to the
-		// canonical generation. Any post-integrate writer (reconcile's
-		// index writes, Task 7's seed) is covered ONLY while it stays inside
-		// this block's ordering: scrub → write → commit. The commitProjects
-		// below commits both the scrub's healing and reconcile's output, so
-		// fixes propagate on push.
+		// canonical generation. Every post-integrate writer (reconcile's
+		// index writes) is covered ONLY while it stays inside this block's
+		// ordering: scrub → write → commit. The commitProjects below commits
+		// both the scrub's healing and reconcile's output, so fixes
+		// propagate on push.
+		//
+		// This block covers poison this cycle's integrate just delivered.
+		// Poison already RESIDENT when the cycle started — a fresh clone of
+		// a poisoned main — is scrubbed by prepareCheckout at the top of
+		// Sync, which is also what covers the standalone admin commits
+		// (register/purge/seed) that never enter this block at all.
 		healed, err := e.scrubIntegrated(ctx)
 		if err != nil {
 			return report, err

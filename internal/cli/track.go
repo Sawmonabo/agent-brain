@@ -294,7 +294,14 @@ func runUntrack(ctx context.Context, client *api.Client, out io.Writer, target s
 	}
 
 	report := &reportWriter{w: out}
-	report.printf("untrack: %s (%s) removed\n", unit.LocalDir, unit.Folder)
+	// Removed is false when the daemon found no such enrollment in the local
+	// registry — a race with another untrack, or a stale `projects` listing.
+	// Saying "removed" regardless would report work that never happened.
+	if response.Removed {
+		report.printf("untrack: %s (%s) removed\n", unit.LocalDir, unit.Folder)
+	} else {
+		report.printf("untrack: %s (%s) was not enrolled — nothing to remove\n", unit.LocalDir, unit.Folder)
+	}
 	switch {
 	case response.Purged:
 		report.printf("untrack: %s purged from the repo\n", unit.Folder)

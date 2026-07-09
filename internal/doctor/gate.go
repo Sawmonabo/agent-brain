@@ -17,6 +17,13 @@ import (
 // checkout-first order, and is cheap enough to run before every daemon
 // cycle — a few config reads plus one keyset parse. It stops at, and
 // names, the first failing axis rather than running the whole battery.
+//
+// Membership rule: a check belongs here ONLY if a cycle cannot safely run
+// while it fails AND running a cycle cannot repair it. checkGitMeta is the
+// counter-example and is deliberately excluded — the engine's own
+// prepareCheckout scrub is what removes resident git-meta, so gating the
+// cycle on its absence would refuse the sync that performs the heal. Every
+// axis gated here is one only a HUMAN (or `doctor --fix`) can repair.
 func SafetyGate(ctx context.Context, paths config.Paths, registry *provider.Registry, binaryPath string) error {
 	deps := Deps{Paths: paths, Registry: registry, BinaryPath: binaryPath}
 	for _, check := range []checkFunc{

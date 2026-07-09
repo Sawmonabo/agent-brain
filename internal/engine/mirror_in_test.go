@@ -300,42 +300,24 @@ func TestMirrorInForceScrubsFilterSubjectGitMeta(t *testing.T) {
 	}
 }
 
-// TestIsGitMetaPath pins the guard's exact-segment semantics. The
-// negatives matter as much as the positives: over-matching would silently
-// stop legitimate files syncing, which is its own spec violation.
-// .gitmodules and .github are deliberate non-matches — git reads
-// .gitmodules only at the repository root, which unit-relative paths can
-// never name, and .github pins that matching is whole-segment, not prefix.
-func TestIsGitMetaPath(t *testing.T) {
+// TestIsGitMetaPathDelegatesToRepo pins that the engine's guard IS
+// repo.IsGitMetaPath — the semantics themselves are pinned by that
+// package's table test (repo/gitmeta_test.go). Two copies of a security
+// predicate are two predicates, and the one that drifts is the hole; this
+// asserts there is exactly one. The sampled rows are the load-bearing
+// shapes: the folder-level poison that motivated the shared definition, a
+// case-insensitive match (macOS resolves .GITATTRIBUTES for
+// .gitattributes), and a whole-segment non-match.
+func TestIsGitMetaPathDelegatesToRepo(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		rel  string
-		want bool
-	}{
-		{".gitattributes", true},
-		{".gitignore", true},
-		{".git", true},
-		{".GITATTRIBUTES", true},
-		{".GitIgnore", true},
-		{"sub/.gitattributes", true},
-		{"caps/.GITIGNORE", true},
-		{".git/config", true},
-		{"a/b/.git", true},
-		{"", false},
-		{"gitattributes", false},
-		{"gitignore", false},
-		{".gitattributes.bak", false},
-		{"foo.gitignore", false},
-		{".gitmodules", false},
-		{".github", false},
-		{".github/notes.md", false},
-		{"memories/real.md", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.rel, func(t *testing.T) {
+	for _, rel := range []string{
+		"alpha/.gitattributes", ".GITIGNORE", "a/b/.git",
+		".github/notes.md", "memories/real.md", "",
+	} {
+		t.Run(rel, func(t *testing.T) {
 			t.Parallel()
-			if got := isGitMetaPath(tt.rel); got != tt.want {
-				t.Fatalf("isGitMetaPath(%q) = %v, want %v", tt.rel, got, tt.want)
+			if got, want := isGitMetaPath(rel), repo.IsGitMetaPath(rel); got != want {
+				t.Fatalf("engine isGitMetaPath(%q) = %v, repo.IsGitMetaPath = %v — the engine grew a second definition", rel, got, want)
 			}
 		})
 	}

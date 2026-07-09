@@ -22,6 +22,16 @@ import (
 // the engine's busy guard so a mid-Sync admin call fails loudly with ErrBusy
 // rather than interleaving git writes. The CLI never calls these directly —
 // it is a pure UDS client.
+//
+// SECURITY (spec §5): each is a COMMIT-CREATING entry point that runs
+// outside the sync cycle, so each calls prepareCheckout right after the busy
+// guard — recovering a crashed rebase and scrubbing resident git-meta poison
+// before any `git add` of its own. Without it, a machine whose checkout was
+// cloned from a poisoned main would commit the seed layer as plaintext
+// (F1, Phase-3 final review). Their own input-side git-meta refusals (the
+// seed's source-tree scrub below) are a DIFFERENT half of the contract:
+// they keep hostile git-meta out of the repo; prepareCheckout keeps
+// already-resident git-meta from unscoping the filter under them.
 
 // SeedReport says what a seed did.
 type SeedReport struct {
@@ -45,6 +55,10 @@ func (e *Engine) RegisterProject(ctx context.Context, providerName, id, preferre
 		return "", ErrBusy
 	}
 	defer e.busy.Store(false)
+
+	if _, err := e.prepareCheckout(ctx); err != nil {
+		return "", err
+	}
 
 	projectsPath := e.layout.ProjectsFile()
 	projects, err := repo.LoadProjects(projectsPath)
@@ -92,6 +106,10 @@ func (e *Engine) PurgeProject(ctx context.Context, folder string) error {
 		return ErrBusy
 	}
 	defer e.busy.Store(false)
+
+	if _, err := e.prepareCheckout(ctx); err != nil {
+		return err
+	}
 
 	if err := repo.ValidateFolderName(folder); err != nil {
 		return fmt.Errorf("purge: %w", err)
@@ -154,6 +172,10 @@ func (e *Engine) SeedProject(ctx context.Context, folder, providerName, slug, sr
 		return SeedReport{}, ErrBusy
 	}
 	defer e.busy.Store(false)
+
+	if _, err := e.prepareCheckout(ctx); err != nil {
+		return SeedReport{}, err
+	}
 
 	if err := repo.ValidateFolderName(folder); err != nil {
 		return SeedReport{}, fmt.Errorf("seed: %w", err)

@@ -221,10 +221,28 @@ after every clone, since `.git/config` is not versioned): the versioned
 `.gitattributes` scopes `filter/diff/merge=agentbrain` to memory-content paths only
 (`.agent-brain/**` and `.gitattributes` itself excluded); local `.git/config` gets
 clean/smudge/textconv/driver entries with **`filter.agentbrain.required = true`** —
-fail-closed. Git refuses to commit plaintext when the filter is missing or broken,
-and a clone without the binary shows ciphertext with an erroring smudge instead of
-silently degrading. `merge.renormalize = true`. The daemon refuses to sync until
-`doctor` passes. HTTPS credential lookups in the checkout are wired to gh's own
+fail-closed. Git refuses to commit plaintext when the named filter is SELECTED and
+missing or broken, and a clone without the binary shows ciphertext with an erroring
+smudge instead of silently degrading. `merge.renormalize = true`. The daemon refuses
+to sync until `doctor` passes.
+
+**git-meta scrub contract (binding).** `required = true` does NOT save a path whose
+filter is *unselected*: a `.gitattributes` below the checkout root overrides the root
+file for its subtree (git's deepest-file-wins precedence), and a single `* -filter`
+line unselects `agentbrain` there — no filter runs, `required` never fires, and a
+sibling memory file commits as PLAINTEXT. `.gitignore` and `.git` segments are the
+same class of hazard (silently unsynced files; embedded repos). Therefore **no
+git-meta path may exist in the checkout below its root**, and **every engine entry
+point that can create a commit scrubs the whole checkout before its first `git add`**
+— `Sync` and the three admin ops (register/purge/seed) all run `prepareCheckout`
+(recover + whole-checkout scrub + heal-commit) as their preamble; `Sync` additionally
+re-scrubs post-integrate, because a rebase can deliver fresh poison mid-cycle. The
+scrub is force-semantic: git-meta is never user data, so its removal never waits on
+an up-to-date content check (a raw-pushed `.gitignore` is filter-subject and would
+otherwise wedge the cycle). `doctor`'s `git-meta` check reports resident poison but
+is ADVISORY and never joins `SafetyGate` — gating the cycle on it would refuse the
+very sync whose scrub performs the heal. The single definition both the enforcing
+engine and the observing doctor share is `repo.IsGitMetaPath`. HTTPS credential lookups in the checkout are wired to gh's own
 helper repo-locally: `credential.helper` is cleared to git's empty-reset sentinel
 (dropping any global/system helper — e.g. a stale keychain PAT for github.com),
 then set to `!<absolute gh path> auth git-credential` in the hidden checkout's
@@ -500,11 +518,13 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
   `TestScripts`) — txtar scripts that drive the REAL binary as a subprocess against
   `git init --bare` remotes with a faked `gh`, zero network. Five flows:
   `init_first_machine`, `track_and_sync`, `migrate`, `doctor_fix`, `key_roundtrip`.
-- **Adversarial containment:** a STANDING corpus (`TestAdversarialContainment`, nine
+- **Adversarial containment:** a STANDING corpus (`TestAdversarialContainment`, eleven
   rows as of 2026-07-09) that raw-pushes hostile input from a clone with NO filters
   wired — an attacker who never ran agent-brain — and pins each engine containment
   invariant, every row ending on the universal no-plaintext-on-the-wire assertion.
-  Later phases only APPEND rows, never delete (spec §11).
+  Later phases only APPEND rows, never delete (spec §11). The last two rows pin the
+  commit boundary the other nine structurally miss: poison ALREADY RESIDENT when a
+  checkout is first cloned or seeded, rather than delivered by a later integrate.
 - **Integration:** real system git in `t.TempDir()` — `git init --bare` as the
   fake remote, zero network. The critical scenario: two simulated "machines" clone
   the bare repo, write divergent memory, and sync — asserting the full

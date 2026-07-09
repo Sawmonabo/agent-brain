@@ -217,3 +217,54 @@ func TestSyncProjectFlagSendsFilter(t *testing.T) {
 		t.Fatalf("sync --project x did not send the filter in the request body: %q", gotBody)
 	}
 }
+
+// TestStatusRendersStateDetailAndUptime pins the human surface for the two
+// StatusResponse fields the daemon populates: StateDetail (which names the
+// broken axis when the daemon is not ready) and StartedAt (uptime). Before
+// the Phase-3 final review both reached only the daemon log and `--json`, so
+// `agent-brain status` said "uninitialized" with no reason.
+func TestStatusRendersStateDetailAndUptime(t *testing.T) {
+	startFakeDaemon(t,
+		api.StatusResponse{
+			Version: "1.2.3", State: "uninitialized", PID: 99,
+			StateDetail: "doctor: keyset: cannot read keyset.json",
+			StartedAt:   time.Now().Add(-90 * time.Minute),
+		},
+		api.SyncResponse{}, api.ProjectsResponse{})
+	out := runCommand(t, "status")
+	for _, want := range []string{"uninitialized", "doctor: keyset", "up 1h30m"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestStatusOmitsUptimeWhenStartedAtIsZero: a daemon that never reported a
+// start time must not render a duration measured from the zero year.
+func TestStatusOmitsUptimeWhenStartedAtIsZero(t *testing.T) {
+	startFakeDaemon(t,
+		api.StatusResponse{Version: "1.2.3", State: "ready", PID: 99},
+		api.SyncResponse{}, api.ProjectsResponse{})
+	out := runCommand(t, "status")
+	if strings.Contains(out, "up ") {
+		t.Fatalf("zero StartedAt must render no uptime:\n%s", out)
+	}
+}
+
+// TestSyncRendersScrubbedPaths pins the hostile-push operator signal on the
+// HUMAN surface. SyncSummary.Scrubbed nonzero means the engine removed or
+// healed git-meta someone pushed to unscope the encryption filter (spec §5) —
+// the loudest thing a cycle can report, and it must not hide in `--json`.
+func TestSyncRendersScrubbedPaths(t *testing.T) {
+	startFakeDaemon(t, api.StatusResponse{},
+		api.SyncResponse{Status: "completed", Summary: &api.SyncSummary{
+			Scrubbed: []string{"alpha/.gitattributes", ".gitattributes"},
+			Pushed:   true,
+		}}, api.ProjectsResponse{})
+	out := runCommand(t, "sync")
+	for _, want := range []string{"scrubbed", "alpha/.gitattributes", "unscope"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("sync output missing scrub signal %q:\n%s", want, out)
+		}
+	}
+}
