@@ -35,7 +35,7 @@ func sanitizeLabel(label string) string {
 // conflicts view. Marker prefixes match merge-file's 7-char default style.
 //
 // Both labels are sanitized at this boundary (sanitizeLabel): a hostile label
-// cannot forge the block's parse anchors that Phase 3's conflicts view relies
+// cannot forge the block's parse anchors that `agent-brain conflicts` relies
 // on, while well-behaved labels pass through byte-for-byte. Callers need not
 // pre-sanitize.
 func RewriteRetainBoth(merged []byte, labelA, labelB, timestamp string) ([]byte, bool) {

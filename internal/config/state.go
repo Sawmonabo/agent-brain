@@ -16,6 +16,6 @@ func (p Paths) DaemonLogFile() string { return filepath.Join(p.DataDir, "daemon.
 
 // ConflictLogFile is where the merge driver records retain-both events
 // (spec §4: "records the event for the dashboard conflicts view") when
-// the daemon exports AGENT_BRAIN_CONFLICT_LOG. Phase 3's conflicts view
+// the daemon exports AGENT_BRAIN_CONFLICT_LOG. `agent-brain conflicts`
 // reads it.
 func (p Paths) ConflictLogFile() string { return filepath.Join(p.DataDir, "conflicts.jsonl") }

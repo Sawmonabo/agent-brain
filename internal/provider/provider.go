@@ -1,9 +1,9 @@
 // Package provider defines the contract every memory-provider adapter
 // implements, plus the class/pattern model driving merge policy and
 // .gitattributes generation (spec §6; ADRs 02/03). Phase 2 shipped the
-// contract and a test fake; the claude/codex adapters are Phase 3.
-// Discover/Identify (spec §6) join the interface in Phase 3 alongside
-// enrollment, their first consumer.
+// contract and a test fake; Phase 3 shipped the claude/codex adapters
+// and added Discover/Identify (spec §6) alongside enrollment, their
+// first consumer.
 package provider
 
 import (

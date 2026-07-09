@@ -50,8 +50,8 @@ type statusError struct {
 func (e statusError) Error() string { return e.msg }
 
 // Config wires the daemon. Registry is injected so the composition
-// root (cmd layer) decides which providers exist — Phase 2 runs an
-// empty or fake registry; Phase 3 plugs in claude/codex.
+// root (cmd layer) decides which providers exist — tests run an empty
+// or fake registry; production wires claude/codex.
 type Config struct {
 	Paths    config.Paths
 	Settings config.Settings
@@ -202,8 +202,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// The Phase-1 merge driver records retain-both events only when
 	// AGENT_BRAIN_CONFLICT_LOG is set (spec §4: the driver "records the
 	// event for the dashboard conflicts view"). Export it process-wide so
-	// every git child spawned during integrate inherits it; Phase 3's
-	// conflicts view reads this file.
+	// every git child spawned during integrate inherits it;
+	// `agent-brain conflicts` reads this file (the dashboard view is
+	// deferred past Phase 3).
 	if err := os.Setenv("AGENT_BRAIN_CONFLICT_LOG", d.cfg.Paths.ConflictLogFile()); err != nil {
 		return fmt.Errorf("conflict log env: %w", err)
 	}

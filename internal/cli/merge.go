@@ -54,8 +54,9 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// logConflict best-effort appends a JSON line for the Phase 3 conflicts
-// view; it must never fail the merge, so errors are discarded.
+// logConflict best-effort appends a JSON line consumed by
+// `agent-brain conflicts`; it must never fail the merge, so errors are
+// discarded.
 func logConflict(pathname string) {
 	logPath := os.Getenv("AGENT_BRAIN_CONFLICT_LOG")
 	if logPath == "" {

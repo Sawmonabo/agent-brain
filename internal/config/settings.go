@@ -55,8 +55,8 @@ type ProviderSettings struct {
 }
 
 // Settings is ~/.config/agent-brain/config.toml — user-edited, read-only
-// to the program (ADR 17: init writes it once from a template in Phase 3;
-// nothing ever rewrites it, so user comments survive).
+// to the program (ADR 17: `agent-brain init` writes it once from a
+// template; nothing ever rewrites it, so user comments survive).
 type Settings struct {
 	Sync SyncSettings `toml:"sync"`
 	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.

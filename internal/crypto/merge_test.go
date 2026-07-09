@@ -158,7 +158,7 @@ func TestMergeFactEmptyBaseAddAdd(t *testing.T) {
 // reach git's conflict markers (-L), not only inside RewriteRetainBoth. A label
 // carrying newlines would otherwise make git's -L marker inject extra lines into
 // the merged body — here a forged "conflict end" anchor that would truncate
-// Phase 3's parse. RewriteRetainBoth alone cannot defuse this (it re-labels the
+// the conflicts parse. RewriteRetainBoth alone cannot defuse this (it re-labels the
 // version comment but folds git's injected marker lines into the body), so the
 // driver must sanitize the -L labels too. The block must carry exactly one end
 // anchor and none of the label's raw bytes.

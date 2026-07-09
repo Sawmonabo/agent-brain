@@ -104,7 +104,7 @@ func TestGitMergeLwwKeepsCurrent(t *testing.T) {
 
 // TestGitMergeFactLabelOverride proves the AGENT_BRAIN_MERGE_LABEL_A/B contract
 // (the Phase 2 engine sets these to host names): the override reaches the
-// retain-both block labels the Phase 3 conflicts view renders.
+// retain-both block labels `agent-brain conflicts` renders.
 func TestGitMergeFactLabelOverride(t *testing.T) {
 	setupKeyset(t)
 	t.Setenv("AGENT_BRAIN_MERGE_LABEL_A", "host-alpha")
@@ -129,8 +129,8 @@ func TestGitMergeFactLabelOverride(t *testing.T) {
 	}
 }
 
-// TestGitMergeFactConflictLog proves the AGENT_BRAIN_CONFLICT_LOG contract the
-// Phase 3 conflicts view consumes: a clean merge logs nothing, a conflicting
+// TestGitMergeFactConflictLog proves the AGENT_BRAIN_CONFLICT_LOG contract
+// `agent-brain conflicts` consumes: a clean merge logs nothing, a conflicting
 // merge appends exactly one JSON line carrying the pathname and mode.
 func TestGitMergeFactConflictLog(t *testing.T) {
 	setupKeyset(t)
