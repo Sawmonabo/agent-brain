@@ -1067,6 +1067,55 @@ func TestStepEnrollmentTracksChosenPerProjectCandidate(t *testing.T) {
 	}
 }
 
+// TestStepEnrollmentNamesRemotelessProjectAndTracksWithNamedPrefix pins the
+// named/<folder> contract (spec's canonical remoteless id, provider.go's
+// Identity.ProjectID doc comment) at the wire: a remoteless per-project
+// candidate whose human-provided folder name is accepted must produce a
+// TrackRequest.ProjectID of literally "named/" + that folder name — not
+// just "some non-empty string" — so a future refactor of enrollOne cannot
+// silently drift the prefix without failing a test, not just a comment.
+func TestStepEnrollmentNamesRemotelessProjectAndTracksWithNamedPrefix(t *testing.T) {
+	fp := &fakeProvider{
+		name: "fakeproj", scope: provider.ScopePerProject,
+		discovered: []provider.Discovered{
+			{LocalDir: "/tmp/project-c/.claude/memory", Label: "project-c", PathGuess: "/tmp/project-c"},
+		},
+		identity: provider.Identity{}, // remoteless: empty ProjectID
+	}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	getRequests := startFakeDaemonForEnrollment(t, func(api.TrackRequest) string { return "my-chosen-folder" })
+
+	var out bytes.Buffer
+	state := &initState{
+		out:                  &out,
+		paths:                config.Paths{DataDir: t.TempDir()},
+		registry:             registry,
+		pickEnrollUnits:      func([]enrollCandidate) ([]int, error) { return []int{0}, nil },
+		confirmProjectPath:   func(guess string) (string, error) { return guess, nil },
+		nameRemotelessFolder: func(string) (string, error) { return "my-chosen-folder", nil },
+	}
+	if err := stepEnrollment(context.Background(), state); err != nil {
+		t.Fatalf("stepEnrollment: %v", err)
+	}
+	requests := getRequests()
+	if len(requests) != 1 {
+		t.Fatalf("Track called %d times, want 1", len(requests))
+	}
+	want := api.TrackRequest{
+		Provider:        "fakeproj",
+		ProjectID:       "named/my-chosen-folder",
+		PreferredFolder: "my-chosen-folder",
+		LocalDir:        "/tmp/project-c/.claude/memory",
+	}
+	if diff := cmp.Diff(want, requests[0]); diff != "" {
+		t.Fatalf("TrackRequest (-want +got):\n%s", diff)
+	}
+}
+
 func TestStepEnrollmentSkipsRemotelessUnderEnrollAll(t *testing.T) {
 	fp := &fakeProvider{
 		name: "fakeproj", scope: provider.ScopePerProject,
