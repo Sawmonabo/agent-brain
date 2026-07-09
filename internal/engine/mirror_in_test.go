@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
@@ -211,6 +212,88 @@ func TestMirrorInScrubsGitMetaFromCheckout(t *testing.T) {
 	status := strings.TrimSpace(mustGit(t, checkout, "status", "--porcelain", "--", "alpha/claude/evil/.gitattributes").Stdout)
 	if !strings.HasPrefix(status, "D") {
 		t.Fatalf("scrub did not stage the deletion: status = %q", status)
+	}
+	if got, err := os.ReadFile(filepath.Join(unitDir, "memories", "keep.md")); err != nil || string(got) != "innocent\n" {
+		t.Fatalf("innocent tracked file disturbed: %q, %v", got, err)
+	}
+}
+
+// TestMirrorInForceScrubsFilterSubjectGitMeta pins forceScrubGitMeta's
+// force semantics (no up-to-date check) at mirror-in pass 2 — the half
+// of e3d23fd the adversarial row filter_subject_gitignore_file does NOT
+// cover (that row's poison is removed by scrubIntegrated, which runs at
+// integrate time before mirror-in ever sees it). A committed
+// filter-subject .gitignore — poison from before the defense existed,
+// or surviving a scrub that crashed mid-cycle — re-cleans to bytes that
+// differ from its plaintext index blob, so the conservative `git rm`
+// used for ordinary deletion propagation refuses ("local
+// modifications") and would wedge every subsequent cycle. This test
+// FAILS if pass 2 regresses to scrubCheckoutFile.
+func TestMirrorInForceScrubsFilterSubjectGitMeta(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	u := unit(t, "alpha")
+	ctx := context.Background()
+
+	unitDir := engine.layout.UnitDir("alpha", "claude")
+	if err := os.MkdirAll(filepath.Join(unitDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "memories", "keep.md"), []byte("innocent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, ".gitignore"), []byte("memories/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The plaintext blob enters the index UNFILTERED (no filter is wired
+	// yet), exactly like an attacker's raw push arriving via integrate.
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "-m", "simulate poisoned integrate")
+
+	// Only now wire the path to a content-transforming clean filter, the
+	// way the real checkout's root .gitattributes + filter.agentbrain
+	// cover .gitignore (which, unlike .gitattributes, is filter-subject).
+	// The committed plaintext index blob no longer matches the worktree
+	// copy's re-clean — the exact state that makes an up-to-date-checking
+	// `git rm` refuse. `tr` stands in for the encryption filter: a shell
+	// command, never a test binary (CLAUDE.md).
+	if err := os.WriteFile(filepath.Join(checkout, ".gitattributes"), []byte("alpha/claude/.gitignore filter=fake\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, checkout, "config", "filter.fake.clean", "tr a-z A-Z")
+	// Bump the worktree mtime so the index entry is no longer stat-clean:
+	// git skips the clean-filter content comparison entirely for
+	// stat-clean entries, and whether a same-second entry is "racily
+	// clean" (content-checked) is timing luck. A changed mtime forces the
+	// content path deterministically — the same path a real integrate
+	// reaches via its same-instant checkout stats.
+	bumped := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filepath.Join(unitDir, ".gitignore"), bumped, bumped); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prove the trap is armed: the conservative `git rm` (what
+	// scrubCheckoutFile runs) must refuse this state, or the fixture can
+	// no longer distinguish force from conservative removal.
+	if _, err := gitx.Run(ctx, checkout, "rm", "--quiet", "--ignore-unmatch", "--", "alpha/claude/.gitignore"); err == nil {
+		t.Fatal("fixture failed to arm: plain `git rm` accepted the filter-subject poison")
+	}
+
+	manifest := repo.NewManifest()
+	stats, _, err := engine.mirrorIn(ctx, []repo.Unit{u}, manifest)
+	if err != nil {
+		t.Fatalf("mirror-in wedged on filter-subject git-meta: %v", err)
+	}
+	if stats.Deleted != 1 {
+		t.Fatalf("Deleted = %d, want 1 (the force-scrubbed .gitignore)", stats.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(unitDir, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatal("filter-subject poison still on disk after force scrub")
+	}
+	status := strings.TrimSpace(mustGit(t, checkout, "status", "--porcelain", "--", "alpha/claude/.gitignore").Stdout)
+	if !strings.HasPrefix(status, "D") {
+		t.Fatalf("force scrub did not stage the deletion: status = %q", status)
 	}
 	if got, err := os.ReadFile(filepath.Join(unitDir, "memories", "keep.md")); err != nil || string(got) != "innocent\n" {
 		t.Fatalf("innocent tracked file disturbed: %q, %v", got, err)
