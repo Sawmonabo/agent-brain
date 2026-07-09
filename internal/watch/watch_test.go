@@ -75,7 +75,7 @@ func TestBurstCoalescesToOneTrigger(t *testing.T) {
 	root := t.TempDir()
 	manager := startManager(t, watch.Config{Debounce: testDebounce}, root)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		name := filepath.Join(root, "memories", "topic-"+string(rune('a'+i))+".md")
 		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			t.Fatal(err)

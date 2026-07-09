@@ -20,9 +20,17 @@ import (
 // lands memory plaintext in any git object an attacker could read.
 //
 // STANDING CONTRACT: later phases APPEND rows here, never delete. A row that
-// stops failing when its defense is reverted is not a pin — rows 1–4 (the
-// git-meta scrub rows) are proven to fail if Task 1's post-integrate scrub is
-// removed (see the task-12 report's RED evidence).
+// stops failing when its defense is reverted is not a pin — the git-meta scrub
+// rows are proven to fail if their defense is removed: rows 1–5 if Task 1's
+// post-integrate scrub is removed (see the task-12 report's RED evidence), and
+// rows 10–11 if engine.prepareCheckout's top-of-entry scrub is removed (both
+// leak their plaintext sentinel onto the wire; Phase-3 final review, F1).
+//
+// The two axes are independent, and a row on one axis does NOT cover the other:
+// rows 1–5 deliver poison by INTEGRATE into a checkout an earlier cycle already
+// scrubbed, so their pre-integrate commit is a no-op; rows 10–11 find poison
+// already RESIDENT when the checkout is first cloned or seeded, and commit new
+// memory beside it before any scrub of that machine's own has ever run.
 func TestAdversarialContainment(t *testing.T) {
 	t.Parallel()
 	rows := []struct {
@@ -277,7 +285,7 @@ func advFileBurstSingleCycle(t *testing.T) {
 		sentinel = "burst-leak-sentinel"
 		count    = 5000
 	)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		a.write(t, fmt.Sprintf("memories/burst-%04d.md", i), fmt.Sprintf("fact %d %s\n", i, sentinel))
 	}
 

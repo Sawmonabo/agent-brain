@@ -12,6 +12,10 @@ linters:
     - unconvert
     - unparam
     - nolintlint
+    # intrange enforces `for i := range n` over the C-style counted loop.
+    # Enabled (rather than hand-fixing the two sites gopls flagged) because a
+    # style fixed without enforcement regresses on the next contributor.
+    - intrange
   settings:
     nolintlint:
       require-explanation: true
