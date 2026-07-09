@@ -225,20 +225,48 @@ func resolveTrackPath(ctx context.Context, registry *provider.Registry, home, ab
 }
 
 // syncAfterTrack triggers one cycle and prints its outcome — see
-// newTrackCmd's RunE for why an explicit call is needed here.
+// newTrackCmd's RunE for why an explicit call is needed here. The
+// daemon replies to Track/Migrate BEFORE running its own cycle, so by
+// the time this explicit cycle executes (queued behind the same single
+// engine goroutine) the enrollment's mirror-in and push have usually
+// already happened — this cycle finding nothing left is the SUCCESS
+// shape, and printing its zeros as if they were the enrollment's result
+// misreads success as a no-op (Phase-3 smoke finding). An all-quiet
+// summary is therefore reported as up-to-date instead of itemized.
 func syncAfterTrack(ctx context.Context, client *api.Client, out io.Writer) error {
 	response, err := client.Sync(ctx, "")
 	if err != nil {
 		return explainDown(err)
 	}
 	report := &reportWriter{w: out}
-	if response.Status == "running" {
+	switch {
+	case response.Status == "running":
 		report.println("sync still running — check `agent-brain status`")
-	} else {
+	case summaryIsNoOp(response.Summary):
+		report.println("sync: up to date (the daemon already synced this in its own cycle)")
+	default:
 		report.println("sync completed")
 		printSummary(report, response.Summary)
 	}
 	return report.err
+}
+
+// summaryIsNoOp reports whether a cycle did literally nothing worth
+// itemizing: no error, no commits, no mirrored files, no push (done or
+// queued), nothing degraded, nothing scrubbed. A nil summary is NOT a
+// no-op — absence of evidence keeps the conservative "sync completed"
+// path rather than claiming up-to-date without a report.
+func summaryIsNoOp(summary *api.SyncSummary) bool {
+	if summary == nil {
+		return false
+	}
+	return summary.Error == "" &&
+		len(summary.Commits) == 0 &&
+		len(summary.Degraded) == 0 &&
+		len(summary.Scrubbed) == 0 &&
+		!summary.Pushed && !summary.PushQueued &&
+		summary.MirrorIn == (api.Stats{}) &&
+		summary.MirrorOut == (api.Stats{})
 }
 
 func newUntrackCmd() *cobra.Command {

@@ -267,7 +267,12 @@ func TestDaemonWatchesSyncsAndReports(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(unit.LocalDir, "memories", "fact.md"), []byte("watched\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	// 30s, not 10s: the cycle itself takes ~1.5s in isolation, but under a
+	// full-module -race run every sibling package's tests compete for the
+	// same cores and 10s was observed to miss (2026-07-09, with a resident
+	// daemon also running on the host). The deadline is a flake ceiling,
+	// not a latency assertion — the loop exits on the first pushed cycle.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, err := client.Status(context.Background())
 		if err != nil {

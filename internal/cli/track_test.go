@@ -597,3 +597,80 @@ func TestRunUntrackReportsNotEnrolledHonestly(t *testing.T) {
 		t.Fatalf("Removed=false must not report a removal:\n%s", got)
 	}
 }
+
+// TestRunTrackPathRemotelessHintIsPreferredFolder pins the folder-name
+// prompt's prefill for a remoteless project: Identify's PreferredFolder
+// (Base of the project path), never Base(LocalDir) — for claude that
+// basename is always "memory" (…/projects/<slug>/memory), and the
+// prefill is what an empty answer accepts (an interactive Enter or an
+// EOF'd headless run, see isAccessible's contract), so a wrong hint
+// becomes a wrong enrollment. Phase-3 smoke finding: a headless track
+// enrolled a real project under the folder "memory".
+func TestRunTrackPathRemotelessHintIsPreferredFolder(t *testing.T) {
+	fp := &fakeProvider{
+		name: "fakeproj", scope: provider.ScopePerProject,
+		discovered: []provider.Discovered{{
+			LocalDir:  "/tmp/project-a/.claude/projects/-tmp-project-a/memory",
+			Label:     "project-a",
+			PathGuess: "/tmp/project-a",
+		}},
+		identity: provider.Identity{PreferredFolder: "project-a"}, // no ProjectID: remoteless
+	}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRequests := startFakeDaemonForEnrollment(t, func(api.TrackRequest) string { return "project-a" })
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotHint string
+	callbacks := allowAllCallbacks()
+	callbacks.nameRemotelessFolder = func(hint string) (string, error) {
+		gotHint = hint
+		return hint, nil
+	}
+	deps := trackDeps{paths: config.Paths{DataDir: t.TempDir()}, registry: registry, home: t.TempDir()}
+	var out bytes.Buffer
+	enrolledAny, err := runTrackPath(context.Background(), deps, client, callbacks, &out, "/tmp/project-a")
+	if err != nil {
+		t.Fatalf("runTrackPath: %v", err)
+	}
+	if !enrolledAny {
+		t.Fatal("enrolledAny = false, want true")
+	}
+	if gotHint != "project-a" {
+		t.Fatalf("nameRemotelessFolder hint = %q, want %q (PreferredFolder, not Base(LocalDir))", gotHint, "project-a")
+	}
+	requests := getRequests()
+	if len(requests) != 1 || requests[0].ProjectID != "named/project-a" {
+		t.Fatalf("TrackRequests = %+v, want one named/project-a", requests)
+	}
+}
+
+// TestSyncAfterTrackReportsUpToDateOnNoOpCycle pins syncAfterTrack's
+// honesty contract: the daemon replies to Track before running its own
+// cycle, so the explicit post-track cycle usually finds nothing left —
+// that is the SUCCESS shape and must read as up-to-date, not as a
+// zeros-itemized summary implying the enrollment synced nothing.
+func TestSyncAfterTrackReportsUpToDateOnNoOpCycle(t *testing.T) {
+	startFakeDaemon(t,
+		api.StatusResponse{State: "ready"},
+		api.SyncResponse{Status: "completed", Summary: &api.SyncSummary{}},
+		api.ProjectsResponse{})
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := syncAfterTrack(context.Background(), client, &out); err != nil {
+		t.Fatalf("syncAfterTrack: %v", err)
+	}
+	if !strings.Contains(out.String(), "up to date") {
+		t.Fatalf("output = %q, want an up-to-date line for a no-op cycle", out.String())
+	}
+	if strings.Contains(out.String(), "in: 0 copied") {
+		t.Fatalf("output = %q: a no-op cycle must not itemize zeros", out.String())
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"charm.land/huh/v2"
@@ -138,7 +137,14 @@ func enrollOne(ctx context.Context, target enrollTarget, client *api.Client, p p
 		projectID = identity.ProjectID
 		preferredFolder = identity.PreferredFolder
 		if projectID == "" {
-			folderName, err := target.nameRemotelessFolder(filepath.Base(d.LocalDir))
+			// The hint (the prompt's prefilled default) is Identify's
+			// PreferredFolder — Base(projectPath) for a remoteless project.
+			// NOT Base(d.LocalDir): for claude that basename is always
+			// "memory" (…/projects/<slug>/memory), and the prefill is what
+			// an empty answer accepts — both an interactive Enter and an
+			// EOF'd accessible run (Phase-3 smoke finding: a headless track
+			// enrolled a project under the folder "memory").
+			folderName, err := target.nameRemotelessFolder(identity.PreferredFolder)
 			if err != nil {
 				return err // includes errSkipRemoteless — caller checks errors.Is
 			}
@@ -295,6 +301,17 @@ func nameRemotelessFolderInteractive(hint string, accessible bool) (string, erro
 // screen-reader-friendly plain-text mode: an explicit ACCESSIBLE
 // environment variable, or stdin not being a terminal at all (piped
 // input, CI, a test harness).
+//
+// CONTRACT for headless runs (huh v2.0.3, verified live 2026-07-09): in
+// accessible mode an exhausted stdin (EOF) does not error — each form
+// silently keeps its prefilled value, exactly as if the user pressed
+// Enter. Every prefill must therefore be a value we are willing to
+// accept unattended: confirmProjectPath prefills the explicitly-given
+// path or the discovered guess, and nameRemotelessFolder prefills
+// Identify's PreferredFolder (Base of the project path). init's two
+// keyset forms stay fail-closed on EOF by construction — the select
+// resolves to the import branch whose empty keyset is rejected, and the
+// unconfirmed store gate aborts with the recovery instruction.
 func isAccessible() bool {
 	return os.Getenv("ACCESSIBLE") != "" || !term.IsTerminal(int(os.Stdin.Fd()))
 }
