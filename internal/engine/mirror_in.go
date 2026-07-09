@@ -65,6 +65,26 @@ func (e *Engine) scrubCheckoutFile(ctx context.Context, repoRel, fullPath string
 	return nil
 }
 
+// forceScrubGitMeta is the removal path for git-meta POISON: no
+// up-to-date check may gate it. A raw-pushed plaintext .gitignore is
+// filter-subject, so its re-cleaned worktree bytes never match the
+// hostile index blob and scrubCheckoutFile's plain `git rm` refuses
+// ("local modifications") — wedging every subsequent cycle on
+// attacker-supplied input. Poison is never user data (pass 1 refuses
+// git-meta before Classify), so delete the disk copy directly and drop
+// the index entry with no content comparison (stageRemoval: --cached,
+// filter-free).
+func (e *Engine) forceScrubGitMeta(ctx context.Context, repoRel, fullPath string) error {
+	if _, statErr := os.Lstat(fullPath); statErr == nil {
+		// Same walk-derived, symlink-safe removal rationale as
+		// scrubCheckoutFile above.
+		if err := os.Remove(fullPath); err != nil {
+			return fmt.Errorf("remove git-meta %s: %w", fullPath, err)
+		}
+	}
+	return e.stageRemoval(ctx, repoRel)
+}
+
 // mirrorIn implements spec §4 step 1 for every unit: compare provider
 // dir ↔ checkout (manifest mtime+size fast path, hash confirm), copy
 // local changes in, and resolve deletions through the manifest —
@@ -188,8 +208,10 @@ func (e *Engine) mirrorInUnit(ctx context.Context, u repo.Unit, prov provider.Pr
 			// already-poisoned repo: the removal commits at the existing
 			// commit points and propagates fleet-wide. This pass walks the
 			// checkout side, so the scrub runs whether or not the provider
-			// dir holds such a file. See isGitMetaPath.
-			if err := e.scrubCheckoutFile(ctx, repoRel, fullPath); err != nil {
+			// dir holds such a file. See isGitMetaPath. Force semantics
+			// (forceScrubGitMeta, not scrubCheckoutFile): a filter-subject
+			// poison file never survives an up-to-date comparison.
+			if err := e.forceScrubGitMeta(ctx, repoRel, fullPath); err != nil {
 				return err
 			}
 			manifest.Delete(repoRel)

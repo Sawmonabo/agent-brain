@@ -32,6 +32,7 @@ func TestAdversarialContainment(t *testing.T) {
 		{"folder_level_gitattributes", advFolderLevelGitattributes},
 		{"root_gitattributes_mutation", advRootGitattributesMutation},
 		{"gitignore_and_meta_tree", advGitignoreAndMetaTree},
+		{"filter_subject_gitignore_file", advFilterSubjectGitignoreFile},
 		{"hostile_projects_toml", advHostileProjectsToml},
 		{"hostile_manifest_paths", advHostileManifestPaths},
 		{"magic_prefix_memory", advMagicPrefixMemory},
@@ -80,10 +81,9 @@ func advGitignoreAndMetaTree(t *testing.T) {
 	//     own verify_path refuses to materialize any `.git` path in a working
 	//     tree, so it never reaches a checkout to scrub. A meta-named tree is
 	//     the same dir-branch code path the `.git` case would hit.
-	//   - A .gitignore FILE (not tree) is filter-subject (unlike .gitattributes,
-	//     which the root attributes exclude), so a raw plaintext push of one
-	//     trips the scrub's `git rm` on a working-vs-index mismatch — a narrow
-	//     availability gap noted in the task-12 report, not exercised here.
+	//   - A .gitignore FILE (not tree) exercises the scrub's FILE branch and
+	//     its force-removal semantics — that case is pinned by the
+	//     filter_subject_gitignore_file row below.
 	gitMetaScrubCase(
 		t,
 		func(t *testing.T, dir string) {
@@ -91,6 +91,28 @@ func advGitignoreAndMetaTree(t *testing.T) {
 			writeFileRaw(t, dir, "alpha/claude/.gitattributes/decoy.md", "tree-shaped .gitattributes\n")
 		},
 		[]string{"alpha/claude/.gitignore", "alpha/claude/.gitattributes"},
+	)
+}
+
+func advFilterSubjectGitignoreFile(t *testing.T) {
+	// A .gitignore FILE inside the unit dir. Unlike .gitattributes (which the
+	// root attributes exclude from filtering), .gitignore IS filter-subject:
+	// machine B's worktree copy re-cleans (encrypts) to bytes that can never
+	// match the attacker's plaintext index blob, so an up-to-date-checking
+	// `git rm` would refuse ("local modifications") and abort B's cycle —
+	// an availability wedge on attacker-supplied input, though never a
+	// confidentiality break. Pins the scrub's force-removal path: git-meta
+	// is poison, never user data, so its removal must not depend on any
+	// content comparison.
+	gitMetaScrubCase(
+		t,
+		func(t *testing.T, dir string) {
+			// `memories/` (not `*`, which would ignore the .gitignore itself
+			// and never commit): if this survived in a checkout, `git add -A`
+			// sweeps would skip the memories subtree — silently freezing sync.
+			writeFileRaw(t, dir, "alpha/claude/.gitignore", "memories/\n")
+		},
+		[]string{"alpha/claude/.gitignore"},
 	)
 }
 

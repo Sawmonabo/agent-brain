@@ -19,9 +19,10 @@ import (
 // the ROOT .gitattributes: that file is ours (generated), and a pushed
 // mutation of it could unscope the encryption filter for every later add.
 //
-// Deletions and the root heal are staged (scrubCheckoutFile / stageRemoval
-// / git add); the caller's existing post-integrate commitProjects commits
-// them, so healed state propagates to other machines like any other fix.
+// Deletions and the root heal are staged (root-scoped removal +
+// stageRemoval / git add); the caller's existing post-integrate
+// commitProjects commits them, so healed state propagates to other
+// machines like any other fix.
 // It returns the repo-relative paths it removed or healed so the cycle log
 // names them; a clean tree touches the index zero times and returns nil.
 func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
@@ -75,7 +76,20 @@ func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
 			healed = append(healed, rel)
 			return filepath.SkipDir
 		}
-		if err := e.scrubCheckoutFile(ctx, rel, abs); err != nil {
+		// A git-meta FILE. .gitignore (unlike .gitattributes, which the
+		// root attributes exclude from filtering) is filter-subject: a
+		// raw-pushed plaintext copy re-cleans to bytes that can never
+		// match its hostile index blob, so an up-to-date-checking
+		// `git rm` would refuse ("local modifications") exactly when
+		// this scrub matters most, wedging the cycle on attacker input.
+		// Poison is never user data (mirror-in refuses git-meta before
+		// Classify), so remove it unconditionally, the same shape as the
+		// directory branch: disk within the root scope, then the index
+		// entry without any content comparison.
+		if err := checkoutRoot.Remove(rel); err != nil {
+			return fmt.Errorf("scrub file %s: %w", rel, err)
+		}
+		if err := e.stageRemoval(ctx, rel); err != nil {
 			return err
 		}
 		healed = append(healed, rel)
@@ -101,10 +115,14 @@ func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
 }
 
 // stageRemoval drops repoRel from the index after its worktree copy has
-// already been removed from disk (the root-scoped RemoveAll above).
-// --cached touches only the index; -r recurses a directory;
-// --ignore-unmatch keeps a never-tracked stray (untracked git-meta a
-// crashed cycle left behind) from failing the whole scrub.
+// already been removed from disk. --cached touches only the index —
+// deliberately NO content comparison: for filter-subject git-meta, the
+// re-cleaned worktree bytes never match a hostile index blob, and an
+// up-to-date-checking `git rm` would refuse mid-scrub. -r recurses a
+// directory (harmless on a file path); --ignore-unmatch keeps a
+// never-tracked stray (untracked git-meta a crashed cycle left behind)
+// from failing the whole scrub. Also the index half of mirror-in's
+// forceScrubGitMeta.
 func (e *Engine) stageRemoval(ctx context.Context, repoRel string) error {
 	_, err := gitx.Run(ctx, e.checkout, "rm", "-r", "--cached", "--ignore-unmatch", "--", repoRel)
 	return err
