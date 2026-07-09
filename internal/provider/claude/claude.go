@@ -1,13 +1,17 @@
 package claude
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
@@ -74,14 +78,97 @@ func (a *Adapter) Discover(_ context.Context) ([]provider.Discovered, error) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
+		guess := sessionCWD(filepath.Join(root, slug))
+		if guess == "" {
+			guess = GuessPath(slug, statDir)
+		}
 		discovered = append(discovered, provider.Discovered{
 			LocalDir:  memoryDir,
 			Label:     slug,
-			PathGuess: GuessPath(slug, statDir),
+			PathGuess: guess,
 		})
 	}
 	sort.Slice(discovered, func(i, j int) bool { return discovered[i].Label < discovered[j].Label })
 	return discovered, nil
+}
+
+// sessionCWDLineLimit bounds how much of a session file's first line
+// sessionCWD will read. Session records can carry large payloads; a
+// first line still unterminated past this limit is skipped rather than
+// buffered without bound.
+const sessionCWDLineLimit = 1 << 20
+
+// sessionCWD returns the project path recorded in projectDir's session
+// files, or "" when none is recoverable. Claude Code writes the
+// project's absolute path as "cwd" on every session .jsonl record, so
+// the recorded value is authoritative where the slug is lossy (every
+// non-alphanumeric character folds to '-', see SlugFor) — unicode or
+// spaces in a real path are unrecoverable from the slug alone. Files
+// are tried newest-mtime first (a moved project's newest session
+// records where it lives NOW; older ones record where it used to), and
+// only each file's first line is read, size-capped. Any unreadable,
+// unparseable, or non-absolute result just tries the next file:
+// discovery degrades to GuessPath reconstruction, never errors.
+func sessionCWD(projectDir string) string {
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return ""
+	}
+	type sessionFile struct {
+		name    string
+		modTime time.Time
+	}
+	var sessions []sessionFile
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, sessionFile{name: entry.Name(), modTime: info.ModTime()})
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if !sessions[i].modTime.Equal(sessions[j].modTime) {
+			return sessions[i].modTime.After(sessions[j].modTime)
+		}
+		return sessions[i].name < sessions[j].name
+	})
+	for _, session := range sessions {
+		line, err := firstLine(filepath.Join(projectDir, session.name))
+		if err != nil {
+			continue
+		}
+		var record struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+		if filepath.IsAbs(record.Cwd) {
+			return record.Cwd
+		}
+	}
+	return ""
+}
+
+// firstLine reads path's first newline-terminated line, capped at
+// sessionCWDLineLimit bytes. A first line larger than the cap comes
+// back without its terminator and json.Unmarshal rejects the
+// truncation — the caller's skip-and-continue handles it.
+func firstLine(path string) ([]byte, error) {
+	file, err := os.Open(path) //nolint:gosec // G304: path is composed from the adapter's own projects root
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	reader := bufio.NewReader(io.LimitReader(file, sessionCWDLineLimit))
+	line, err := reader.ReadBytes('\n')
+	if len(line) == 0 && err != nil {
+		return nil, err
+	}
+	return line, nil
 }
 
 // Identify resolves projectPath's cross-machine identity from its git

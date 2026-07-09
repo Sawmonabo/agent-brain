@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
@@ -70,6 +71,109 @@ func TestDiscover(t *testing.T) {
 	}
 	if got[0] != want {
 		t.Fatalf("Discover()[0] = %+v, want %+v", got[0], want)
+	}
+}
+
+// TestDiscoverPrefersSessionCWD pins discovery's authoritative-source
+// order: Claude Code records the project's absolute path as "cwd" in
+// every session .jsonl line, so when a session file exists its recorded
+// path wins over any slug reconstruction. The fixture path is
+// deliberately unrecoverable from the slug alone (unicode and a space
+// both fold to '-') AND nonexistent on the test machine — only the
+// session record can produce it, so a pass proves the source.
+func TestDiscoverPrefersSessionCWD(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	const cwd = "/nonexistent/pröbe x/dev.proj"
+	slug := claude.SlugFor(cwd)
+	projectDir := filepath.Join(home, ".claude", "projects", slug)
+	if err := os.MkdirAll(filepath.Join(projectDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	session := `{"type":"summary","cwd":"` + cwd + `","version":"2.1.205"}` + "\n" +
+		`{"type":"user","cwd":"` + cwd + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "session-a.jsonl"), []byte(session), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := claude.New(home).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Discover() returned %d roots, want 1: %+v", len(got), got)
+	}
+	if got[0].PathGuess != cwd {
+		t.Fatalf("PathGuess = %q, want session cwd %q", got[0].PathGuess, cwd)
+	}
+}
+
+// TestDiscoverSessionCWDNewestWins pins which session speaks for a
+// project that MOVED: the newest-mtime session file records where the
+// project lives now; older sessions record where it used to.
+func TestDiscoverSessionCWDNewestWins(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	const oldCWD = "/nonexistent/old.home"
+	const newCWD = "/nonexistent/new.home"
+	slug := claude.SlugFor(newCWD)
+	projectDir := filepath.Join(home, ".claude", "projects", slug)
+	if err := os.MkdirAll(filepath.Join(projectDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, cwd string, age time.Duration) {
+		t.Helper()
+		p := filepath.Join(projectDir, name)
+		if err := os.WriteFile(p, []byte(`{"cwd":"`+cwd+`"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stamp := time.Now().Add(-age)
+		if err := os.Chtimes(p, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("zz-older.jsonl", oldCWD, time.Hour)
+	write("aa-newer.jsonl", newCWD, time.Minute)
+
+	got, err := claude.New(home).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 || got[0].PathGuess != newCWD {
+		t.Fatalf("PathGuess = %+v, want newest session's cwd %q", got, newCWD)
+	}
+}
+
+// TestDiscoverFallsBackWhenSessionsUnreadable pins the degradation
+// chain: session files that are malformed (or record no absolute cwd)
+// must not fail discovery — PathGuess falls back to slug reconstruction,
+// here the documented naive last resort.
+func TestDiscoverFallsBackWhenSessionsUnreadable(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	const slug = "-nonexistent-agent-brain-fixture-gamma"
+	projectDir := filepath.Join(home, ".claude", "projects", slug)
+	if err := os.MkdirAll(filepath.Join(projectDir, "memory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := "not json at all\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "bad.jsonl"), []byte(corrupt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	relative := `{"cwd":"relative/not/absolute"}` + "\n"
+	if err := os.WriteFile(filepath.Join(projectDir, "rel.jsonl"), []byte(relative), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := claude.New(home).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Discover() returned %d roots, want 1: %+v", len(got), got)
+	}
+	if want := "/nonexistent/agent/brain/fixture/gamma"; got[0].PathGuess != want {
+		t.Fatalf("PathGuess = %q, want naive fallback %q", got[0].PathGuess, want)
 	}
 }
 

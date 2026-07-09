@@ -15,80 +15,125 @@ import (
 	"strings"
 )
 
-// GuessPath reverses Claude's project slug (absolute path with '/'
-// replaced by '-') into a best-guess project directory. The encoding is
-// lossy — a '-' in a real path component is indistinguishable from a
-// separator — so the reconstruction is filesystem-guided: walk the slug
-// segments, preferring '/' when the resulting directory exists and
-// falling back to extending the current component with '-'; a dash-run
-// the walk cannot resolve is then retried as a single hyphenated leaf
-// component under the deepest verified boundary (exactly how a project
-// directory like "agent-brain" encodes) before the naive all-slash
-// reversal is returned as the last resort. dirExists is injected for
-// testability (production passes a stat closure).
+// slugReadings lists, in preference order, the characters a slug dash
+// can stand for. '/' first keeps the search biased toward descending
+// into real directories (the bias the previous greedy walk had), and
+// '-' stays ahead of the rarer punctuation so a hyphenated leaf like
+// "agent-brain" keeps winning any tie against a dotted sibling. The
+// set mirrors what real project paths contain; characters outside it
+// (unicode, quotes, …) also encode to '-' but are unrecoverable by
+// construction — Discover sidesteps that entirely by preferring the
+// session files' recorded cwd (see sessionCWD).
+var slugReadings = [...]byte{'/', '-', '.', '_', ' '}
+
+// guessPathBudget caps the directory probes one GuessPath call may
+// spend. Filesystem pruning keeps real slugs cheap (each committed '/'
+// must name an existing directory), but a long dash-run inside one
+// component has no boundary to prune at; the cap turns that worst case
+// into "fall back to the naive reversal" instead of a stall.
+const guessPathBudget = 8192
+
+// GuessPath reverses Claude's project slug into a best-guess project
+// directory. The encoding is lossy — every non-alphanumeric character
+// becomes '-' (see SlugFor) — so a dash may be a path separator, a
+// literal '-', or punctuation. The reconstruction is a filesystem-guided
+// backtracking search: at each dash it tries the slugReadings in
+// preference order, prunes any branch whose committed directory prefix
+// does not exist, and returns the first complete reading that names a
+// real directory. When no reading resolves (or the probe budget runs
+// out), the naive all-slash reversal is returned as the documented last
+// resort. dirExists is injected for testability (production passes a
+// stat closure).
 //
 // Exported because migrate (spec §10) maps identical slugs under
 // ~/.agent-brain/.
 func GuessPath(slug string, dirExists func(string) bool) string {
-	segments := strings.Split(strings.TrimPrefix(slug, "-"), "-")
-	if len(segments) == 0 {
-		return ""
+	trimmed := strings.TrimPrefix(slug, "-")
+	budget := guessPathBudget
+	if found, ok := resolveSlug(trimmed, "/", &budget, dirExists); ok {
+		return found
 	}
-	naive := "/" + strings.Join(segments, "/")
-	if dirExists(naive) {
-		return naive
+	return "/" + strings.Join(strings.Split(trimmed, "-"), "/")
+}
+
+// resolveSlug is GuessPath's search: rest is the unread slug tail, built
+// the path committed so far (always beginning "/", possibly ending
+// mid-component). Each dash branches over slugReadings; choosing '/'
+// commits the current component, which must be non-empty and — pruning —
+// an existing directory. Budget counts dirExists probes; exhaustion
+// abandons the search (false), never a partial answer.
+func resolveSlug(rest, built string, budget *int, dirExists func(string) bool) (string, bool) {
+	head, tail, hasDash := strings.Cut(rest, "-")
+	if !hasDash {
+		full := built + rest
+		if *budget <= 0 {
+			return "", false
+		}
+		*budget--
+		if dirExists(full) {
+			return full, true
+		}
+		return "", false
 	}
-	current := "/" + segments[0]
-	// confirmed is the deepest walk prefix verified to be a real directory
-	// ("" until one is); pending is the dash-run of segments accumulated
-	// past it. Together they let the fallback below retry an unresolved
-	// run against the last trustworthy boundary.
-	confirmed := ""
-	var pending []string
-	if dirExists(current) {
-		confirmed = current
-	} else {
-		pending = append(pending, segments[0])
-	}
-	for _, segment := range segments[1:] {
-		asChild := current + "/" + segment
-		if dirExists(asChild) {
-			current = asChild
-			confirmed = asChild
-			pending = nil
+	for _, reading := range slugReadings {
+		if reading == '/' {
+			candidate := built + head
+			// "//" is no path: a '/' reading needs a non-empty component.
+			if strings.HasSuffix(candidate, "/") {
+				continue
+			}
+			if *budget <= 0 {
+				return "", false
+			}
+			*budget--
+			if !dirExists(candidate) {
+				continue
+			}
+			if found, ok := resolveSlug(tail, candidate+"/", budget, dirExists); ok {
+				return found, true
+			}
 			continue
 		}
-		current += "-" + segment
-		pending = append(pending, segment)
-	}
-	if dirExists(current) {
-		return current
-	}
-	// The greedy walk merges an unresolvable dash-run into the last
-	// component it committed to (".../dev" + agent,brain →
-	// ".../dev-agent-brain"). The other lossy reading — the run is one NEW
-	// hyphenated component under the last verified boundary
-	// (".../dev/agent-brain") — is exactly how a hyphenated project leaf
-	// directory encodes, and the walk above can only reach it when a
-	// shorter decoy sibling (".../dev/agent") happens to exist. Try the
-	// leaf reading before surrendering to the naive guess.
-	if confirmed != "" && len(pending) > 0 {
-		if leaf := confirmed + "/" + strings.Join(pending, "-"); dirExists(leaf) {
-			return leaf
+		if found, ok := resolveSlug(tail, built+head+string(reading), budget, dirExists); ok {
+			return found, true
+		}
+		if *budget <= 0 {
+			return "", false
 		}
 	}
-	return filepath.ToSlash(naive)
+	return "", false
 }
 
 // SlugFor encodes path the way Claude Code itself does when it creates
-// ~/.claude/projects/<slug>: every '/' becomes '-'. This is the exact
-// forward direction — unlike GuessPath's lossy reverse, no directory
-// probing is needed because the encoding has no ambiguity in this
-// direction. track's path-argument resolution uses it to compute the
-// slug a given project path would have produced, rather than reversing
-// every discovered slug looking for a match.
+// ~/.claude/projects/<slug>: every UTF-16 code unit outside [a-zA-Z0-9]
+// becomes one '-'. Verified against real Claude Code v2.1.205
+// (2026-07-09) by running one-shot sessions in probe directories and
+// reading back the slugs it created: the observed rule is JavaScript's
+// replace(/[^a-zA-Z0-9]/g, "-") over the absolute path, and JS regexes
+// operate on UTF-16 — a BMP rune ('.', '_', ' ', 'ö') is one unit → one
+// dash, an astral rune (🚀, a surrogate pair) is two units → TWO dashes.
+// Invalid UTF-8 decodes rune-by-rune to U+FFFD (BMP) → one dash each.
+//
+// This is the exact forward direction — no directory probing — and the
+// daemon's watch path derives from it (MemoryDirFor), so fidelity here
+// decides whether tracking a project syncs anything at all. track's
+// path-argument resolution uses it to compute the slug a given project
+// path would have produced, rather than reversing every discovered slug
+// looking for a match.
 func SlugFor(path string) string {
-	return strings.ReplaceAll(filepath.ToSlash(path), "/", "-")
+	var slug strings.Builder
+	slug.Grow(len(path))
+	for _, r := range path {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
+			slug.WriteRune(r)
+		case r > 0xFFFF:
+			slug.WriteString("--")
+		default:
+			slug.WriteByte('-')
+		}
+	}
+	return slug.String()
 }
 
 // MemoryDirFor returns the memory directory Claude Code uses for path
