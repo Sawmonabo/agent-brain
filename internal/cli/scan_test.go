@@ -147,8 +147,11 @@ func TestScanCommandProjectFlagFiltersToOneUnit(t *testing.T) {
 	invoked := strings.TrimSpace(string(data))
 	// One invocation only, and with exactly the args scanGitleaksArgs
 	// produces for dirA under the default (redact=true) policy — this
-	// also pins that project-b was never scanned and that --redact is
-	// present by default, not just that "some dir" was scanned.
+	// pins that project-b was never scanned, not just that "some dir" was.
+	// It does NOT independently pin --redact: want derives from the same
+	// scanGitleaksArgs call, so a mutation there moves both sides together.
+	// TestScanCommandRedactFlag and TestScanGitleaksArgsRedactFlag hardcode
+	// the "--redact" literal and pin that.
 	want := strings.Join(scanGitleaksArgs(dirA, true), " ")
 	if invoked != want {
 		t.Fatalf("scan --project project-a invoked gitleaks with %q, want exactly %q (project-b must not be scanned)", invoked, want)
