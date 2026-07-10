@@ -17,13 +17,14 @@ import (
 )
 
 type fakeController struct {
-	status   api.StatusResponse
-	sync     api.SyncResponse
-	projects api.ProjectsResponse
-	track    api.TrackResponse
-	untrack  api.UntrackResponse
-	migrate  api.MigrateResponse
-	quiesce  api.QuiesceResponse
+	status    api.StatusResponse
+	sync      api.SyncResponse
+	projects  api.ProjectsResponse
+	track     api.TrackResponse
+	untrack   api.UntrackResponse
+	migrate   api.MigrateResponse
+	reencrypt api.ReencryptResponse
+	quiesce   api.QuiesceResponse
 
 	quiescedSeconds int  // last Quiesce arg, for the route's method-switch test
 	resumed         bool // set by Resume
@@ -44,6 +45,10 @@ func (f *fakeController) Untrack(context.Context, api.UntrackRequest) (api.Untra
 
 func (f *fakeController) Migrate(context.Context, api.MigrateRequest) (api.MigrateResponse, error) {
 	return f.migrate, nil
+}
+
+func (f *fakeController) Reencrypt(context.Context) (api.ReencryptResponse, error) {
+	return f.reencrypt, nil
 }
 
 func (f *fakeController) Quiesce(seconds int) api.QuiesceResponse {

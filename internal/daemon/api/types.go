@@ -126,6 +126,20 @@ type MigrateResponse struct {
 	Skipped bool   `json:"skipped"`
 }
 
+// ReencryptResponse answers POST /v0/reencrypt (spec §5 key rotation): the
+// daemon re-encrypted Files blobs under the new primary in one commit, and
+// Pushed/PushQueued report whether that commit reached the remote. Files == 0
+// means the primary was unchanged, so renormalize made no commit (a clean
+// no-op). Error is reserved for a structured soft-failure message; hard
+// failures (busy, quiesced, uninitialized, git errors) travel as the HTTP
+// error envelope like every other endpoint, so it is empty on success.
+type ReencryptResponse struct {
+	Files      int    `json:"files"`
+	Pushed     bool   `json:"pushed"`
+	PushQueued bool   `json:"push_queued"`
+	Error      string `json:"error,omitempty"`
+}
+
 // UnitInfo is one enrolled (provider, dir) pair and its health.
 type UnitInfo struct {
 	Provider string `json:"provider"`

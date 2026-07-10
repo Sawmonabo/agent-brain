@@ -84,6 +84,15 @@ func (c *Client) Migrate(ctx context.Context, req MigrateRequest) (MigrateRespon
 	return out, err
 }
 
+// Reencrypt asks the daemon to re-encrypt every filtered blob under the
+// keyset's current primary and push (spec §5 key rotation). It sends no body;
+// the daemon runs it as an engine admin op on its single writer goroutine.
+func (c *Client) Reencrypt(ctx context.Context) (ReencryptResponse, error) {
+	var out ReencryptResponse
+	err := c.do(ctx, http.MethodPost, "/v0/reencrypt", nil, &out)
+	return out, err
+}
+
 // Quiesce asks the daemon to hold automatic sync cycles for seconds (clamped
 // server-side to [1, 600]); the returned Until is the resulting deadline.
 // init and doctor --fix call it best-effort before checkout surgery.
