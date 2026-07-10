@@ -55,7 +55,12 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
    GitHub release assets but do not push a tap formula, so no public
    `brew install` command ever points at this still-private repo's assets; the
    final `v2.0.0` (tagged post-scrub, Task 12, once the repo is public) is what
-   activates `brew install sawmonabo/tap/agent-brain`. The public-launch upgrade
+   activates `brew install sawmonabo/tap/agent-brain`. **Correction (2026-07-09,
+   Task 7 fix round):** `Sawmonabo/homebrew-tap` is not created by this
+   project — it is a pre-existing personal tap (created 2026-05-14) already
+   hosting an unrelated `sidekick-usages` formula; agent-brain's formula is
+   *added* to that existing tap, not provisioned into a new one. See the
+   corrected Consequences bullet below for the full detail. The public-launch upgrade
    path, if broad (non-personal) distribution ever matters, is cask +
    GoReleaser-native notarization (Quill-backed; needs a $99/yr Apple Developer
    ID + App Store Connect key) — never the middle road of cask + ad-hoc + xattr
@@ -94,16 +99,30 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
 - Self-updating is delegated to the package manager (`brew upgrade` /
   `go install @latest`) — no self-update code in the binary (YAGNI; single user).
 - The tap repo is one more repo to provision; `init`'s wizard does not manage it —
-  it is a release-time artifact only, created once.
+  it is a release-time artifact only, created once. **Corrected 2026-07-09
+  (Task 7 fix round): this repo was never created by or for this project in
+  the first place** — see the corrected bullet immediately below.
 - WSL2 uses the Linux binary via `go install` or linuxbrew; no Windows-native
   build is shipped (all targets are POSIX — consistent with ADR 14's renameio
   constraint).
-- **Added 2026-07-09 (Task 7):** the tap repo is created public and empty
-  (`gh repo create --public`) — a tap must be public to `brew tap` anonymously —
-  but stays empty of formulae until the first non-prerelease tag ships
-  post-scrub; `skip_upload: auto` is what keeps it empty across the cutover's
-  `-rc` tags while release assets still sit on the private code repo. The
-  interim install path while private is `gh release download <tag>`
+- **Corrected 2026-07-09 (Task 7 fix round — supersedes an incorrect "created
+  public and empty" claim from the initial Task 7 landing):** `Sawmonabo/
+  homebrew-tap` ALREADY EXISTS — created 2026-05-14, public, description
+  "Personal Homebrew tap. Use: `brew tap Sawmonabo/tap`" (independently
+  reconfirmed via `gh repo view` during the fix round). It is a *shared*
+  personal tap: it already hosts an unrelated `sidekick-usages` formula in a
+  `Formula/` directory, with its own CI at `.github/workflows/test-formula.yml`
+  that runs `brew install --build-from-source` + `brew test` (+ non-blocking
+  `brew audit --strict`) per formula. GoReleaser's own default `brews[]`
+  publish directory is `Formula/` — it already matches this tap's existing
+  convention, so `.goreleaser.yaml` needs no `directory:` override.
+  agent-brain's formula is *added* to this existing, already-public tap — it
+  is never created, and is never "empty" in any state this project controls.
+  `skip_upload: auto` semantics are otherwise unchanged: agent-brain gains an
+  actual formula file in the tap only at the first non-prerelease tag (the
+  post-scrub `v2.0.0`, Task 12); every `v2.0.0-rc.*` cutover tag (Tasks 9–11)
+  publishes GitHub release assets but never touches the tap. The interim
+  install path while the code repo is private is `gh release download <tag>`
   (authenticated) or `go install` (owner has git access) — documented in
   Task 8's onboarding doc.
 
@@ -172,3 +191,14 @@ mandatory signing):
 - Full decision record and reasoning:
   `docs/plans/v2-phase-4-cutover-distribution.md`, "Decision record & sources
   (Phase-4 planning, 2026-07-09)", decisions 12–13.
+
+Fix-round verification (2026-07-09, Task 7 fix round — the pre-existing-tap
+correction above): live-reproduced directly against the tap repo, not taken
+on trust — `gh repo view Sawmonabo/homebrew-tap --json
+visibility,name,createdAt,description,isPrivate` (public, created
+2026-05-14T03:15:53Z); `gh api repos/Sawmonabo/homebrew-tap/contents/`
+(`Formula/`, `.github/`, `LICENSE`, `README.md`); `gh api
+repos/Sawmonabo/homebrew-tap/contents/Formula` (`sidekick-usages.rb`); `gh
+api repos/Sawmonabo/homebrew-tap/contents/.github/workflows/test-formula.yml`
+(confirms `brew install --build-from-source` + `brew test` +
+non-blocking `brew audit --strict`, macOS runner).

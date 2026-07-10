@@ -71,3 +71,7 @@ brews:
     description: "Invisible cross-machine sync for AI coding agents' per-project memory"
     install: |
       bin.install "agent-brain"
+    # The tap's own CI (test-formula.yml) runs `brew test` per formula —
+    # this formula ships with one so it isn't the untested outlier.
+    test: |
+      system "#{bin}/agent-brain", "--version"
