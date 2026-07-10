@@ -41,7 +41,7 @@ func (v doctorView) view() string {
 		return b.String()
 	}
 
-	var ok, warn, fail int
+	var ok, warn, fail, info int
 	for _, result := range v.report.Results {
 		switch result.Status {
 		case doctor.StatusOK:
@@ -50,6 +50,8 @@ func (v doctorView) view() string {
 			warn++
 		case doctor.StatusFail:
 			fail++
+		case doctor.StatusInfo:
+			info++
 		}
 		label := result.Status.String()
 		if result.Status == doctor.StatusFail {
@@ -65,7 +67,7 @@ func (v doctorView) view() string {
 	}
 
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "%d ok · %d warn · %d fail", ok, warn, fail)
+	fmt.Fprintf(&b, "%d ok · %d warn · %d fail · %d info", ok, warn, fail, info)
 	return b.String()
 }
 
@@ -80,6 +82,8 @@ func statusGlyph(status doctor.Status) string {
 		return warnStyle.Render("⚠")
 	case doctor.StatusFail:
 		return failStyle.Render("✗")
+	case doctor.StatusInfo:
+		return infoStyle.Render("i")
 	default:
 		return "?"
 	}

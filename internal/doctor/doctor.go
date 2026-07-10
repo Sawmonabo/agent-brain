@@ -27,11 +27,19 @@ import (
 // Status is a check's outcome.
 type Status int
 
-// Status values, in increasing severity.
+// Status values, in increasing severity. StatusInfo is APPENDED after
+// StatusFail rather than inserted by severity (which would read OK < Info <
+// Warn < Fail) because no code compares Status ordinally — every existing
+// site switches on named values or compares for equality (Report.Failed,
+// printDoctorReport, dashboard's doctorview.go) — so renumbering buys
+// nothing and would only cost every persisted/logged ordinal a silent
+// meaning change. Info sits below Warn in the reporting the same way
+// "unknown" does: named, never compared as a number.
 const (
 	StatusOK Status = iota
 	StatusWarn
 	StatusFail
+	StatusInfo
 )
 
 func (s Status) String() string {
@@ -42,6 +50,8 @@ func (s Status) String() string {
 		return "warn"
 	case StatusFail:
 		return "fail"
+	case StatusInfo:
+		return "info"
 	default:
 		return "unknown"
 	}
@@ -67,8 +77,10 @@ func (s *Status) UnmarshalJSON(data []byte) error {
 		*s = StatusWarn
 	case StatusFail.String():
 		*s = StatusFail
+	case StatusInfo.String():
+		*s = StatusInfo
 	default:
-		return fmt.Errorf("doctor: status %q is not one of %q, %q, %q", text, StatusOK, StatusWarn, StatusFail)
+		return fmt.Errorf("doctor: status %q is not one of %q, %q, %q, %q", text, StatusOK, StatusWarn, StatusFail, StatusInfo)
 	}
 	return nil
 }
@@ -125,12 +137,17 @@ type checkFunc func(context.Context, Deps) (CheckResult, bool)
 // dashboard renders it (spec: settings · keyset · checkout · filters ·
 // attributes · git-meta · credential-helper · remote · gh · daemon ·
 // service · registry-local · conflict-log · claude-prereqs ·
-// codex-prereqs · legacy-leftovers · secrets-scan). SafetyGate (gate.go)
-// reuses these same functions in its own narrower, checkout-first order —
-// but deliberately NOT checkGitMeta or checkSecretsScan: checkGitMeta's
-// doc comment explains why gating on it would deadlock the heal;
-// checkSecretsScan's explains why gitleaks (an opt-in, on-demand external
-// tool) has no bearing on whether a sync cycle is safe to run.
+// codex-prereqs · legacy-leftovers · secrets-scan · keyset-decrypt).
+// SafetyGate (gate.go) reuses these same functions in its own narrower,
+// checkout-first order — but deliberately NOT checkGitMeta,
+// checkSecretsScan, or checkKeysetDecrypt: checkGitMeta's doc comment
+// explains why gating on it would deadlock the heal; checkSecretsScan's
+// explains why gitleaks (an opt-in, on-demand external tool) has no
+// bearing on whether a sync cycle is safe to run; checkKeysetDecrypt's
+// explains why a stale-but-loadable keyset degrades a cycle gracefully
+// (fails closed per-file, never corrupts) rather than making it unsafe to
+// attempt, so it stays a human-facing advisory, last in the list since it
+// samples repo content rather than merely wiring.
 var battery = []checkFunc{
 	checkSettings,
 	checkKeyset,
@@ -149,6 +166,7 @@ var battery = []checkFunc{
 	checkCodexPrereqs,
 	checkLegacyLeftovers,
 	checkSecretsScan,
+	checkKeysetDecrypt,
 }
 
 // Run evaluates the full check battery and returns every applicable

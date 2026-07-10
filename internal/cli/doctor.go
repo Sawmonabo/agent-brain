@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -48,9 +49,18 @@ func newDoctorCmd() *cobra.Command {
 				// .gitattributes; a resident daemon's cycle racing that surgery
 				// contends on git locks (same Phase-3 F2 hazard init closes).
 				// Hold its cycles best-effort — a daemon that is down or refuses
-				// is the status quo, never a reason to fail the repair.
+				// is the status quo, never a reason to fail the repair. A
+				// refusal still gets an operator-visible note (stderr, so a
+				// --json stdout consumer stays clean) mirroring init's
+				// identical situation (initsteps.go's stepRepoState) — Task 4.5
+				// absorbs this as a T2 residual Minor: doctor used to swallow
+				// this case silently.
 				if client := tryAPIClient(cmd.Context()); client != nil {
-					if _, qerr := client.Quiesce(cmd.Context(), quiesceHoldForInit); qerr == nil {
+					if _, qerr := client.Quiesce(cmd.Context(), quiesceHoldForInit); qerr != nil {
+						if _, werr := fmt.Fprintf(cmd.ErrOrStderr(), "doctor: could not quiesce the daemon (%v) — proceeding\n", qerr); werr != nil {
+							return werr
+						}
+					} else {
 						defer resumeQuietly(client)
 					}
 				}

@@ -15,6 +15,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
+	"github.com/Sawmonabo/agent-brain/internal/crypto"
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
@@ -482,4 +483,153 @@ func checkSecretsScan(_ context.Context, _ Deps) (CheckResult, bool) {
 		}, true
 	}
 	return CheckResult{Name: name, Status: StatusOK, Detail: "gitleaks installed at " + path}, true
+}
+
+// probeUpstreamRef is the fetched remote-tracking branch checkKeysetDecrypt
+// prefers as its sample source, ahead of HEAD.
+//
+// The obvious design reads "reachable from HEAD" literally and samples
+// HEAD alone. That fails the exact scenario this check exists for:
+// engine/integrate.go's Integrate is all-or-nothing (its own doc comment:
+// "Integrated means HEAD now contains origin/main; otherwise the checkout
+// is back at its pre-integrate state") — when a stale keyset makes a
+// smudge fail mid-cycle, the engine aborts the rebase/merge and restores
+// HEAD to its last-good commit. But `git fetch` runs BEFORE that
+// rebase/merge attempt and always completes, so origin/main keeps
+// advancing every cycle while HEAD stays frozen at the last commit this
+// machine could still read. A HEAD-only probe would therefore keep
+// re-decrypting content it already proved it could decrypt, and this
+// check would report OK forever on the one machine it exists to warn.
+// Sampling the fetched tracking ref first — falling back to HEAD only
+// when there is no remote-tracking ref yet (e.g. immediately after
+// `init`, before any fetch) — is what makes the check actually see the
+// content the stale keyset cannot open. Confirmed empirically: see
+// test/e2e/rotate_test.go's Task 4.5 assertion, which reproduces this
+// exact freeze/advance split with a real second keyset and a real fetch.
+const probeUpstreamRef = "refs/remotes/origin/main"
+
+// checkKeysetDecrypt is an ADVISORY probe closing the operator-guidance
+// gap key rotation (Task 4) exposed: checkKeyset only loads the keyset
+// file, which still succeeds for a keyset that is stale relative to this
+// repo (rotated elsewhere, never imported here) — so without this check,
+// every sync on that machine keeps degrading (per-file fail-closed,
+// spec §5) while doctor reports all-OK. This samples exactly one
+// ciphertext blob — the newest one reachable from probeUpstreamRef (or
+// HEAD, see its doc comment) — and attempts to decrypt it.
+//
+// StatusInfo, never StatusWarn, on an empty state (no checkout, unborn
+// HEAD, or a checkout with zero encrypted blobs so far): those are
+// ordinary, healthy points in a machine's lifecycle (freshly initialized,
+// or enrolled but nothing written yet), not evidence of anything wrong.
+//
+// Must NEVER join SafetyGate (gate.go): unlike a broken filter or missing
+// keyset file, a stale keyset does not make a cycle unsafe to attempt —
+// the clean/smudge filters already fail closed per file (spec §5), and
+// the fix is a human decision (`key export` / `key import --force`), not
+// something a cycle can repair by running. Gating on it would only block
+// syncs that are already degrading gracefully, without helping them heal.
+func checkKeysetDecrypt(ctx context.Context, deps Deps) (CheckResult, bool) {
+	const name = "keyset-decrypt"
+	primitive, err := keys.Primitive(deps.Paths.Keyset())
+	if err != nil {
+		return CheckResult{}, false // checkKeyset already reports this loudly
+	}
+	dir := deps.Paths.MemoriesDir()
+	rev, ok := resolveProbeRev(ctx, dir)
+	if !ok {
+		return CheckResult{Name: name, Status: StatusInfo, Detail: "no checkout to probe yet"}, true
+	}
+	path, blob, ok := newestEncryptedBlob(ctx, dir, rev)
+	if !ok {
+		return CheckResult{Name: name, Status: StatusInfo, Detail: "no encrypted content in the checkout yet — nothing to probe"}, true
+	}
+	if _, err := crypto.NewCodec(primitive).Decrypt(blob); err != nil {
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: fmt.Sprintf("keyset cannot decrypt %s — it is stale relative to this repo (a fleet key rotation this machine has not imported)", path),
+			Fix:    "on the machine holding the current key, run `agent-brain key export`; on this machine, run `agent-brain key import --force` with that output",
+		}, true
+	}
+	return CheckResult{Name: name, Status: StatusOK, Detail: "keyset decrypts the newest sampled memory blob"}, true
+}
+
+// resolveProbeRev picks probeUpstreamRef when it exists, falling back to
+// HEAD (e.g. right after `init`, before any fetch has ever run) — see
+// probeUpstreamRef's doc comment for why the tracking ref is tried first.
+// ok=false means neither resolves: no checkout, or an unborn HEAD.
+func resolveProbeRev(ctx context.Context, dir string) (rev string, ok bool) {
+	if result, err := gitx.RunStatus(ctx, dir, "rev-parse", "--verify", "-q", probeUpstreamRef); err == nil && result.ExitCode == 0 {
+		return probeUpstreamRef, true
+	}
+	if result, err := gitx.RunStatus(ctx, dir, "rev-parse", "--verify", "-q", "HEAD"); err == nil && result.ExitCode == 0 {
+		return "HEAD", true
+	}
+	return "", false
+}
+
+// newestEncryptedBlob returns the path and raw stored bytes (i.e. read via
+// plumbing, bypassing the smudge filter) of one encrypted blob at rev —
+// the check needs exactly one sample, not a repo walk. It tries the tip
+// commit's own changed paths first (cheap, and the most likely to reflect
+// whatever this fleet last touched); a tip commit that changes nothing
+// encrypted — a manifest-only sync commit, or a merge commit, where
+// diff-tree without -m shows nothing — falls back to a full tree listing
+// at rev. ok=false means rev has no encrypted content at all yet.
+func newestEncryptedBlob(ctx context.Context, dir, rev string) (path string, blob []byte, ok bool) {
+	if path, blob, ok := firstEncrypted(ctx, dir, rev, tipCommitPaths(ctx, dir, rev)); ok {
+		return path, blob, true
+	}
+	return firstEncrypted(ctx, dir, rev, trackedPaths(ctx, dir, rev))
+}
+
+// tipCommitPaths lists the paths rev's own commit changed, relative to its
+// parent(s) (--root handles rev being the repo's first commit). Empty
+// (rather than an error) for a merge commit, since diff-tree without -m
+// shows no diff for one — newestEncryptedBlob's tree-listing fallback
+// covers that case.
+func tipCommitPaths(ctx context.Context, dir, rev string) []string {
+	result, err := gitx.RunStatus(ctx, dir, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", "-z", rev)
+	if err != nil || result.ExitCode != 0 {
+		return nil
+	}
+	return splitNulPaths(result.Stdout)
+}
+
+// trackedPaths lists every path in rev's full tree — the fallback source
+// when the tip commit alone yields no encrypted blob.
+func trackedPaths(ctx context.Context, dir, rev string) []string {
+	result, err := gitx.RunStatus(ctx, dir, "ls-tree", "-r", "--name-only", "-z", rev)
+	if err != nil || result.ExitCode != 0 {
+		return nil
+	}
+	return splitNulPaths(result.Stdout)
+}
+
+// splitNulPaths splits a -z-delimited git plumbing path list.
+func splitNulPaths(output string) []string {
+	var paths []string
+	for _, path := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+// firstEncrypted reads each candidate path's raw stored bytes AT rev via
+// `cat-file blob` — plumbing, so this bypasses the smudge filter entirely
+// and sees exactly what git has stored, encrypted or not — returning the
+// first one whose content carries the encryption magic.
+func firstEncrypted(ctx context.Context, dir, rev string, candidates []string) (path string, blob []byte, ok bool) {
+	for _, candidate := range candidates {
+		result, err := gitx.RunStatus(ctx, dir, "cat-file", "blob", rev+":"+candidate)
+		if err != nil || result.ExitCode != 0 {
+			continue
+		}
+		data := []byte(result.Stdout)
+		if crypto.IsEncrypted(data) {
+			return candidate, data, true
+		}
+	}
+	return "", nil, false
 }

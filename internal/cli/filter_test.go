@@ -14,6 +14,19 @@ import (
 // forbids t.Parallel in callers.
 func runCmd(t *testing.T, stdin []byte, args ...string) (stdout []byte, err error) {
 	t.Helper()
+	out, errBuf, err := runCmdWithStderr(t, stdin, args...)
+	if err != nil {
+		t.Logf("stderr: %s (err: %v)", errBuf, err)
+	}
+	return out, err
+}
+
+// runCmdWithStderr is runCmd's stderr-capturing sibling, needed only by
+// tests asserting on incidental operator notes (e.g. a quiesce-failure
+// note) that cobra routes to Err, not Out — kept separate rather than
+// growing runCmd's return arity for every caller that does not care.
+func runCmdWithStderr(t *testing.T, stdin []byte, args ...string) (stdout, stderr []byte, err error) {
+	t.Helper()
 	root := Root()
 	root.SetIn(bytes.NewReader(stdin))
 	var out, errBuf bytes.Buffer
@@ -21,10 +34,7 @@ func runCmd(t *testing.T, stdin []byte, args ...string) (stdout []byte, err erro
 	root.SetErr(&errBuf)
 	root.SetArgs(args)
 	err = root.Execute()
-	if err != nil {
-		t.Logf("stderr: %s (err: %v)", errBuf.String(), err)
-	}
-	return out.Bytes(), err
+	return out.Bytes(), errBuf.Bytes(), err
 }
 
 func setupKeyset(t *testing.T) {

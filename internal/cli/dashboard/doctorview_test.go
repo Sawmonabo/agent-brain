@@ -14,6 +14,7 @@ func TestDoctorViewGlyphsAndSummary(t *testing.T) {
 		{Name: "settings", Status: doctor.StatusOK, Detail: "config.toml parsed"},
 		{Name: "gh", Status: doctor.StatusWarn, Detail: "gh not authenticated"},
 		{Name: "keyset", Status: doctor.StatusFail, Detail: "keyset.json not found", Fix: "run `agent-brain init`"},
+		{Name: "keyset-decrypt", Status: doctor.StatusInfo, Detail: "no encrypted content in the checkout yet — nothing to probe"},
 	}}
 
 	var view doctorView
@@ -25,7 +26,8 @@ func TestDoctorViewGlyphsAndSummary(t *testing.T) {
 		"⚠", "gh", "gh not authenticated",
 		"✗", "FAIL", "keyset", "keyset.json not found",
 		"fix: run `agent-brain init`",
-		"1 ok · 1 warn · 1 fail",
+		"i", "keyset-decrypt", "nothing to probe",
+		"1 ok · 1 warn · 1 fail · 1 info",
 	}
 	for _, want := range wants {
 		if !strings.Contains(body, want) {

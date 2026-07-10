@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -244,5 +247,67 @@ func TestDoctorFixQuiescesLiveDaemon(t *testing.T) {
 	}
 	if got.resumed != 1 {
 		t.Fatalf("resume count = %d, want 1", got.resumed)
+	}
+}
+
+// startFakeDaemonQuiesceFails serves /v0/status (always ready) but makes
+// /v0/quiesce always fail — the absorbed-Minor test's way of exercising
+// doctor --fix's best-effort quiesce against a daemon that refuses the
+// hold. Modeled on startFakeDaemonRecordingQuiesce (init_test.go).
+func startFakeDaemonQuiesceFails(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", dir)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v0/status", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(api.StatusResponse{State: "ready"})
+	})
+	mux.HandleFunc("/v0/quiesce", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "quiesce refused", http.StatusServiceUnavailable)
+	})
+	listener, err := net.Listen("unix", filepath.Join(dir, "agent-brain.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	})
+}
+
+// TestDoctorFixNotesFailedQuiesce absorbs T2's residual Minor: doctor --fix
+// silently ignored a failed daemon Quiesce while init's identical situation
+// (stepRepoState, initsteps.go) prints a note — both correctly proceed
+// either way, but only one of them told the operator why. This pins
+// doctor's side: a fake daemon whose /v0/quiesce always errors must still
+// let doctor --fix run and repair, but must also print an operator-visible
+// note (stderr, so --json's stdout stays parseable).
+func TestDoctorFixNotesFailedQuiesce(t *testing.T) {
+	paths := provisionHealthyDoctorMachine(t)
+	fakeGhOnPath(t)
+	startFakeDaemonQuiesceFails(t)
+
+	attributesFile := repo.NewLayout(paths.MemoriesDir()).AttributesFile()
+	if err := os.WriteFile(attributesFile, []byte("corrupted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, err := runCmdWithStderr(t, nil, "doctor", "--offline", "--fix")
+	if err != nil {
+		t.Fatalf("doctor --fix: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if !strings.Contains(string(stdout), "fixed") {
+		t.Fatalf("doctor --fix did not repair despite the quiesce failure:\n%s", stdout)
+	}
+	if !strings.Contains(string(stderr), "could not quiesce the daemon") {
+		t.Fatalf("doctor --fix did not note the failed quiesce on stderr:\n%s", stderr)
 	}
 }
