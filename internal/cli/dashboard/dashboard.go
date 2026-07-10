@@ -367,7 +367,7 @@ func (m Model) activeBody() string {
 
 func (m Model) tabBar() string {
 	parts := make([]string, tabCount)
-	for t := tab(0); t < tabCount; t++ {
+	for t := range tabCount {
 		label := fmt.Sprintf("%d %s", int(t)+1, t.title())
 		if t == m.active {
 			parts[t] = activeTabStyle.Render("[" + label + "]")
