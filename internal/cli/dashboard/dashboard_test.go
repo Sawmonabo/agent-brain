@@ -358,3 +358,56 @@ func TestStatusHeader(t *testing.T) {
 		})
 	}
 }
+
+// TestSwitchRefetchesStatusForEveryTab pins N-3: switching to any tab must
+// refetch status so the persistent fleet header is fresh on arrival, not up to
+// a poll interval stale. Conflicts and Doctor previously fetched only their own
+// data on switch (Projects and Activity already refetched status), so their
+// header lagged until the next 2s tick. The tick path (reloadCmd) already
+// fetched status unconditionally — the gap was switchCmd alone.
+func TestSwitchRefetchesStatusForEveryTab(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "projects", key: "1"},
+		{name: "conflicts", key: "2"},
+		{name: "activity", key: "3"},
+		{name: "doctor", key: "4"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			model := newTestModel(&fakeData{status: readyStatus()})
+			model, _ = step(model, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+			_, cmd := step(model, key(testCase.key))
+			if !containsMsg[statusMsg](drain(cmd)) {
+				t.Errorf("switching to %s did not refetch status; the header would lag a poll interval", testCase.name)
+			}
+		})
+	}
+}
+
+// TestHeaderFreshOnSwitchToConflicts is the user-visible form of N-3: after
+// switching to Conflicts and running the switch's Cmds, the header reflects the
+// freshly-fetched fleet state rather than the empty zero-value header it would
+// otherwise show until the next tick.
+func TestHeaderFreshOnSwitchToConflicts(t *testing.T) {
+	t.Parallel()
+	data := &fakeData{status: api.StatusResponse{
+		State:    "ready",
+		LastSync: &api.SyncSummary{Degraded: []string{"agent-brain"}},
+	}}
+	model := newTestModel(data)
+	model, _ = step(model, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	model, cmd := step(model, key("2")) // → Conflicts
+	for _, msg := range drain(cmd) {
+		model, _ = step(model, msg)
+	}
+	if header := plain(model.statusHeader()); !strings.Contains(header, "last cycle: degraded") {
+		t.Errorf("header stale after switching to Conflicts (switch did not refetch status); got:\n%s", header)
+	}
+}

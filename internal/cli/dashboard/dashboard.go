@@ -162,18 +162,24 @@ func (m Model) reloadCmd() tea.Cmd {
 }
 
 // switchCmd fetches the newly active view's data immediately on a tab switch,
-// so it does not sit blank for up to a full poll interval.
+// so it does not sit blank for up to a full poll interval. It always refetches
+// status too — the persistent fleet header is on every view, so it must be
+// fresh on arrival at any tab; fetching only the view's own data (as Conflicts
+// and Doctor once did) left the header up to a poll interval stale until the
+// next tick (N-3). Mirrors reloadCmd's shape; status is the same cheap UDS GET.
 func (m Model) switchCmd() tea.Cmd {
+	cmds := []tea.Cmd{m.statusCmd()}
 	switch m.active {
 	case tabProjects:
-		return tea.Batch(m.statusCmd(), m.projectsCmd())
+		cmds = append(cmds, m.projectsCmd())
 	case tabConflicts:
-		return m.conflictsCmd()
+		cmds = append(cmds, m.conflictsCmd())
 	case tabDoctor:
-		return m.doctorCmd()
-	default:
-		return m.statusCmd()
+		cmds = append(cmds, m.doctorCmd())
+	case tabActivity:
+		// Activity renders purely from the status fetched above.
 	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) statusCmd() tea.Cmd {
