@@ -1,31 +1,32 @@
 package dashboard
 
 import (
-	"bytes"
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/colorprofile"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
 
-// plain strips all styling so assertions match the visible text, using the real
-// colorprofile downgrade path (NoTTY) rather than a hand-rolled ANSI regex.
-// This is how the brief's "styling forced plain in tests" is realised: lipgloss
-// emits ANSI unconditionally at Render time (verified 2026-07-09), and the
-// colour profile only downgrades at the writer, which is exactly what NoTTY
-// does here.
+// csiPattern matches the CSI escape sequences lipgloss emits — ESC '[', numeric
+// parameters, a letter terminator (SGR colour/attributes end in 'm'). The views
+// render only styled text, so this is the whole escape surface in a View string.
+var csiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// plain strips styling so assertions match the visible text. This realises the
+// brief's "styling forced plain in tests": lipgloss v2 emits ANSI
+// unconditionally at Render and has no plain-render mode — colour downgrade
+// happens only at the colorprofile writer (verified against the resolved module
+// 2026-07-09, where lipgloss.Writer *is* a colorprofile writer). Stripping the
+// escapes here keeps the dashboard package's import set exactly the reviewed
+// allowlist, with no extra dependency pulled in for test scaffolding.
 func plain(s string) string {
-	var buf bytes.Buffer
-	writer := colorprofile.NewWriter(&buf, nil)
-	writer.Profile = colorprofile.NoTTY
-	_, _ = writer.Write([]byte(s))
-	return buf.String()
+	return csiPattern.ReplaceAllString(s, "")
 }
 
 // fakeData is an injectable dashboardData: canned reads, and recorded mutating

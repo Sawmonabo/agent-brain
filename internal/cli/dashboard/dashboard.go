@@ -397,7 +397,7 @@ func (m Model) daemonDownView() string {
 }
 
 // Shared styles. The visible glyphs and text — not colour — carry every signal
-// a test asserts on: tests strip styling to plain (colorprofile.NoTTY), and
+// a test asserts on: tests strip the styling to plain (see the test helper), and
 // bubbletea downgrades colour for non-colour terminals in production.
 var (
 	titleStyle       = lipgloss.NewStyle().Bold(true)
