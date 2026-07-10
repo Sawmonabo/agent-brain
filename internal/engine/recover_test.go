@@ -200,6 +200,59 @@ func TestRecoverStateRestoresStrayWorktreeDeletion(t *testing.T) {
 	}
 }
 
+// TestRecoverStateResetThenHealRestoresGitRmDeletion pins the reset→heal
+// COMPOSITION end-to-end — the crash-after-`git rm` shape that justifies
+// running the deletion heal AFTER the staged-index reset (recover.go decision).
+// `git rm` (not --cached) removes the file from BOTH the index and the
+// worktree, so a crash between mirror-in's `git rm` and its commit lands as a
+// STAGED deletion whose worktree copy is also gone (`D ` porcelain).
+//
+// Neither half heals this alone, and the ORDER is load-bearing: the staged
+// reset alone rewinds the index to HEAD but leaves the worktree deletion
+// stranded (` D`); the heal alone, run FIRST, would miss it, because
+// `git ls-files --deleted` lists paths IN the index but missing from the
+// worktree and the staged `git rm` has already dropped the path from the index.
+// Only reset THEN heal restores it — the reset re-adds the path to the index
+// (== HEAD), turning the staged deletion into the worktree-only deletion the
+// heal then lists and checks out. A future reorder that breaks this ordering
+// fails this row.
+func TestRecoverStateResetThenHealRestoresGitRmDeletion(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	rel := "alpha/claude/memories/clash.md"
+	commitFileOn(t, checkout, rel, "committed content\n", "add clash")
+
+	// `git rm` drops the file from the worktree AND stages the deletion — the
+	// crash-after-mirror-in-`git rm` shape. `D ` (index=D, worktree=blank) is
+	// its porcelain signature, distinct from the ` D` unstaged residue above.
+	mustGit(t, checkout, "rm", "--quiet", "--", rel)
+	staged := mustGit(t, checkout, "status", "--porcelain", "--", rel)
+	if !strings.HasPrefix(staged.Stdout, "D ") {
+		t.Fatalf("expected a staged deletion with the worktree copy also gone, got porcelain %q", staged.Stdout)
+	}
+
+	if err := engine.recoverState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	full := filepath.Join(checkout, filepath.FromSlash(rel))
+	got, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatalf("git rm residue not restored by recoverState: %v", err)
+	}
+	if string(got) != "committed content\n" {
+		t.Fatalf("restored content = %q, want %q", got, "committed content\n")
+	}
+	// Index and worktree both back at HEAD — the reset healed the index, the
+	// heal healed the worktree.
+	clean := mustGit(t, checkout, "status", "--porcelain")
+	if clean.Stdout != "" {
+		t.Fatalf("checkout not clean after reset+heal: %q", clean.Stdout)
+	}
+}
+
 // TestRecoverStateNoopOnCleanIndex asserts a clean checkout stays
 // byte-for-byte clean: git status --porcelain empty before and after,
 // and no error — recoverState runs at the top of EVERY cycle, so the
