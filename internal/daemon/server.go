@@ -26,6 +26,7 @@ type controller interface {
 	Track(ctx context.Context, req api.TrackRequest) (api.TrackResponse, error)
 	Untrack(ctx context.Context, req api.UntrackRequest) (api.UntrackResponse, error)
 	Migrate(ctx context.Context, req api.MigrateRequest) (api.MigrateResponse, error)
+	Reencrypt(ctx context.Context) (api.ReencryptResponse, error)
 	Quiesce(seconds int) api.QuiesceResponse
 	Resume() api.QuiesceResponse
 }
@@ -98,6 +99,22 @@ func newServer(ctrl controller, peerUID peerUIDFunc) *http.Server {
 	mux.HandleFunc("/v0/track", postHandler(ctrl.Track))
 	mux.HandleFunc("/v0/untrack", postHandler(ctrl.Untrack))
 	mux.HandleFunc("/v0/migrate", postHandler(ctrl.Migrate))
+	// /v0/reencrypt is a bodyless POST (spec §5 key rotation), so it cannot use
+	// postHandler (which decodes a request body and 400s on EOF). It funnels
+	// through the same controller/writeError shape as the admin endpoints — the
+	// busy-guard and quiesce-refusal live in the controller (submitAdmin).
+	mux.HandleFunc("/v0/reencrypt", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		resp, err := ctrl.Reencrypt(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, resp)
+	})
 	// /v0/quiesce carries both verbs on one route: POST sets/extends the hold
 	// (clamped, body api.QuiesceRequest), DELETE releases it. Both reply with
 	// api.QuiesceResponse — the resulting deadline (zero = released). Clamp

@@ -294,7 +294,7 @@ Spec §5 designed rotation into the key model from day one ("Tink keysets are na
 - Produces:
   - `func Rotate(path string) error` (keys) — error if keyset missing (`fs.ErrNotExist` wrapped: rotation without a keyset is `key import`'s job, not Generate's).
   - `func (e *Engine) ReencryptAll(ctx context.Context) (ReencryptReport, error)` with `ReencryptReport{Files int, Pushed bool, PushQueued bool}`.
-  - `POST /v0/reencrypt` → `api.ReencryptResponse{Files int, Pushed, PushQueued bool, Error string}`; `func (c *Client) Reencrypt(ctx context.Context) (ReencryptResponse, error)`.
+  - `POST /v0/reencrypt` → `api.ReencryptResponse{Files int, Pushed, PushQueued bool}`; `func (c *Client) Reencrypt(ctx context.Context) (ReencryptResponse, error)`. (As-built: the once-planned reserved `Error string` was dropped as dead surface — failures travel via the HTTP error envelope like every other endpoint, never the success body.)
 
 - [ ] **Step 1 (RED, keys):** `TestRotateAddsPrimaryKeepsOldKeys` — Generate; capture primary key ID + `Primitive` roundtrip of a sample; `Rotate`; assert: keyset now has 2 keys, primary CHANGED, old ciphertext still decrypts (old key retained), new encryptions differ from pre-rotation ciphertext for identical plaintext (primary switch observable via the deterministic property). `TestRotateRefusesMissingKeyset` — errors mentioning `key import`. Run → FAIL undefined `Rotate`.
 - [ ] **Step 2 (keys impl + GREEN):** implement `Rotate` (manager add + set-primary + atomic `write`); `go test ./internal/keys/ -race -count=1` → PASS. Commit `feat(keys): Rotate — new AES256_SIV primary, old keys retained for history`.

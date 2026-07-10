@@ -40,6 +40,20 @@ type SeedReport struct {
 	Skipped bool // imported-from marker already present → no-op
 }
 
+// ReencryptReport says what a full re-encrypt did. Files is the number of
+// filtered blobs re-sealed under the new primary (0 when the primary was
+// unchanged — a clean no-op). Pushed/PushQueued mirror the engine's push
+// outcome for the single re-encrypt commit.
+type ReencryptReport struct {
+	Files      int
+	Pushed     bool
+	PushQueued bool
+}
+
+// reencryptSubject is the deterministic commit message a full re-encrypt
+// carries (spec §5: "Rotation costs one full re-encrypt commit").
+const reencryptSubject = "chore(key): rotate primary key"
+
 // RegisterProject records id in the shared projects registry, creates the
 // project/provider dir, commits the registration, and returns the folder
 // actually recorded (collision-disambiguated by repo.Projects.Add). The
@@ -255,4 +269,67 @@ func (e *Engine) SeedProject(ctx context.Context, folder, providerName, slug, sr
 		return SeedReport{}, err
 	}
 	return SeedReport{Folder: folder, Files: copied}, nil
+}
+
+// ReencryptAll re-encrypts every filtered file under the keyset's CURRENT
+// primary and pushes the result (spec §5's rotation re-encrypt). It is the
+// admin op behind POST /v0/reencrypt: like the others it acquires the busy
+// guard and runs prepareCheckout first (recover a crashed rebase, scrub
+// resident git-meta poison) so no `git add` ever consults hostile attributes.
+//
+// The mechanism is `git add --renormalize .`: git re-runs the clean filter over
+// every tracked filter-subject file and re-stages any whose stored bytes
+// changed. Deterministic AEAD means a NEW primary re-seals every memory blob to
+// fresh ciphertext (each changes exactly once), while an UNCHANGED primary
+// re-seals to identical bytes — nothing stages, and the op is a clean no-op
+// (Files == 0, no commit). The one commit it does make carries every re-sealed
+// blob; the existing push path delivers it, queuing on a non-fast-forward the
+// same way a sync cycle does. Old keys are never removed here, so history blobs
+// and not-yet-rotated peers keep decrypting.
+func (e *Engine) ReencryptAll(ctx context.Context) (ReencryptReport, error) {
+	if !e.busy.CompareAndSwap(false, true) {
+		return ReencryptReport{}, ErrBusy
+	}
+	defer e.busy.Store(false)
+
+	if _, err := e.prepareCheckout(ctx); err != nil {
+		return ReencryptReport{}, err
+	}
+
+	if _, err := gitx.Run(ctx, e.checkout, "add", "--renormalize", "."); err != nil {
+		return ReencryptReport{}, err
+	}
+	files, err := e.stagedFileCount(ctx)
+	if err != nil {
+		return ReencryptReport{}, err
+	}
+	if files == 0 {
+		return ReencryptReport{}, nil // primary unchanged → renormalize is a no-op
+	}
+	if _, err := gitx.Run(ctx, e.checkout, "commit", "--quiet", "-m", reencryptSubject); err != nil {
+		return ReencryptReport{}, err
+	}
+	pushed, err := e.push(ctx)
+	if err != nil {
+		return ReencryptReport{}, err
+	}
+	return ReencryptReport{Files: files, Pushed: pushed.Pushed, PushQueued: pushed.Queued}, nil
+}
+
+// stagedFileCount counts the paths currently staged in the index (-z: NUL
+// separated, robust to any path bytes). It is how ReencryptAll turns
+// renormalize's outcome into both the report's Files and the commit/no-commit
+// decision.
+func (e *Engine) stagedFileCount(ctx context.Context) (int, error) {
+	res, err := gitx.Run(ctx, e.checkout, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, path := range strings.Split(res.Stdout, "\x00") {
+		if path != "" {
+			count++
+		}
+	}
+	return count, nil
 }

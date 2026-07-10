@@ -1,0 +1,48 @@
+# key_rotate.txt — `key rotate` end-to-end through the REAL binary: rotate the
+# primary key and have the daemon re-encrypt the whole repo under it. This owns
+# the CLI -> UDS -> daemon -> engine rotate path (daemon.Reencrypt ->
+# submitAdmin -> ReencryptAll) that the engine-driven Go harness cannot touch;
+# the two-machine fail-closed / recovery semantics live in rotate_test.go.
+
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+exec agent-brain daemon run &daemon&
+waitdaemon
+
+# A real project with a remote (so it is not remoteless) and a live Claude
+# memory dir seeded with a sentinel fact.
+exec git init $WORK/proj
+exec git -C $WORK/proj remote add origin git@github.com:fakeuser/proj.git
+mkclaudememory $WORK/proj memory-fixture.md topic.md
+
+# track <path> confirms the resolved project path through a huh prompt; an empty
+# stdin line accepts the default. The project has a remote, so no folder prompt.
+stdin empty.txt
+exec agent-brain track $WORK/proj
+stdout 'enroll: .*/memory -> proj'
+
+# An explicit sync is the barrier: the memory blob is now ciphertext on the
+# remote. Capture its blob OID before rotating so we can prove it reseals.
+exec agent-brain sync
+stdout 'sync completed'
+remoteblob proj/claude/topic.md !plaintext sentinel
+exec git -C $GH_FAKE_REMOTE rev-parse main:proj/claude/topic.md
+cp stdout beforeoid.txt
+
+# Rotate the primary key via the REAL binary. The daemon is up, so `key rotate`
+# does NOT refuse; --yes skips the confirmation. It rotates the keyset, prints
+# the new armored export, and drives the daemon-side re-encrypt to completion.
+exec agent-brain key rotate --yes
+stdout 're-encrypted \d+ files under the new primary'
+stdout 'pushed to the remote'
+
+# The blob RESEALED under the new primary: its OID changed, yet it is still
+# agent-brain ciphertext and never leaks the sentinel plaintext.
+exec git -C $GH_FAKE_REMOTE rev-parse main:proj/claude/topic.md
+! cmp stdout beforeoid.txt
+remoteblob proj/claude/topic.md !plaintext sentinel
+
+stopdaemon
+
+-- memory-fixture.md --
+the sentinel memory line
+-- empty.txt --

@@ -890,3 +890,26 @@ func (d *Daemon) Migrate(ctx context.Context, req api.MigrateRequest) (api.Migra
 	}
 	return result.(api.MigrateResponse), nil
 }
+
+// Reencrypt implements controller: re-encrypt the whole repo under the keyset's
+// new primary, on the engine goroutine (ADR 03). Routing through submitAdmin
+// inherits the busy-guard AND the quiesce-refusal for free — a re-encrypt is a
+// mutation, refused while quiesced like track/migrate. `key rotate` calls this
+// immediately after rotating the keyset, so the repo never lingers mixed-primary.
+func (d *Daemon) Reencrypt(ctx context.Context) (api.ReencryptResponse, error) {
+	result, err := d.submitAdmin(ctx, "reencrypt", func(ctx context.Context, e *engine.Engine) (any, error) {
+		report, err := e.ReencryptAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return api.ReencryptResponse{
+			Files:      report.Files,
+			Pushed:     report.Pushed,
+			PushQueued: report.PushQueued,
+		}, nil
+	})
+	if err != nil {
+		return api.ReencryptResponse{}, err
+	}
+	return result.(api.ReencryptResponse), nil
+}

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,18 +10,20 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/huh/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
+	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
 )
 
 func newKeyCmd() *cobra.Command {
 	keyCmd := &cobra.Command{
 		Use:   "key",
-		Short: "Manage the shared Tink keyset (export it for backup, import it to restore)",
+		Short: "Manage the shared Tink keyset (export it for backup, import it to restore, rotate it)",
 	}
-	keyCmd.AddCommand(newKeyExportCmd(), newKeyImportCmd())
+	keyCmd.AddCommand(newKeyExportCmd(), newKeyImportCmd(), newKeyRotateCmd())
 	return keyCmd
 }
 
@@ -122,4 +125,129 @@ func forceImport(cmd *cobra.Command, keysetPath, armored string) error {
 	}
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "keyset imported to %s\n", keysetPath)
 	return err
+}
+
+// newKeyRotateCmd rotates the primary key and has the daemon re-encrypt the
+// whole repo under it (spec §5). It REFUSES when the daemon is down: rotating
+// the keyset without the immediate re-encrypt would leave the repo
+// mixed-primary indefinitely, silently deferring the security value the user
+// just asked for. The confirmation is EOF-safe — its prefill is ABORT, so an
+// unattended pipe never rotates keys — and can be skipped with --yes.
+func newKeyRotateCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "rotate",
+		Short: "Rotate the primary key and re-encrypt the whole repo under it",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			paths, err := config.DefaultPaths()
+			if err != nil {
+				return err
+			}
+			client, err := newAPIClient()
+			if err != nil {
+				return err
+			}
+			confirm := func() (bool, error) { return confirmRotateInteractive(isAccessible()) }
+			return runKeyRotate(cmd.Context(), client, paths.Keyset(), cmd.OutOrStdout(), cmd.ErrOrStderr(), yes, confirm)
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "skip the rotation confirmation prompt")
+	return cmd
+}
+
+// runKeyRotate is the testable core: refuse if the daemon is unreachable, warn
+// about the fleet-wide re-import requirement, confirm (unless yes), rotate the
+// keyset, print the new armored export, then trigger the daemon-side re-encrypt
+// and report it. The confirm seam lets tests drive the decision without a TTY,
+// exactly as untrack's confirmPurge does.
+func runKeyRotate(ctx context.Context, client *api.Client, keysetPath string, out, errOut io.Writer, yes bool, confirm func() (bool, error)) error {
+	// Refuse up front when the daemon is down — before touching the keyset — so
+	// a rotation is never left stranded without its re-encrypt. Only a genuine
+	// "no daemon" is this refusal; any other Status error is surfaced as-is.
+	if _, err := client.Status(ctx); err != nil {
+		if errors.Is(err, api.ErrDaemonNotRunning) {
+			return fmt.Errorf("key rotate needs the daemon running to re-encrypt immediately after rotating "+
+				"(rotating alone leaves the repo mixed-primary) — start it with `agent-brain service start` "+
+				"(or `agent-brain daemon run` in the foreground), then retry: %w", err)
+		}
+		return explainDown(err)
+	}
+
+	report := &reportWriter{w: out}
+	// The fleet-ordering requirement prints BEFORE anything is touched (spec §5):
+	// the moment this machine rotates and pushes, peers without the new keyset
+	// fail closed on smudge — correct fail-closed behavior, but only if the user
+	// knows to re-import everywhere NOW.
+	report.println("key rotate: every OTHER machine must run `agent-brain key import --force` with the new keyset")
+	report.println("            immediately after this, or it will fail closed on its next sync.")
+	if report.err != nil {
+		return report.err
+	}
+
+	if !yes {
+		confirmed, err := confirm()
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			_, err := fmt.Fprintln(out, "key rotate: not confirmed — aborted (the keyset was NOT changed)")
+			return err
+		}
+	}
+
+	if err := keys.Rotate(keysetPath); err != nil {
+		return err
+	}
+
+	// Print the new armored keyset (the recovery artifact) to stdout and the
+	// password-manager reminder to stderr — the same split `key export` uses, so
+	// `key rotate > newkey.txt` still captures a clean keyset.
+	armored, err := keys.Export(keysetPath)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, armored); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(errOut,
+		"This rotated keyset IS the new recovery artifact — store it in your password manager, "+
+			"and `agent-brain key import --force` it on every other machine now."); err != nil {
+		return err
+	}
+
+	// Trigger the daemon-side re-encrypt. The keyset is already rotated, so a
+	// failure here is NOT a clean abort: name the manual completion path.
+	resp, err := client.Reencrypt(ctx)
+	if err != nil {
+		return fmt.Errorf("keyset rotated, but the re-encrypt failed — the repo is now mixed-primary; "+
+			"once the daemon is healthy, re-run `agent-brain key rotate` to reseal every blob under the new "+
+			"primary (a plain `agent-brain sync` will NOT re-encrypt the unchanged blobs): %w", err)
+	}
+	report.printf("key rotate: re-encrypted %d files under the new primary\n", resp.Files)
+	switch {
+	case resp.Pushed:
+		report.println("key rotate: pushed to the remote")
+	case resp.PushQueued:
+		report.println("key rotate: re-encrypt commit queued — it will push on the next successful cycle")
+	}
+	return report.err
+}
+
+// confirmRotateInteractive asks before rotating. The prefill is false (ABORT):
+// in accessible mode an exhausted stdin (EOF) keeps the prefill, so an
+// unattended pipe declines rather than rotating keys unprompted (the same EOF
+// contract documented on isAccessible).
+func confirmRotateInteractive(accessible bool) (bool, error) {
+	var confirmed bool
+	err := huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title("Rotate the primary key and re-encrypt the whole repo now?").
+			Description("Every other machine must `key import --force` the new keyset immediately, or it fails closed.").
+			Value(&confirmed),
+	)).WithAccessible(accessible).Run()
+	if err != nil {
+		return false, err
+	}
+	return confirmed, nil
 }

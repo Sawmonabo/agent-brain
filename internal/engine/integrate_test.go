@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +158,86 @@ func TestIntegrateMetaConflictDegradesAll(t *testing.T) {
 	}
 	if outcome.Integrated || !outcome.DegradedAll {
 		t.Fatalf("outcome = %+v, want DegradedAll", outcome)
+	}
+}
+
+// TestRestoreWorktreeToHeadPropagatesFailure pins addition (1) of the
+// degrade->recover fix: a failed heal must SURFACE, never be swallowed —
+// continuing past a failed heal would re-open the exact data-loss window it
+// closes. A canceled context kills the checkout mid-run; restoreWorktreeToHead
+// must return that error wrapping context.Canceled (the same execution-failure
+// contract recoverState holds in recover_test.go).
+func TestRestoreWorktreeToHeadPropagatesFailure(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := engine.restoreWorktreeToHead(ctx)
+	if err == nil {
+		t.Fatal("restoreWorktreeToHead returned nil under a canceled context; a failed heal must surface, never be swallowed")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("restoreWorktreeToHead error does not wrap context.Canceled: %v", err)
+	}
+}
+
+// TestIntegrateHealsWorktreeOnHardFailReturn is the deterministic proof for the
+// F1 fix: a NON-degraded (hard-fail, err != nil) integrate return heals a
+// diverged worktree AND preserves the original error. It drives
+// healAfterFailedIntegrate — integrate's deferred-heal body — with the exact
+// shape those returns take (integrateOutcome{} + an error). The full-ladder
+// hard-fail returns cannot be forced deterministically (they need a real
+// mid-rebase ctx cancel / signal / spawn failure), so this unit test plus the
+// one-line defer wiring in integrate plus the e2e degrade->recover
+// characterization pin the guarantee without racing real git.
+func TestIntegrateHealsWorktreeOnHardFailReturn(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	// Strand the worktree the way a smudge-failed rebase does: the file is gone
+	// from the worktree but intact in HEAD and the index.
+	rel := "alpha/claude/memories/architecture.md"
+	commitFileOn(t, checkout, rel, "kept fact\n", "memory: host-a alpha ts")
+	full := filepath.Join(checkout, filepath.FromSlash(rel))
+	if err := os.Remove(full); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("integrate: rebase --abort: boom")
+	got := engine.healAfterFailedIntegrate(integrateOutcome{}, sentinel)
+
+	if !errors.Is(got, sentinel) {
+		t.Fatalf("heal dropped the original hard-fail error: got %v, want it to wrap %v", got, sentinel)
+	}
+	data, err := os.ReadFile(full)
+	if err != nil || string(data) != "kept fact\n" {
+		t.Fatalf("worktree not restored to HEAD after a hard-fail return: content=%q err=%v", data, err)
+	}
+}
+
+// TestIntegrateSkipsHealWhenIntegrated guards the other half of the outcome
+// switch: a clean (Integrated) return must NOT re-check-out the worktree.
+// Without this skip every successful multi-commit integration would re-smudge
+// the whole repo. A diverged worktree left diverged proves the heal never ran.
+func TestIntegrateSkipsHealWhenIntegrated(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	rel := "alpha/claude/memories/architecture.md"
+	commitFileOn(t, checkout, rel, "kept fact\n", "memory: host-a alpha ts")
+	full := filepath.Join(checkout, filepath.FromSlash(rel))
+	if err := os.Remove(full); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.healAfterFailedIntegrate(integrateOutcome{Integrated: true}, nil); err != nil {
+		t.Fatalf("Integrated outcome returned err = %v, want nil", err)
+	}
+	if _, err := os.Stat(full); !os.IsNotExist(err) {
+		t.Fatalf("Integrated outcome healed the worktree (stat err = %v); the clean path must not re-check-out", err)
 	}
 }

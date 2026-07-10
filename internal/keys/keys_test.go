@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tink-crypto/tink-go/v2/aead"
@@ -155,5 +157,102 @@ func TestImportRejectsValidBase64NonKeyset(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatalf("Import left a file after rejecting a non-keyset payload; want no file, stat err = %v", err)
+	}
+}
+
+// loadHandle reads the on-disk keyset as a Tink handle so a test can inspect
+// key count and primary id — the keyset-level facts Rotate must establish,
+// beyond the ciphertext behaviour the public primitive already exposes.
+func loadHandle(t *testing.T, path string) *keyset.Handle {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := insecurecleartextkeyset.Read(keyset.NewJSONReader(bytes.NewReader(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handle
+}
+
+// TestRotateAddsPrimaryKeepsOldKeys pins the spec §5 rotation contract: Rotate
+// adds a fresh AES256_SIV key, promotes it to primary, and RETAINS the old key
+// (history blobs and not-yet-re-encrypted peers still need it to smudge). The
+// primary switch is observable through the deterministic-AEAD property — the
+// same plaintext seals to different bytes — while the old key's retention is
+// proven by decrypting ciphertext sealed before the rotation.
+func TestRotateAddsPrimaryKeepsOldKeys(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "keyset.json")
+	if err := Generate(path); err != nil {
+		t.Fatal(err)
+	}
+
+	before := loadHandle(t, path)
+	if before.Len() != 1 {
+		t.Fatalf("fresh keyset has %d keys, want 1", before.Len())
+	}
+	beforePrimary := before.KeysetInfo().GetPrimaryKeyId()
+
+	// Seal a sample under the OLD primary so, after rotating, we can prove both
+	// that the old key survives (this decrypts) and that the primary switched
+	// (an identical plaintext now seals differently).
+	oldPrimitive, err := Primitive(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const plaintext = "the codebase pins go-cmp only for assertions"
+	oldSealed, err := oldPrimitive.EncryptDeterministically([]byte(plaintext), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rotate(path); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	after := loadHandle(t, path)
+	if after.Len() != 2 {
+		t.Fatalf("rotated keyset has %d keys, want 2 (new primary added, old key retained)", after.Len())
+	}
+	if after.KeysetInfo().GetPrimaryKeyId() == beforePrimary {
+		t.Fatalf("primary key id %d unchanged after Rotate", beforePrimary)
+	}
+
+	newPrimitive, err := Primitive(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Old key retained: ciphertext sealed under the old primary still opens.
+	opened, err := newPrimitive.DecryptDeterministically(oldSealed, nil)
+	if err != nil || string(opened) != plaintext {
+		t.Fatalf("old ciphertext no longer decrypts after rotate: err=%v opened=%q", err, opened)
+	}
+	// Primary switched: the same plaintext now seals to different bytes.
+	newSealed, err := newPrimitive.EncryptDeterministically([]byte(plaintext), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(oldSealed, newSealed) {
+		t.Fatal("identical plaintext sealed to identical bytes after rotate — the primary did not switch")
+	}
+}
+
+// TestRotateRefusesMissingKeyset pins that rotation is not a bootstrap path:
+// with no keyset present it must fail, wrapping fs.ErrNotExist and naming
+// `key import` as the fix (installing a first keyset is import/init's job).
+func TestRotateRefusesMissingKeyset(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "keyset.json")
+	err := Rotate(path)
+	if err == nil {
+		t.Fatal("Rotate on a missing keyset succeeded; it must refuse")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("error does not wrap fs.ErrNotExist: %v", err)
+	}
+	if !strings.Contains(err.Error(), "key import") {
+		t.Fatalf("error must name `key import` as the fix: %v", err)
 	}
 }

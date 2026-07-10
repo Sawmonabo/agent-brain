@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
+	"github.com/Sawmonabo/agent-brain/internal/keys"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
@@ -370,5 +371,142 @@ func TestSeedProject(t *testing.T) {
 	}
 	if got := commitCount(t, checkout); got != countBefore {
 		t.Fatalf("rerun produced a commit: count %d → %d", countBefore, got)
+	}
+}
+
+// TestReencryptAllRenormalizesCommitsPushes is the ReencryptAll wire proof
+// through REAL filters: after a keyset rotation, `git add --renormalize` re-runs
+// the clean filter over every filtered file, so deterministic AEAD re-seals
+// EVERY memory blob under the new primary. Exactly one commit lands, both
+// blobs' stored ciphertext changes on the fake remote (staying ciphertext,
+// never leaking plaintext), and the worktree plaintext is byte-identical
+// (renormalize never touches the worktree).
+//
+// Non-parallel: it uses t.Setenv to give the real-binary filters a PRIVATE
+// keyset dir it can rotate in isolation, and t.Setenv forbids t.Parallel.
+func TestReencryptAllRenormalizesCommitsPushes(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
+	keysetPath := filepath.Join(configDir, "keyset.json")
+	if err := keys.Generate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout, bare := newEncryptedCheckout(t)
+	e := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	// Two committed, pushed memory files — ciphertext on the wire under K1.
+	const oneText, twoText = "first fact about the build\n", "second fact about the build\n"
+	writeCheckout(t, checkout, "alpha/claude/one.md", oneText)
+	writeCheckout(t, checkout, "alpha/claude/two.md", twoText)
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "seed two facts")
+	mustGit(t, checkout, "push", "--quiet", "origin", "main")
+
+	oneBefore := remoteBlobBytes(t, bare, "alpha/claude/one.md")
+	twoBefore := remoteBlobBytes(t, bare, "alpha/claude/two.md")
+	if !strings.HasPrefix(oneBefore, magicPrefix) || !strings.HasPrefix(twoBefore, magicPrefix) {
+		t.Fatal("precondition: seeded memory is not ciphertext on the wire (filters not wired?)")
+	}
+
+	// Rotate → new primary K2 (K1 retained), then re-encrypt the whole repo.
+	if err := keys.Rotate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+	before := commitCount(t, checkout)
+	report, err := e.ReencryptAll(ctx)
+	if err != nil {
+		t.Fatalf("ReencryptAll: %v", err)
+	}
+
+	if report.Files != 2 {
+		t.Fatalf("report.Files = %d, want 2", report.Files)
+	}
+	if !report.Pushed || report.PushQueued {
+		t.Fatalf("report = %+v, want Pushed=true PushQueued=false", report)
+	}
+	if got := commitCount(t, checkout); got != before+1 {
+		t.Fatalf("commit count = %d, want %d (exactly one re-encrypt commit)", got, before+1)
+	}
+	if got := lastSubject(t, checkout); got != "chore(key): rotate primary key" {
+		t.Fatalf("re-encrypt subject = %q, want chore(key): rotate primary key", got)
+	}
+
+	// Both blobs' stored ciphertext changed on the wire, stayed ciphertext,
+	// and never leaked plaintext.
+	oneAfter := remoteBlobBytes(t, bare, "alpha/claude/one.md")
+	twoAfter := remoteBlobBytes(t, bare, "alpha/claude/two.md")
+	if oneAfter == oneBefore || twoAfter == twoBefore {
+		t.Fatal("a memory blob did not change on the wire after re-encrypt under the new primary")
+	}
+	for _, blob := range []string{oneAfter, twoAfter} {
+		if !strings.HasPrefix(blob, magicPrefix) {
+			t.Fatal("re-encrypted blob is not agent-brain ciphertext")
+		}
+	}
+	if strings.Contains(oneAfter, "first fact") || strings.Contains(twoAfter, "second fact") {
+		t.Fatal("SAFETY VIOLATION: plaintext memory content in a re-encrypted git object")
+	}
+
+	// Worktree plaintext is byte-identical — renormalize re-stages the index,
+	// never the working tree.
+	if got := readCheckout(t, checkout, "alpha/claude/one.md"); got != oneText {
+		t.Fatalf("worktree one.md = %q, want plaintext unchanged", got)
+	}
+	if got := readCheckout(t, checkout, "alpha/claude/two.md"); got != twoText {
+		t.Fatalf("worktree two.md = %q, want plaintext unchanged", got)
+	}
+}
+
+// TestReencryptAllNoopWedgeFree pins that a re-encrypt with no primary change
+// is a clean no-op, not a wedge: the first ReencryptAll (after a rotation) does
+// the work; a second one, primary now unchanged, renormalizes to zero staged
+// files, makes no commit, and reports Files == 0.
+//
+// Non-parallel for the same t.Setenv keyset-isolation reason as above.
+func TestReencryptAllNoopWedgeFree(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
+	keysetPath := filepath.Join(configDir, "keyset.json")
+	if err := keys.Generate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+
+	checkout, _ := newEncryptedCheckout(t)
+	e := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	writeCheckout(t, checkout, "alpha/claude/fact.md", "a durable fact\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "seed a fact")
+	mustGit(t, checkout, "push", "--quiet", "origin", "main")
+
+	if err := keys.Rotate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.ReencryptAll(ctx)
+	if err != nil {
+		t.Fatalf("first ReencryptAll: %v", err)
+	}
+	if first.Files != 1 {
+		t.Fatalf("first ReencryptAll Files = %d, want 1", first.Files)
+	}
+
+	// No rotation between the two runs → the primary is unchanged, so
+	// renormalize re-seals every blob to the SAME bytes: nothing to stage.
+	before := commitCount(t, checkout)
+	second, err := e.ReencryptAll(ctx)
+	if err != nil {
+		t.Fatalf("second ReencryptAll: %v", err)
+	}
+	if second.Files != 0 {
+		t.Fatalf("second ReencryptAll Files = %d, want 0 (no primary change → no-op)", second.Files)
+	}
+	if second.Pushed || second.PushQueued {
+		t.Fatalf("second ReencryptAll report = %+v, want no push (nothing committed)", second)
+	}
+	if got := commitCount(t, checkout); got != before {
+		t.Fatalf("second ReencryptAll committed: count %d → %d, want no new commit", before, got)
 	}
 }
