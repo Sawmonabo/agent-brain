@@ -481,12 +481,9 @@ func stepConfigFile(_ context.Context, state *initState) error {
 // guidance the standalone `service install` command returns as an error
 // (service.go), but as information rather than a failure: init's overall
 // success must not depend on a service manager WSL2 does not have.
-// Install is idempotent by absorbing kardianos's one and only "already
-// installed" signal, its literal error text "Init already exists: ..."
-// (github.com/kardianos/service, darwin/systemd backends) — the package
-// exposes no typed sentinel for this the way it does for StatusNotInstalled,
-// so a substring check is the only seam available without widening
-// internal/service's contract for a single call site.
+// Install is idempotent via service.ErrAlreadyInstalled (errors.Is —
+// Task 3b), not a string match on kardianos's own per-OS-backend error
+// text; internal/service.mapErr is the only place that text is inspected.
 func stepService(_ context.Context, state *initState) error {
 	if state.skipService {
 		_, err := fmt.Fprintln(state.out, "service: skipped (--skip-service)")
@@ -501,7 +498,7 @@ func stepService(_ context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	if err := controller.Install(); err != nil && !strings.Contains(err.Error(), "already exists") {
+	if err := controller.Install(); err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return err
 	}
 	if err := controller.Start(); err != nil {

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,14 +58,28 @@ func newServiceCmd() *cobra.Command {
 		&cobra.Command{
 			Use:   "install",
 			Short: "Install the user service (launchd / systemd --user)",
-			RunE: func(cmd *cobra.Command, args []string) error {
+			RunE: func(cmd *cobra.Command, _ []string) error {
 				if service.IsWSL2() {
 					return fmt.Errorf("service install is not supported on WSL2 — WSL lacks a reliable login service manager; on-demand mode arrives in Phase 4. Run `agent-brain daemon run` in a terminal for now")
 				}
-				return run("install", service.Controller.Install)(cmd, args)
+				controller, err := controllerFor()
+				if err != nil {
+					return err
+				}
+				return runServiceInstall(cmd.OutOrStdout(), controller)
 			},
 		},
-		&cobra.Command{Use: "uninstall", Short: "Remove the user service", RunE: run("uninstall", service.Controller.Uninstall)},
+		&cobra.Command{
+			Use:   "uninstall",
+			Short: "Remove the user service",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				controller, err := controllerFor()
+				if err != nil {
+					return err
+				}
+				return runServiceUninstall(cmd.OutOrStdout(), controller)
+			},
+		},
 		&cobra.Command{Use: "start", Short: "Start the service", RunE: run("start", service.Controller.Start)},
 		&cobra.Command{Use: "stop", Short: "Stop the service", RunE: run("stop", service.Controller.Stop)},
 		&cobra.Command{
@@ -86,6 +101,39 @@ func newServiceCmd() *cobra.Command {
 		newServiceLogsCmd(),
 	)
 	return serviceCmd
+}
+
+// runServiceInstall installs the service and reports the outcome. A
+// second, idempotent install against an already-installed unit
+// (service.ErrAlreadyInstalled, matched with errors.Is — never a string
+// match, Task 3b) prints a nothing-to-do line and exits 0 rather than
+// failing; any other error still fails the command.
+func runServiceInstall(out io.Writer, controller service.Controller) error {
+	err := controller.Install()
+	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+		return fmt.Errorf("service install: %w", err)
+	}
+	message := "service install: ok"
+	if errors.Is(err, service.ErrAlreadyInstalled) {
+		message = "service install: already installed — nothing to do"
+	}
+	_, printErr := fmt.Fprintln(out, message)
+	return printErr
+}
+
+// runServiceUninstall mirrors runServiceInstall's idempotent treatment
+// for the symmetric "already gone" case (service.ErrNotInstalled).
+func runServiceUninstall(out io.Writer, controller service.Controller) error {
+	err := controller.Uninstall()
+	if err != nil && !errors.Is(err, service.ErrNotInstalled) {
+		return fmt.Errorf("service uninstall: %w", err)
+	}
+	message := "service uninstall: ok"
+	if errors.Is(err, service.ErrNotInstalled) {
+		message = "service uninstall: not installed — nothing to do"
+	}
+	_, printErr := fmt.Fprintln(out, message)
+	return printErr
 }
 
 // newServiceLogsCmd is a pure file read over paths.DaemonLogFile() — no

@@ -8,8 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	kardianos "github.com/kardianos/service"
+)
+
+// ErrAlreadyInstalled and ErrNotInstalled are this package's own
+// sentinels for the two lifecycle states kardianos/service does not
+// expose uniformly across its OS backends: "already installed" is a
+// bare formatted string that differs per backend (no typed sentinel
+// upstream for it, unlike ErrNotInstalled). mapErr is the ONE place
+// either shape is inspected; every caller branches with errors.Is
+// against these instead of kardianos's own types or text.
+var (
+	ErrAlreadyInstalled = errors.New("service already installed")
+	ErrNotInstalled     = errors.New("service not installed")
 )
 
 // Status is the coarse service state the CLI reports.
@@ -84,10 +97,31 @@ func NewController(binaryPath string) (Controller, error) {
 	return &kardianosController{svc: svc}, nil
 }
 
-func (c *kardianosController) Install() error   { return c.svc.Install() }
-func (c *kardianosController) Uninstall() error { return c.svc.Uninstall() }
-func (c *kardianosController) Start() error     { return c.svc.Start() }
-func (c *kardianosController) Stop() error      { return c.svc.Stop() }
+func (c *kardianosController) Install() error   { return mapErr(c.svc.Install()) }
+func (c *kardianosController) Uninstall() error { return mapErr(c.svc.Uninstall()) }
+func (c *kardianosController) Start() error     { return mapErr(c.svc.Start()) }
+func (c *kardianosController) Stop() error      { return mapErr(c.svc.Stop()) }
+
+// mapErr translates kardianos/service's own error shapes into this
+// package's sentinels. "not installed" already has a typed upstream
+// sentinel (kardianos.ErrNotInstalled); "already installed" does not —
+// every OS backend formats it differently ("Init already exists: ...",
+// "Manifest already exists: ..." on solaris, "service ... already
+// exists" on Windows) so a substring match on the one word they all
+// share is the only seam available without kardianos itself changing.
+// Every other error passes through unchanged.
+func mapErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, kardianos.ErrNotInstalled) {
+		return fmt.Errorf("%w: %w", ErrNotInstalled, err)
+	}
+	if strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("%w: %w", ErrAlreadyInstalled, err)
+	}
+	return err
+}
 
 func (c *kardianosController) Status() (Status, error) {
 	status, err := c.svc.Status()

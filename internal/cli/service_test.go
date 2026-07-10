@@ -2,10 +2,106 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/Sawmonabo/agent-brain/internal/service"
 )
+
+// fakeServiceController is a scriptable service.Controller test double
+// for CLI-layer tests — service install/uninstall must never touch a
+// real system in tests, so callers here implement the interface
+// directly (same pattern as fakeProvider in init_test.go) rather than
+// reaching into internal/service's own fakes.
+type fakeServiceController struct {
+	installCalls   int
+	installErr     error
+	installWarning string
+
+	uninstallCalls int
+	uninstallErr   error
+}
+
+func (f *fakeServiceController) Install() error {
+	f.installCalls++
+	if f.installCalls > 1 {
+		return service.ErrAlreadyInstalled
+	}
+	return f.installErr
+}
+
+func (f *fakeServiceController) Uninstall() error {
+	f.uninstallCalls++
+	if f.uninstallCalls > 1 {
+		return service.ErrNotInstalled
+	}
+	return f.uninstallErr
+}
+
+func (f *fakeServiceController) Start() error                    { return nil }
+func (f *fakeServiceController) Stop() error                     { return nil }
+func (f *fakeServiceController) Status() (service.Status, error) { return service.StatusRunning, nil }
+
+// --- 3b: idempotent install/uninstall UX ---
+
+// TestRunServiceInstallTwiceIsIdempotent proves a second `service install`
+// against an already-installed unit is a nothing-to-do success (exit 0),
+// branching on service.ErrAlreadyInstalled via errors.Is — never a
+// string match on the CLI side either.
+func TestRunServiceInstallTwiceIsIdempotent(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+
+	var firstOut bytes.Buffer
+	if err := runServiceInstall(&firstOut, controller); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if !strings.Contains(firstOut.String(), "ok") {
+		t.Fatalf("first install output = %q, want a success line", firstOut.String())
+	}
+
+	var secondOut bytes.Buffer
+	if err := runServiceInstall(&secondOut, controller); err != nil {
+		t.Fatalf("second install: %v, want nil (idempotent no-op, exit 0)", err)
+	}
+	if !strings.Contains(secondOut.String(), "already installed") {
+		t.Fatalf("second install output = %q, want the nothing-to-do message", secondOut.String())
+	}
+}
+
+// TestRunServiceInstallPropagatesRealErrors proves a genuine install
+// failure (not the already-installed sentinel) still fails the command.
+func TestRunServiceInstallPropagatesRealErrors(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{installErr: errors.New("permission denied")}
+	var out bytes.Buffer
+	if err := runServiceInstall(&out, controller); err == nil {
+		t.Fatal("runServiceInstall: want the real error to propagate")
+	}
+}
+
+// TestRunServiceUninstallWhenAlreadyGoneIsIdempotent mirrors the install
+// case for the symmetric "not installed" sentinel.
+func TestRunServiceUninstallWhenAlreadyGoneIsIdempotent(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+
+	var firstOut bytes.Buffer
+	if err := runServiceUninstall(&firstOut, controller); err != nil {
+		t.Fatalf("first uninstall: %v", err)
+	}
+
+	var secondOut bytes.Buffer
+	if err := runServiceUninstall(&secondOut, controller); err != nil {
+		t.Fatalf("second uninstall: %v, want nil (idempotent no-op, exit 0)", err)
+	}
+	if !strings.Contains(secondOut.String(), "not installed") {
+		t.Fatalf("second uninstall output = %q, want the nothing-to-do message", secondOut.String())
+	}
+}
 
 // TestServiceLogsPrintsTail proves `service logs -n 2` on a fabricated
 // 5-line daemon.log prints only the last two lines plus a trailer naming
