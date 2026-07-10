@@ -716,6 +716,64 @@ func TestStepRepoStateQuiescesLiveDaemonDuringSurgery(t *testing.T) {
 	}
 }
 
+// TestStepRepoStateNotesFailedQuiesce is init's side of the coverage the doctor
+// twin (TestDoctorFixNotesFailedQuiesce) already pins: a resident daemon whose
+// /v0/quiesce errors must not abort init. stepRepoState treats a failed hold as
+// the pre-quiesce status quo — it prints an operator-visible note and proceeds
+// with the checkout surgery anyway (initsteps.go's transient-error fallback).
+// Reuses the doctor test's quiesce-fails fake verbatim, so both halves of that
+// cross-command seam are tested and cannot drift apart silently.
+func TestStepRepoStateNotesFailedQuiesce(t *testing.T) {
+	base := t.TempDir()
+	bareRemote := filepath.Join(base, "remote.git")
+	mustGitCLI(t, base, "init", "--bare", "-b", "main", bareRemote)
+
+	configDir := filepath.Join(base, "cfg")
+	dataDir := filepath.Join(base, "data")
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
+	t.Setenv("AGENT_BRAIN_DATA_DIR", dataDir)
+	if err := keys.Generate(filepath.Join(configDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := buildRegistry(config.DefaultSettings(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A resident daemon that answers /v0/status "ready" (so the probe finds it)
+	// but errors /v0/quiesce, driving stepRepoState's failed-hold branch.
+	startFakeDaemonQuiesceFails(t)
+
+	var out bytes.Buffer
+	state := &initState{
+		out:        &out,
+		paths:      config.Paths{ConfigDir: configDir, DataDir: dataDir},
+		registry:   registry,
+		binaryPath: testBinaryPath,
+		login:      "alice",
+		repoName:   "agent-brain-memories",
+		gh:         ghx.NewClientWithRunner(newFakeGHRunner(t, "alice", "agent-brain-memories", bareRemote), "/usr/bin/gh"),
+	}
+	if err := stepRepo(context.Background(), state); err != nil {
+		t.Fatalf("stepRepo: %v", err)
+	}
+	if err := stepWiring(context.Background(), state); err != nil {
+		t.Fatalf("stepWiring: %v", err)
+	}
+	if err := stepRepoState(context.Background(), state); err != nil {
+		t.Fatalf("stepRepoState: %v", err)
+	}
+
+	// The note landed AND the surgery still ran — a failed hold is never a reason
+	// to abort init. Both lines go to state.out (init has one writer, unlike
+	// doctor's stdout/stderr split).
+	if !strings.Contains(out.String(), "could not quiesce the daemon") {
+		t.Fatalf("stepRepoState did not note the failed quiesce:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "initialized a fresh checkout") {
+		t.Fatalf("stepRepoState did not proceed with the surgery after the failed quiesce:\n%s", out.String())
+	}
+}
+
 // TestStepRepoStateJoiningMachineMaterializesAndDecryptsExistingMemory is
 // the joining-machine scenario end to end: a first machine (alice-a)
 // provisions the repo and seeds one real, filter-encrypted memory file;
