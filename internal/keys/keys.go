@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -43,6 +44,47 @@ func Generate(path string) error {
 		return fmt.Errorf("generate keyset: %w", err)
 	}
 	return write(path, handle)
+}
+
+// Rotate adds a fresh AES256_SIV key to the keyset at path, promotes it to
+// primary, and atomically rewrites the file (renameio, same as Generate).
+// New content encrypts under the new primary; a full re-encrypt of existing
+// blobs is the engine's job (ReencryptAll), so Rotate touches only the keyset.
+//
+// The previous keys are RETAINED, never disabled or destroyed: history blobs
+// (old commits) and peers that have not imported the new keyset yet still smudge
+// through them (spec §5). A destroy/disable lifecycle is deliberately post-v2.
+//
+// It refuses a missing keyset, wrapping fs.ErrNotExist: installing a first
+// keyset is `key import`/init's job, not rotation's.
+func Rotate(path string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the program-derived keyset location (config.Paths.Keyset), not untrusted input
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("no keyset at %s to rotate — run `agent-brain key import` (or `agent-brain init`) to install one first: %w", path, err)
+		}
+		return fmt.Errorf("read keyset: %w", err)
+	}
+	handle, err := insecurecleartextkeyset.Read(keyset.NewJSONReader(bytes.NewReader(data)))
+	if err != nil {
+		return fmt.Errorf("parse keyset: %w", err)
+	}
+	// Tink keysets are natively multi-key: Add appends a new AES256_SIV key,
+	// SetPrimary makes it the one Encrypt uses, and every prior key stays a
+	// valid Decrypt target — exactly the multi-key rotation spec §5 designed for.
+	manager := keyset.NewManagerFromHandle(handle)
+	newID, err := manager.Add(daead.AESSIVKeyTemplate())
+	if err != nil {
+		return fmt.Errorf("add rotation key: %w", err)
+	}
+	if err := manager.SetPrimary(newID); err != nil {
+		return fmt.Errorf("promote rotation key to primary: %w", err)
+	}
+	rotated, err := manager.Handle()
+	if err != nil {
+		return fmt.Errorf("read back rotated keyset: %w", err)
+	}
+	return write(path, rotated)
 }
 
 // Primitive loads the keyset and returns the Deterministic AEAD primitive.
