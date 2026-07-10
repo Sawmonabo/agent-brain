@@ -244,7 +244,9 @@ func TestScanCommandJSONCleanIsEmptyArrayNotNull(t *testing.T) {
 // default (gitleaks itself then replaces Secret/Match with "REDACTED"
 // before its report ever reaches this process — verified empirically
 // against the real binary; see scanGitleaksArgs' doc comment) and absent
-// only when the user explicitly opts in via --reveal-secrets.
+// only when the user opts in via --reveal-secrets together with --json —
+// its one and only effect (TestScanRevealSecretsWithoutJSONKeepsRedactionAndNotes
+// pins that --reveal-secrets alone keeps redaction on).
 func TestScanCommandRedactFlag(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -252,7 +254,7 @@ func TestScanCommandRedactFlag(t *testing.T) {
 		wantRedact bool
 	}{
 		{name: "default redacts", wantRedact: true},
-		{name: "reveal-secrets omits redact", extraArgs: []string{"--reveal-secrets"}, wantRedact: false},
+		{name: "reveal-secrets with --json omits redact", extraArgs: []string{"--reveal-secrets", "--json"}, wantRedact: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -273,6 +275,34 @@ func TestScanCommandRedactFlag(t *testing.T) {
 				t.Fatalf("gitleaks invoked with --redact = %v, want %v\ninvocation: %s", gotRedact, test.wantRedact, data)
 			}
 		})
+	}
+}
+
+// TestScanRevealSecretsWithoutJSONKeepsRedactionAndNotes pins the FINAL review
+// item 6 shape: --reveal-secrets outside --json is a no-op for the table render
+// (which never reads Secret/Match), so it must NOT drop gitleaks' --redact — raw
+// secret material in the child report and this process's memory would be pure
+// downside for zero benefit. scan keeps redaction ON and prints a stderr note;
+// stdout and the 0-clean/1-findings exit contract stay untouched (not a usage
+// error).
+func TestScanRevealSecretsWithoutJSONKeepsRedactionAndNotes(t *testing.T) {
+	paths := scanTestPaths(t)
+	enrollUnits(t, paths, repo.Unit{Provider: "claude", Folder: "myproj", LocalDir: t.TempDir()})
+	invocationLog := withFakeGitleaksOnPath(t, 0, `[]`)
+
+	stdout, stderr, err := runCmdWithStderr(t, nil, "scan", "--reveal-secrets")
+	if err != nil {
+		t.Fatalf("scan --reveal-secrets (no --json) failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if !strings.Contains(string(stderr), "--reveal-secrets has no effect without --json") {
+		t.Fatalf("scan --reveal-secrets without --json did not print the no-op note to stderr:\n%s", stderr)
+	}
+	data, err := os.ReadFile(invocationLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "--redact") {
+		t.Fatalf("gitleaks was invoked WITHOUT --redact; --reveal-secrets outside --json must keep redaction on\ninvocation: %s", data)
 	}
 }
 

@@ -308,7 +308,20 @@ func newScanCmd() *cobra.Command {
 			}
 			runner := &gitleaksExecRunner{binaryPath: binaryPath}
 
-			findings, err := scanUnits(cmd.Context(), runner, units, !revealSecrets)
+			// --reveal-secrets only affects --json. Table rendering never reads
+			// Secret/Match, so dropping gitleaks' --redact outside --json would pull
+			// raw secret material into the child report and this process's memory for
+			// zero benefit — keep redaction ON there and note it on stderr (stdout
+			// stays the parseable report). The 0-clean/1-findings exit contract that
+			// wrappers depend on is unchanged: this is a note, not a usage error.
+			redact := !revealSecrets || !jsonOut
+			if revealSecrets && !jsonOut {
+				if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "--reveal-secrets has no effect without --json; secrets stay redacted in the table"); err != nil {
+					return err
+				}
+			}
+
+			findings, err := scanUnits(cmd.Context(), runner, units, redact)
 			if err != nil {
 				return err
 			}
