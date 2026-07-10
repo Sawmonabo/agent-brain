@@ -56,7 +56,7 @@ func TestActivityView(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			body := plain(activityView{}.view(testCase.status, testCase.statusErr, now))
+			body := plain(activityView{}.view(testCase.status, testCase.statusErr, nil, now))
 			for _, want := range testCase.wantSubstr {
 				if !strings.Contains(body, want) {
 					t.Errorf("activity view missing %q; got:\n%s", want, body)
@@ -76,8 +76,30 @@ func TestActivityDropsStaleQuiesce(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Minute)
 	// A deadline already in the past must not render as an active hold.
-	body := plain(activityView{}.view(api.StatusResponse{State: "ready", QuiescedUntil: &past}, nil, now))
+	body := plain(activityView{}.view(api.StatusResponse{State: "ready", QuiescedUntil: &past}, nil, nil, now))
 	if strings.Contains(body, "quiesced until") {
 		t.Errorf("stale quiesce deadline rendered as active; got:\n%s", body)
+	}
+}
+
+// TestActivityShowsFleetTriggerTotal proves Activity sums the per-unit
+// WatchTriggers into a fleet total (spec §7's "watch trigger counts"), and shows
+// no trigger line when the fleet is empty.
+func TestActivityShowsFleetTriggerTotal(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	status := api.StatusResponse{State: "ready", Version: "dev", StartedAt: now.Add(-time.Hour)}
+	units := []api.UnitInfo{
+		{Provider: "claude", Folder: "a", LocalDir: "/l/a", WatchTriggers: 12},
+		{Provider: "codex", Folder: "b", LocalDir: "/l/b", WatchTriggers: 30},
+	}
+	body := plain(activityView{}.view(status, nil, units, now))
+	if !strings.Contains(body, "watch triggers: 42") {
+		t.Errorf("activity view missing summed fleet trigger total 42; got:\n%s", body)
+	}
+
+	empty := plain(activityView{}.view(status, nil, nil, now))
+	if strings.Contains(empty, "watch triggers") {
+		t.Errorf("activity view showed a trigger line for an empty fleet; got:\n%s", empty)
 	}
 }

@@ -156,7 +156,9 @@ func (m Model) reloadCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity renders purely from the status fetched above.
+		// Activity's fleet watch-trigger total sums the per-unit WatchTriggers
+		// (Task 6.5), so it needs the projects payload alongside the status above.
+		cmds = append(cmds, m.projectsCmd())
 	}
 	return tea.Batch(cmds...)
 }
@@ -177,7 +179,9 @@ func (m Model) switchCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity renders purely from the status fetched above.
+		// Activity's fleet watch-trigger total sums the per-unit WatchTriggers
+		// (Task 6.5), so fetch the projects payload on arrival too, not just status.
+		cmds = append(cmds, m.projectsCmd())
 	}
 	return tea.Batch(cmds...)
 }
@@ -357,7 +361,7 @@ func (m Model) activeBody() string {
 	case tabConflicts:
 		return m.conflicts.view()
 	case tabActivity:
-		return m.activity.view(m.status, m.statusErr, m.now)
+		return m.activity.view(m.status, m.statusErr, m.projects.units, m.now)
 	case tabDoctor:
 		return m.doctor.view()
 	default:
@@ -383,9 +387,10 @@ func (m Model) footer() string {
 }
 
 // statusHeader renders the fleet-level facts once, persistently above the tab
-// bar, so daemon posture is glanceable from every view. Projects rows
-// deliberately do not repeat these — they are fleet-wide, not per-unit
-// (spec §7; plan Task 6.5 adds genuine per-unit telemetry).
+// bar, so daemon posture is glanceable from every view. Projects rows carry the
+// genuine per-unit telemetry (watch state, last cycle — Task 6.5); the header
+// keeps only what is fleet-wide and cannot be broken down per unit (daemon
+// state, quiesce, the last fleet cycle), never repeated down every identical row.
 func (m Model) statusHeader() string {
 	if m.statusErr != nil {
 		return dimStyle.Render("daemon status unavailable")

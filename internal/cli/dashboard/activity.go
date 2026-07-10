@@ -9,18 +9,16 @@ import (
 )
 
 // activityView renders the daemon status snapshot (spec §7): uptime, state
-// detail, quiesced-until (Task 2), and the last SyncSummary. It holds no state
-// of its own — the daemon status is owned by the root model (it also drives the
-// daemon-down screen and the Projects fleet header) and passed in at render.
+// detail, quiesced-until (Task 2), the fleet watch-trigger total, and the last
+// SyncSummary. It holds no state of its own — the daemon status and the unit
+// list are owned by the root model and passed in at render.
 //
-// The brief also lists "watch trigger counts", but no field in
-// api.StatusResponse or api.SyncSummary carries them; surfacing them would need
-// a new daemon endpoint, which this task explicitly must not add (spec §7 /
-// task brief: "If a view seems to need a new daemon endpoint, STOP"). They are
-// therefore omitted rather than invented.
+// The fleet's watch-trigger total (spec §7's "watch trigger counts") is the sum
+// of the per-unit WatchTriggers the Projects payload now carries (Task 6.5), so
+// the units are passed in at render — still zero new daemon endpoints.
 type activityView struct{}
 
-func (activityView) view(status api.StatusResponse, statusErr error, now time.Time) string {
+func (activityView) view(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
 	if statusErr != nil {
 		// Daemon-down is handled by the root before any view renders; a
 		// non-down error here is some other read failure worth showing plainly.
@@ -40,6 +38,13 @@ func (activityView) view(status api.StatusResponse, statusErr error, now time.Ti
 		fmt.Fprintf(&b, "quiesced until %s (%s remaining)\n",
 			status.QuiescedUntil.Format("2006-01-02 15:04:05 MST"),
 			status.QuiescedUntil.Sub(now).Round(time.Second))
+	}
+	if len(units) > 0 {
+		var triggers uint64
+		for _, unit := range units {
+			triggers += unit.WatchTriggers
+		}
+		fmt.Fprintf(&b, "watch triggers: %d\n", triggers)
 	}
 
 	b.WriteString("\n")

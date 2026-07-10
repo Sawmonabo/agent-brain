@@ -23,9 +23,17 @@ func readyStatus() api.StatusResponse {
 }
 
 func twoUnits() api.ProjectsResponse {
+	finished := time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC)
 	return api.ProjectsResponse{Units: []api.UnitInfo{
-		{Provider: "claude", Folder: "agent-brain", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Degraded: false},
-		{Provider: "codex", Folder: "_global", LocalDir: "/home/u/.codex/memories", Degraded: true},
+		{
+			Provider: "claude", Folder: "agent-brain", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Degraded: false,
+			WatchState: "watching", WatchTriggers: 12, LastCycle: &api.UnitCycleResult{Outcome: "ok", FinishedAt: finished},
+		},
+		{
+			Provider: "codex", Folder: "_global", LocalDir: "/home/u/.codex/memories", Degraded: true,
+			WatchState:    "failed: watch /home/u/.codex/memories: too many open files; ticker/poll backstop still covers it",
+			WatchTriggers: 0, LastCycle: &api.UnitCycleResult{Outcome: "degraded", FinishedAt: finished},
+		},
 	}}
 }
 
@@ -44,19 +52,22 @@ func TestProjectsTableRenders(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	model := loadedProjects(data)
 
-	// The table carries only genuinely per-unit columns.
+	// The table carries per-unit columns, now including the genuine per-unit
+	// watch state and last-cycle the API serves (Task 6.5): claude/agent-brain is
+	// watching + ok, codex/_global is a failed watch + degraded.
 	table := plain(model.projects.view())
-	for _, want := range []string{"PROVIDER", "FOLDER", "HEALTH", "claude", "agent-brain", "codex", "_global", "degraded"} {
+	for _, want := range []string{
+		"PROVIDER", "FOLDER", "HEALTH", "WATCH", "LAST CYCLE",
+		"claude", "agent-brain", "codex", "_global", "degraded",
+		"watching", "failed", "ok",
+	} {
 		if !strings.Contains(table, want) {
 			t.Errorf("projects table missing %q; got:\n%s", want, table)
 		}
 	}
-	// Fleet-wide posture must NOT be fabricated as a per-row column.
-	if strings.Contains(table, "watching") {
-		t.Errorf("projects table fabricated fleet watch-state as a column; got:\n%s", table)
-	}
 
-	// It lives once in the persistent header instead.
+	// The persistent header still carries the fleet-level posture (it summarizes
+	// daemon state, not any one unit) — the rows do not replace it.
 	header := plain(model.statusHeader())
 	for _, want := range []string{"daemon", "watching", "last cycle"} {
 		if !strings.Contains(header, want) {
@@ -65,15 +76,69 @@ func TestProjectsTableRenders(t *testing.T) {
 	}
 }
 
+func TestWatchCell(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ in, want string }{
+		{"watching", "watching"},
+		{"failed: watch /l/x: too many open files; ticker/poll backstop still covers it", "failed"},
+		{"", "—"},
+	} {
+		if got := watchCell(testCase.in); got != testCase.want {
+			t.Errorf("watchCell(%q) = %q, want %q", testCase.in, got, testCase.want)
+		}
+	}
+}
+
+func TestLastCycleCell(t *testing.T) {
+	t.Parallel()
+	finished := time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC)
+	if got := lastCycleCell(nil); got != "—" {
+		t.Errorf("lastCycleCell(nil) = %q, want — (no cycle yet)", got)
+	}
+	for _, outcome := range []string{"ok", "degraded", "error"} {
+		if got := lastCycleCell(&api.UnitCycleResult{Outcome: outcome, FinishedAt: finished}); got != outcome {
+			t.Errorf("lastCycleCell(%q) = %q, want %q", outcome, got, outcome)
+		}
+	}
+}
+
+// TestProjectsTelemetryColumnsRenderEmptyAndError covers the two per-unit states
+// the shared twoUnits fixture omits: a unit with no telemetry yet (dashes) and a
+// unit whose last cycle errored (a state HEALTH's degraded-bool cannot show).
+func TestProjectsTelemetryColumnsRenderEmptyAndError(t *testing.T) {
+	t.Parallel()
+	finished := time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC)
+	units := api.ProjectsResponse{Units: []api.UnitInfo{
+		{Provider: "claude", Folder: "erroring", LocalDir: "/l/e", WatchState: "watching", LastCycle: &api.UnitCycleResult{Outcome: "error", FinishedAt: finished}},
+		{Provider: "claude", Folder: "fresh", LocalDir: "/l/f"}, // never watched, never cycled
+	}}
+	data := &fakeData{status: readyStatus(), projects: units}
+	model := loadedProjects(data)
+	table := plain(model.projects.view())
+	for _, want := range []string{"error", "—"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("projects table missing %q; got:\n%s", want, table)
+		}
+	}
+}
+
 func TestProjectsWideTableShowsLocalDir(t *testing.T) {
 	t.Parallel()
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
-	model := loadedProjects(data) // sized 110 wide → roomy
+	model := loadedProjects(data) // shared 110-col size: the five essentials only
 
-	table := plain(model.projects.view())
+	// LOCAL DIR is the optional roomy-terminal column; it stays hidden until the
+	// terminal is wide enough to carry the full path beside the essentials.
+	narrow := plain(model.projects.view())
+	if strings.Contains(narrow, "LOCAL DIR") {
+		t.Errorf("LOCAL DIR shown at the narrow 110-col size; got:\n%s", narrow)
+	}
+
+	model, _ = step(model, tea.WindowSizeMsg{Width: 130, Height: 40})
+	wide := plain(model.projects.view())
 	for _, want := range []string{"LOCAL DIR", "/home/u/.claude/projects/agent-brain/memory"} {
-		if !strings.Contains(table, want) {
-			t.Errorf("wide projects table missing %q; got:\n%s", want, table)
+		if !strings.Contains(wide, want) {
+			t.Errorf("wide projects table missing %q; got:\n%s", want, wide)
 		}
 	}
 }

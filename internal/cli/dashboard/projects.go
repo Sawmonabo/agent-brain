@@ -11,15 +11,13 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
-// projectsView is the enrolled-fleet table (spec §7). Its columns are
-// genuinely per-unit — provider · folder · health — with an optional local-dir
-// column on a roomy terminal. Fleet-level posture (daemon state, quiesce, last
-// cycle) is deliberately NOT rendered per row: those values are identical down
-// every row, so repeating them would fabricate per-unit granularity the API
-// does not have. They live once in the persistent status header and in
-// Activity. api.UnitInfo carries no per-unit watch-state or last-cycle signal
-// today; plan Task 6.5 adds those fields additively, after which they become
-// real columns here.
+// projectsView is the enrolled-fleet table (spec §7). Its columns are genuinely
+// per-unit — provider · folder · health · watch · last-cycle — with an optional
+// local-dir column on a roomy terminal. Watch state and last-cycle are the
+// per-unit telemetry Task 6.5 added to api.UnitInfo; they are real per-row
+// signals now. Fleet-level posture the API cannot break down per unit (daemon
+// state, quiesce) stays once in the persistent status header, never fabricated
+// down every identical row.
 //
 // Keys: `s` syncs the selected folder (client.Sync), `t` toggles tracking with
 // an inline y/N confirm. Because the list holds only already-enrolled units,
@@ -56,8 +54,10 @@ func newProjectsView() projectsView {
 func (v *projectsView) setColumns(wide bool) {
 	columns := []table.Column{
 		{Title: "PROVIDER", Width: 9},
-		{Title: "FOLDER", Width: 28},
+		{Title: "FOLDER", Width: 20},
 		{Title: "HEALTH", Width: 9},
+		{Title: "WATCH", Width: 9},
+		{Title: "LAST CYCLE", Width: 11},
 	}
 	if wide {
 		columns = append(columns, table.Column{Title: "LOCAL DIR", Width: 48})
@@ -81,7 +81,11 @@ func (v *projectsView) setLoadErr(err error) {
 func (v *projectsView) setSize(width, height int) {
 	if width > 0 {
 		v.table.SetWidth(width)
-		if wide := width >= 100; wide != v.wide {
+		// The five essential columns need ~58 cols and always fit; LOCAL DIR (48)
+		// pushes the full set past ~115, so it is added only on a genuinely wide
+		// terminal where the path renders in full rather than truncating the
+		// essentials it sits beside.
+		if wide := width >= 120; wide != v.wide {
 			v.setColumns(wide)
 			v.rebuild()
 		}
@@ -221,13 +225,37 @@ func projectRows(units []api.UnitInfo, wide bool) []table.Row {
 		if unit.Degraded {
 			health = "degraded"
 		}
-		row := table.Row{unit.Provider, unit.Folder, health}
+		row := table.Row{unit.Provider, unit.Folder, health, watchCell(unit.WatchState), lastCycleCell(unit.LastCycle)}
 		if wide {
 			row = append(row, unit.LocalDir)
 		}
 		rows[i] = row
 	}
 	return rows
+}
+
+// watchCell compresses a unit's WatchState into a table token: "watching", the
+// bare "failed" (the full reason is too long for a column — it rides
+// `projects --json`), or "—" before the daemon's first watcher build records it.
+func watchCell(state string) string {
+	switch {
+	case state == "":
+		return "—"
+	case strings.HasPrefix(state, "failed"):
+		return "failed"
+	default:
+		return state
+	}
+}
+
+// lastCycleCell renders a unit's last-cycle outcome, or "—" when its folder has
+// not cycled yet. The outcome carries the one signal HEALTH's degraded-bool
+// cannot: a whole-cycle "error" that left nothing degraded.
+func lastCycleCell(cycle *api.UnitCycleResult) string {
+	if cycle == nil {
+		return "—"
+	}
+	return cycle.Outcome
 }
 
 func syncCmd(data dashboardData, folder string) tea.Cmd {
