@@ -25,7 +25,7 @@ go test ./...                                   # all tests
 go test ./internal/crypto/ -run TestName -v     # one test
 go test ./... -race                             # what pre-push runs
 go test ./internal/crypto/ -fuzz FuzzRoundtrip -fuzztime 30s  # fuzz (-fuzz takes exactly ONE package)
-go test ./test/e2e/ -run TestScripts -v         # testscript CLI flows (five txtar scripts)
+go test ./test/e2e/ -run TestScripts -v         # testscript CLI flows (six txtar scripts)
 go test ./test/e2e/ -run TestAdversarialContainment -race -v  # standing adversarial corpus
 golangci-lint run                               # lint (config: .golangci.yml)
 gofumpt -l -w .                                 # format
@@ -42,7 +42,16 @@ lefthook install                                # once per clone: git hooks
 - CLI never writes inside the memories checkout — mutations go through the
   daemon API and its single engine writer (ADR 03 as-built, Phase 3); the
   only exceptions are `init` creating the checkout and `doctor --fix`
-  re-wiring `.git/config`.
+  re-wiring `.git/config`. `init` and `doctor --fix` TTL-quiesce the daemon
+  (`POST /v0/quiesce`) while they touch the checkout; the mutating endpoints
+  (`sync`/`track`/`untrack`/`migrate`/`reencrypt`) are refused while quiesced.
+  `key rotate` re-encrypts the whole repo through that same single writer
+  (`POST /v0/reencrypt`).
+- Product CLI beyond init/track/sync/status/doctor (spec §7): `dashboard`
+  (bubbletea v2 TUI over the daemon — `internal/cli/dashboard` is the only
+  package outside `cli` root allowed direct bubbletea/lipgloss imports), `scan`
+  (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`), and
+  `key rotate` (fail-closed fleet re-encrypt).
 - Tests: stdlib `testing` + `go-cmp` ONLY (no assertion frameworks, ADR 15);
   table-driven; `t.Parallel()`; `t.TempDir()`; integration tests use real
   system git with a `git init --bare` fake remote.

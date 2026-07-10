@@ -212,9 +212,13 @@ machine. The export IS the recovery artifact — `init` explicitly prompts stori
 copy in the password manager at generation time.
 
 **Rotation:** Tink keysets are natively multi-key (a new primary encrypts; old keys
-remain to decrypt history). Rotation costs one full re-encrypt commit, then
-determinism resumes under the new primary. The `key rotate` command targets v1.1;
-the format supports it from day one.
+remain to decrypt history). `agent-brain key rotate` (shipped) adds a fresh
+AES256_SIV primary and the daemon's single writer re-encrypts the whole repo under it
+in one commit (`POST /v0/reencrypt`), then pushes; determinism resumes under the new
+primary and old keys are retained so history still decrypts. Rotation is fail-closed
+for the fleet: until every other machine imports the new keyset (`key rotate` prints
+the `key export` / `key import --force` steps), those machines degrade on smudge and
+doctor's advisory `keyset-decrypt` probe names the fix (§11).
 
 **Filter wiring** (installed by `init`/`doctor` on every machine and re-checked
 after every clone, since `.git/config` is not versioned): the versioned
@@ -312,18 +316,26 @@ Bare `agent-brain` prints help. Command tree:
   picker. Flags make it fully scriptable: `--non-interactive`,
   `--generate-key`/`--import-key` (mutually exclusive), `--skip-service`,
   `--enroll all|none`, `--repo-name`.
-- **`dashboard`** — **deferred out of Phase 3**; Phase-4 planning decides whether it
-  lands in P4 or v1.1 (every UDS API seam it needs already exists). Planned
-  bubbletea client of the UDS API: **Projects**, **Conflicts**, **Activity**,
-  **Doctor** views, offering to start the daemon when it is down.
+- **`dashboard`** — a live bubbletea (Charm v2) TUI over the running daemon's UDS
+  API, four tabs on a 2-second poll: **Projects** (per-unit table — provider ·
+  folder · health · watch state · last-cycle result, with a LOCAL DIR column on
+  terminals ≥120 cols; `s` syncs the selected unit, `t` untracks it behind a y/N
+  confirm), **Conflicts** (retained retain-both records via the `conflicts`
+  loader), **Activity** (daemon uptime, quiesce deadline, the fleet watch-trigger
+  count as the max over units, and the last cycle's mirror/push summary), and
+  **Doctor** (the read-only `--offline` battery with per-check glyphs). A
+  full-screen notice offers `s` to start the login service when the daemon is
+  down. Requires an interactive terminal — `status --json` / `projects --json`
+  are the scriptable equivalents.
 - **`track [path] | track --all`**, **`untrack <path|folder> [--purge]`** —
   enrollment; `--purge` also removes the project folder from the repo (history
   retains it).
 - **`sync [--project X]`**, **`status [--json]`**, **`projects [--json]`**,
   **`conflicts [list | show <path>]`**, **`doctor [--fix | --json | --offline]`**,
-  **`service install|uninstall|start|stop|status|logs`**, **`key export`** /
-  **`key import [--force]`** (rotate = v1.1), **`migrate`** (§10), **`daemon`**
-  (foreground).
+  **`scan [--project X | --json | --reveal-secrets]`** (gitleaks plaintext-leak
+  scan — advisory, §5/§11), **`service install|uninstall|start|stop|status|logs`**,
+  **`key export`** / **`key import [--force]`** / **`key rotate`** (fail-closed
+  fleet re-encrypt, §5), **`migrate`** (§10), **`daemon run`** (foreground).
 - Hidden plumbing invoked by git: `git-clean`, `git-smudge`, `git-textconv`,
   `git-merge`.
 
@@ -471,7 +483,7 @@ see partial state.**
 | Offline / push fails | Commits accumulate locally (git-native queue); ticker retries via cenkalti/backoff/v5 — `Permanent()` for non-retriable, `MaxElapsedTime` set explicitly per loop (defaults to 15 min otherwise) |
 | Push race between machines | Fetch + rebase; driver auto-resolves; bounded retries, then next cycle |
 | Merge driver failure | Rebase aborts clean → merge-commit fallback → still failing: project DEGRADED (dashboard banner + doctor guidance); local commits continue; mirror-out withheld until integrate succeeds |
-| Keyset missing | Smudge fails → fail-closed (`filter.required`); that sync pauses; dashboard/doctor prompt `key import`; provider dirs keep last-good plaintext |
+| Keyset missing or stale | Missing → smudge fails fail-closed (`filter.required`); that sync pauses; provider dirs keep last-good plaintext. Stale after a fleet `key rotate` → the keyset loads but cannot decrypt the re-encrypted tip: the engine degrades fail-closed and doctor's advisory `keyset-decrypt` probe Warns with `agent-brain key import --force` (it probes `origin/main` first, since HEAD stays frozen at the last decryptable commit) |
 | Filters not installed (fresh clone) | `required=true` blocks commit AND checkout; `doctor --fix` reinstalls `.git/config` wiring |
 | Provider format drift | Classification table is config-driven; unknown files default to Fact (merge + retain-both — never dropped, never newest-wins); new unknowns logged |
 | Provider clobbers mirror-out | Accepted risk (a) below — re-enters the loop, re-merges, converges; git retains every state |
@@ -545,34 +557,52 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
 
 ## 13. Distribution & install
 
-- **GoReleaser v2.16.0** on tag push (SHA-pinned Action): darwin/arm64+amd64 and
-  linux/arm64+amd64 archives, checksums, changelog from Conventional Commits,
-  under GitHub's immutable-releases policy.
-- **Homebrew via `homebrew_casks`** — the legacy `brews` formula config is fully
-  deprecated as of GoReleaser v2.16; casks are the sanctioned path for
-  pre-compiled binaries. Personal tap `Sawmonabo/homebrew-tap`:
-  `brew install sawmonabo/tap/agent-brain`.
-- **`go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest`** — the
-  no-brew fallback for Linux/WSL2 (works by construction, §8).
-- **Signing:** checksums + immutable releases only in v1; cosign/attestations are
-  YAGNI for a single-consumer personal tool — revisited if the repo goes public
-  post-scrub (ADR 13). No self-update code — `brew upgrade` owns that.
-- **New-machine onboarding** (target: under 5 minutes): install →
-  `agent-brain init` (gh auth → clone memories repo → `key import` from password
-  manager → service install → enrollment picker) → `agent-brain migrate` if the
-  machine has bash-era state → done.
+- **GoReleaser v2** on tag push (`.goreleaser.yaml` version-2 schema; the
+  `release.yml` workflow runs the SHA-pinned goreleaser-action at `~> v2` — current
+  GoReleaser release v2.17 as of 2026-07-10, no v3 exists): darwin and linux ×
+  arm64+amd64 tar.gz archives, checksums, Conventional-Commits changelog, under
+  GitHub's immutable-releases policy.
+- **Darwin ad-hoc signing is mandatory to execute (decision 12), not cosmetic.**
+  Apple Silicon's AMFI SIGKILLs (`killed: 9`) any binary without a valid signature,
+  and a Go binary cross-compiled on a Linux runner carries only a linker signature
+  macOS 26 can treat as corrupt. A GoReleaser post-build hook
+  (`scripts/adhoc-sign.sh`) runs anchore/quill in ad-hoc mode (no certificate) over
+  each darwin artifact; it no-ops on non-darwin so CI and local snapshot builds sign
+  identically in kind. Full Developer-ID notarization is the recorded public-launch
+  upgrade path (ADR 16), not shipped here.
+- **Homebrew via a FORMULA (`brews`), not a cask (decision 13, reversing ADR 16's
+  original cask lean).** Formulae never set `com.apple.quarantine`, so Gatekeeper
+  never engages — the cask + `xattr` quarantine-strip hook the original design
+  assumed is defeated on macOS 26. Personal tap `Sawmonabo/homebrew-tap`, published
+  with `skip_upload: auto`: prerelease (`v2.0.0-rc.*`) tags ship release assets but
+  push no formula, so `brew install sawmonabo/tap/agent-brain` activates only with
+  the public `v2.0.0` tagged after the ADR-13 scrub.
+- **Interim install while this repo is private** (pre-scrub, dated 2026-07-10):
+  Homebrew fetches assets anonymously and this repo is private, so brew is not yet
+  live. Use `gh release download <tag> -R Sawmonabo/agent-brain -p '<os>_<arch>'`
+  (authenticated) or
+  `go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest` (owner git
+  access, §8). No self-update code — `brew upgrade` / re-download owns that.
+- **New-machine onboarding** (target: under 5 minutes; per-OS runbook in
+  `docs/onboarding.md`): install → `agent-brain init` (gh auth → clone memories repo
+  → `key import` from password manager → service install → enrollment picker) →
+  `agent-brain migrate` if the machine has bash-era state → done.
 
 ---
 
-## Appendix: verified version pins (as of 2026-07-09)
+## Appendix: verified version pins (go.mod + release config, verified 2026-07-10)
 
-Go 1.26.5 (toolchain pin; brew currently 1.26.4) · tink-go v2.7.0 (AES256_SIV) ·
-cobra v1.10.2 · fang v2.0.1 · huh v2.0.3 (`charm.land/huh/v2`, direct) · bubbletea
-v2.0.2 + lipgloss v2.0.1 + bubbles v2.0.0 (Charm v2 at `charm.land/*`, transitive) ·
-fsnotify v1.10.1 · kardianos/service v1.3.0 · gofrs/flock · cenkalti/backoff v5.0.3 ·
-google/renameio/v2 · pelletier/go-toml/v2 · go-cmp · rogpeppe/go-internal v1.15.0
-(testscript; pulls golang.org/x/tools v0.38.0 transitively) · gh ≥ 2.40 (runtime,
-never vendored; CLI flags verified at v2.96.0) · golangci-lint v2.12.2 · lefthook
-v2.1.9 · gofumpt 0.10.0 · GoReleaser v2.16.0 · gitleaks v8.30.1 · git-filter-repo
-v2.47.0. Exact go.mod versions resolve at implementation; Dependabot keeps them
-current thereafter.
+Go 1.26.5 (toolchain pin, go.mod) · tink-go v2.7.0 (AES256_SIV) · cobra v1.10.2 ·
+fang v2.0.1 · huh v2.0.3 (`charm.land/huh/v2`) — direct. Charm v2 TUI at
+`charm.land/*`, now **direct** deps (the Task-6 `dashboard` package imports them):
+bubbletea v2.0.8 · lipgloss v2.0.5 · bubbles v2.1.1 (were v2.0.2 / v2.0.1 / v2.0.0
+and transitive when this spec was drafted). fsnotify v1.10.1 · kardianos/service
+v1.3.0 · gofrs/flock v0.13.0 · cenkalti/backoff/v5 v5.0.3 · google/renameio/v2
+v2.0.2 · pelletier/go-toml/v2 v2.4.3 · google/go-cmp v0.7.0 · rogpeppe/go-internal
+v1.15.0 (testscript; pulls golang.org/x/tools v0.38.0 transitively). Runtime/CI
+tools, never vendored: gh ≥ 2.40 (CLI flags verified at v2.96.0) · golangci-lint
+v2.12.2 (ci.yml) · gitleaks v8.30.1 (ci.yml + lefthook) · govulncheck v1.5.0 (ci.yml)
+· GoReleaser `~> v2` (workflow pin; v2.17.0 local, 2026-07-10) · anchore/quill v0.7.1
+(darwin ad-hoc signing, release.yml) · gofumpt 0.10.0 + lefthook v2.1.9 (local brew,
+not repo-pinned) · git-filter-repo v2.47.0 (scrub runbook). The go.mod versions above are the resolved
+graph at this tip; Dependabot keeps them current thereafter.
