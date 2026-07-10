@@ -218,6 +218,39 @@ func TestIntegrateHealsWorktreeOnHardFailReturn(t *testing.T) {
 	}
 }
 
+// TestHealJoinsOriginalAndHealErrors pins integrate.go's errors.Join(err,
+// healErr): when BOTH the integrate error that triggered the heal AND the heal
+// itself fail, neither is swallowed. TestRestoreWorktreeToHeadPropagatesFailure
+// and TestIntegrateHealsWorktreeOnHardFailReturn each cover one side; the join of
+// the two is the one line they leave unpinned, on a data-loss-adjacent path — a
+// failed heal must surface without masking (or being masked by) the original.
+func TestHealJoinsOriginalAndHealErrors(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	// Force the heal itself to fail: with the checkout gone, healAfterFailedIntegrate's
+	// own `git checkout --force HEAD -- .` cannot run. It heals off
+	// context.Background(), so it never observes a caller's canceled ctx — the
+	// missing dir is what makes the git op fail deterministically.
+	if err := os.RemoveAll(checkout); err != nil {
+		t.Fatal(err)
+	}
+
+	sentinel := errors.New("integrate: rebase: boom")
+	got := engine.healAfterFailedIntegrate(integrateOutcome{}, sentinel)
+
+	if got == nil {
+		t.Fatal("healAfterFailedIntegrate returned nil when both the integrate op and the heal failed")
+	}
+	if !errors.Is(got, sentinel) {
+		t.Fatalf("joined error dropped the original integrate error: %v", got)
+	}
+	if !strings.Contains(got.Error(), "restore worktree after degrade") {
+		t.Fatalf("joined error dropped the heal failure: %v", got)
+	}
+}
+
 // TestIntegrateSkipsHealWhenIntegrated guards the other half of the outcome
 // switch: a clean (Integrated) return must NOT re-check-out the worktree.
 // Without this skip every successful multi-commit integration would re-smudge
