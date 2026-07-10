@@ -463,6 +463,7 @@ var (
 	okStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	warnStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	failStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	infoStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
 	activeTabStyle   = lipgloss.NewStyle().Bold(true)
 	inactiveTabStyle = lipgloss.NewStyle().Faint(true)
 )

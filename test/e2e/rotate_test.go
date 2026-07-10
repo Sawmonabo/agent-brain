@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
+	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
@@ -41,12 +44,36 @@ func copyKeyset(t *testing.T, dst, src string) {
 
 // contains reports whether folder is in the degraded set.
 func contains(folders []string, folder string) bool {
-	for _, f := range folders {
-		if f == folder {
-			return true
+	return slices.Contains(folders, folder)
+}
+
+// doctorPathsFor bridges a syncMachine's checkout into a config.Paths for
+// doctor.Run. config.Paths.MemoriesDir() is a fixed DataDir/"memories" join
+// (internal/config/state.go) but checkout lives at the harness's own
+// arbitrary temp path (newMachine's <tmp>/<host>) — a symlink is the least
+// invasive way to satisfy that fixed join without reshaping the shared
+// harness every other e2e test also relies on.
+func doctorPathsFor(t *testing.T, checkout, configDir string) config.Paths {
+	t.Helper()
+	dataDir := t.TempDir()
+	if err := os.Symlink(checkout, filepath.Join(dataDir, "memories")); err != nil {
+		t.Fatal(err)
+	}
+	return config.Paths{ConfigDir: configDir, DataDir: dataDir}
+}
+
+// doctorResult is rotate_test.go's own copy of internal/doctor's test-only
+// `result` helper — that one lives in package doctor_test and cannot be
+// imported from here.
+func doctorResult(t *testing.T, report doctor.Report, name string) doctor.CheckResult {
+	t.Helper()
+	for _, r := range report.Results {
+		if r.Name == name {
+			return r
 		}
 	}
-	return false
+	t.Fatalf("doctor report has no check named %q; results: %+v", name, report.Results)
+	return doctor.CheckResult{}
 }
 
 const (
@@ -161,6 +188,25 @@ func TestKeyRotationReencryptsWireFailsClosed(t *testing.T) {
 	}
 	if got := b.read(t, rotFact1); got != rotText1 {
 		t.Fatalf("B provider dir corrupted by a failed smudge: fact1 = %q, want %q", got, rotText1)
+	}
+
+	// Task 4.5: doctor's keyset-decrypt probe is the operator-guidance half
+	// of this exact scenario. checkKeyset only loads the keyset file (which
+	// still succeeds — B's key is stale, not corrupt), so without this probe
+	// doctor reports all-OK while every sync keeps degrading. B's own HEAD
+	// stays frozen pre-rotation (integrate's all-or-nothing invariant), so
+	// the probe samples the fetched origin/main tracking ref rather than
+	// HEAD to actually see the content B cannot decrypt.
+	doctorDeps := doctor.Deps{
+		Paths:    doctorPathsFor(t, b.checkout, kbDir),
+		Registry: syncRegistry(t),
+	}
+	keysetDecrypt := doctorResult(t, doctor.Run(ctx, doctorDeps), "keyset-decrypt")
+	if keysetDecrypt.Status != doctor.StatusWarn {
+		t.Fatalf("keyset-decrypt on B (stale keyset, degraded) = %+v, want warn", keysetDecrypt)
+	}
+	if !strings.Contains(keysetDecrypt.Fix, "agent-brain key import --force") {
+		t.Fatalf("keyset-decrypt fix = %q, missing verbatim `agent-brain key import --force`", keysetDecrypt.Fix)
 	}
 
 	// Direct proof the degradation CAUSE is the missing key, not an unrelated
