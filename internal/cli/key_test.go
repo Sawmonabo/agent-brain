@@ -229,13 +229,10 @@ func TestKeyImportForceValidatesBeforeTouchingExistingKeyset(t *testing.T) {
 	}
 }
 
-// startFakeDaemonForRotate serves a ready daemon that records every
-// /v0/reencrypt hit and answers it with resp. It points the CLI at itself via
-// AGENT_BRAIN_RUNTIME_DIR (t.Setenv ⇒ no t.Parallel), the same shape the other
-// CLI fake daemons use.
 // startFakeRotateDaemon serves /v0/status as "ready" and routes /v0/reencrypt to
 // reencrypt (after counting the hit), returning the reencrypt hit counter. It
-// points AGENT_BRAIN_RUNTIME_DIR at this socket so newAPIClient dials it.
+// points AGENT_BRAIN_RUNTIME_DIR at this socket (t.Setenv ⇒ no t.Parallel) so
+// newAPIClient dials it — the same shape the other CLI fake daemons use.
 func startFakeRotateDaemon(t *testing.T, reencrypt http.HandlerFunc) func() int {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ab")
