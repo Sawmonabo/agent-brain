@@ -6,11 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/watch"
 )
+
+// discardWatchStates is the no-op watch-state recorder for rebuild tests that
+// assert manager/trigger behavior rather than the recorded state snapshot.
+func discardWatchStates(map[string]string) {}
 
 // TestRebuildWatcherSwapsRootsAndClosesOld pins the rebuild-by-replacement
 // path that both enrollment changes and watcher death flow through: a new
@@ -30,7 +35,7 @@ func TestRebuildWatcherSwapsRootsAndClosesOld(t *testing.T) {
 	watchDied := make(chan error, 1)
 
 	// First build: cover rootA only.
-	live := rebuildWatcher(ctx, cfg, nil, []string{rootA}, watchDied, logger)
+	live := rebuildWatcher(ctx, cfg, nil, []string{rootA}, watchDied, logger, discardWatchStates)
 	if live.manager == nil {
 		t.Fatal("first rebuild produced no manager")
 	}
@@ -40,7 +45,7 @@ func TestRebuildWatcherSwapsRootsAndClosesOld(t *testing.T) {
 
 	// Swap to rootB: closes the old manager. The deliberate close must not
 	// masquerade as a watcher death (that would spin loop rebuilding).
-	live = rebuildWatcher(ctx, cfg, live, []string{rootB}, watchDied, logger)
+	live = rebuildWatcher(ctx, cfg, live, []string{rootB}, watchDied, logger, discardWatchStates)
 	if live.manager == nil {
 		t.Fatal("second rebuild produced no manager")
 	}
@@ -77,7 +82,7 @@ func TestRebuildWatcherBuildFailureFallsBackToBackstop(t *testing.T) {
 	roots := []string{t.TempDir()}
 
 	// Debounce <= 0 is the one config watch.New rejects.
-	live := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, nil, roots, watchDied, logger)
+	live := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, nil, roots, watchDied, logger, discardWatchStates)
 	if live.manager != nil || live.triggers != nil {
 		t.Fatalf("failed build should yield no manager/triggers, got %+v", live)
 	}
@@ -90,9 +95,40 @@ func TestRebuildWatcherBuildFailureFallsBackToBackstop(t *testing.T) {
 
 	// A subsequent rebuild with this degraded state as `old` must not panic
 	// on the nil cancel/manager.
-	next := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, live, roots, watchDied, logger)
+	next := rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, live, roots, watchDied, logger, discardWatchStates)
 	if next.manager != nil {
 		t.Fatal("second failed build should still yield no manager")
+	}
+}
+
+// TestRebuildWatcherRecordsWatchState pins the WatchState capture (Task 6.5): a
+// healthy build records "watching" for every attached root, and a build failure
+// records a "failed:…" state whose wording conveys the ticker/poll backstop
+// still covers the unit — the daemon logs-and-continues, and the per-unit column
+// must say so.
+func TestRebuildWatcherRecordsWatchState(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	watchDied := make(chan error, 1)
+	rootA := t.TempDir()
+
+	var got map[string]string
+	record := func(states map[string]string) { got = states }
+
+	// Healthy build: the attached root reports "watching".
+	live := rebuildWatcher(context.Background(), watch.Config{Debounce: 20 * time.Millisecond}, nil, []string{rootA}, watchDied, logger, record)
+	if live.manager != nil {
+		_ = live.manager.Close()
+	}
+	if got[rootA] != "watching" {
+		t.Errorf("healthy watch root state = %q, want watching (all: %v)", got[rootA], got)
+	}
+
+	// Failed build (Debounce<=0 → watch.New rejects): the root reports a failure
+	// whose wording conveys the backstop still covers it.
+	rebuildWatcher(context.Background(), watch.Config{Debounce: 0}, nil, []string{rootA}, watchDied, logger, record)
+	if state := got[rootA]; !strings.HasPrefix(state, "failed:") || !strings.Contains(state, "backstop") {
+		t.Errorf("failed watch root state = %q, want a failed:… conveying the backstop", state)
 	}
 }
 

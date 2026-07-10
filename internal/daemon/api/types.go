@@ -138,12 +138,38 @@ type ReencryptResponse struct {
 	PushQueued bool `json:"push_queued"`
 }
 
-// UnitInfo is one enrolled (provider, dir) pair and its health.
+// UnitInfo is one enrolled (provider, dir) pair and its health. The telemetry
+// fields (WatchState, WatchTriggers, LastCycle) are strictly additive (Task 6.5)
+// and all omitempty: a daemon that has not populated them yet, or an old client,
+// is unaffected — the payload is byte-identical to before when they are unset.
 type UnitInfo struct {
 	Provider string `json:"provider"`
 	Folder   string `json:"folder"`
 	LocalDir string `json:"local_dir"`
 	Degraded bool   `json:"degraded"`
+	// WatchState is the unit's live watch posture: "watching" when its dir is
+	// attached to the fsnotify watcher, or "failed: <reason>" when establishing
+	// or running the watch failed — the ticker/poll backstop still syncs such a
+	// unit, which the fallback wording conveys. Empty until the daemon's first
+	// watcher build records it.
+	WatchState string `json:"watch_state,omitempty"`
+	// WatchTriggers counts filesystem-driven watch triggers (fs/overflow, not the
+	// timer backstop) that swept this unit since its dir was first watched. A
+	// watch trigger drives one whole-fleet cycle (ADR 07), so every watched unit
+	// is counted; the dashboard sums this over units for a fleet total.
+	WatchTriggers uint64 `json:"watch_triggers,omitempty"`
+	// LastCycle is this unit's most recent completed cycle outcome, nil until its
+	// folder has cycled at least once.
+	LastCycle *UnitCycleResult `json:"last_cycle,omitempty"`
+}
+
+// UnitCycleResult is one unit's most recent completed sync-cycle outcome.
+// Outcome is "ok" (folder synced clean), "degraded" (its folder withheld from
+// integrate/push this cycle), or "error" (the whole cycle failed). FinishedAt is
+// when that cycle completed.
+type UnitCycleResult struct {
+	Outcome    string    `json:"outcome"`
+	FinishedAt time.Time `json:"finished_at"`
 }
 
 // ProjectsResponse answers GET /v0/projects.
