@@ -125,6 +125,15 @@ type Daemon struct {
 	stateDetail string
 	lastSync    *api.SyncSummary
 	degraded    map[string]bool
+	// Per-unit telemetry (Task 6.5), all read under d.mu and projected onto
+	// units by Projects(). watchState/watchTriggers are keyed by root (LocalDir)
+	// — the watcher attaches roots, not units; lastCycle is keyed by folder — a
+	// cycle degrades folders and errors whole-fleet. watchState is replaced
+	// wholesale on each watcher (re)build; watchTriggers and lastCycle accumulate
+	// across cycles (watchTriggers pruned to live roots on rebuild).
+	watchState    map[string]string
+	watchTriggers map[string]uint64
+	lastCycle     map[string]*api.UnitCycleResult
 	// quiescedUntil is the deadline of an active hold (POST /v0/quiesce),
 	// zero when not quiesced. It shares d.mu with the state above: "may an
 	// automatic cycle start now?" must be one atomic read, or a cycle could
@@ -149,6 +158,9 @@ func New(cfg Config) (*Daemon, error) {
 		cfg:           cfg,
 		state:         "uninitialized",
 		degraded:      map[string]bool{},
+		watchState:    map[string]string{},
+		watchTriggers: map[string]uint64{},
+		lastCycle:     map[string]*api.UnitCycleResult{},
 		syncRequests:  make(chan syncRequest),
 		adminRequests: make(chan adminRequest),
 	}, nil
@@ -308,7 +320,7 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 	// a died watcher must not silently degrade to ticker-only forever. Size
 	// 1 + non-blocking send: coalesced failures need only one rebuild.
 	watchDied := make(chan error, 1)
-	live := rebuildWatcher(ctx, watchCfg, nil, rootsOf(initialUnits), watchDied, logger)
+	live := rebuildWatcher(ctx, watchCfg, nil, rootsOf(initialUnits), watchDied, logger, d.setWatchStates)
 	defer func() {
 		if live.manager != nil {
 			_ = live.manager.Close()
@@ -331,7 +343,7 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		if cycled {
 			if roots := rootsOf(units); live.manager == nil || !equalRoots(roots, live.watched) {
 				logger.Info("watch roots changed — rebuilding", "roots", len(roots))
-				live = rebuildWatcher(ctx, watchCfg, live, roots, watchDied, logger)
+				live = rebuildWatcher(ctx, watchCfg, live, roots, watchDied, logger, d.setWatchStates)
 			}
 		}
 	}
@@ -355,10 +367,11 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		case <-ctx.Done():
 			return
 		case trigger := <-live.triggers:
+			d.recordWatchTrigger(trigger.Reason, live.watched)
 			runAutomatic(trigger.Reason, "")
 		case err := <-watchDied:
 			logger.Error("watch manager died — rebuilding", "error", err)
-			live = rebuildWatcher(ctx, watchCfg, live, live.watched, watchDied, logger)
+			live = rebuildWatcher(ctx, watchCfg, live, live.watched, watchDied, logger, d.setWatchStates)
 		case <-ticker.C:
 			runAutomatic("ticker", "")
 		case <-retryC:
@@ -405,7 +418,10 @@ type liveWatcher struct {
 // stream), and the goroutine below detects the deliberate stop via
 // watchCtx.Err() and stays silent — a rebuild must never masquerade as a
 // death, or the loop would rebuild in a tight cycle.
-func rebuildWatcher(ctx context.Context, cfg watch.Config, old *liveWatcher, roots []string, watchDied chan<- error, logger *slog.Logger) *liveWatcher {
+// recordWatch is passed d.setWatchStates so rebuildWatcher can report each root's
+// posture (Task 6.5) at the one site that knows whether the watch attached — a
+// pure func seam keeps rebuildWatcher testable without a live Daemon.
+func rebuildWatcher(ctx context.Context, cfg watch.Config, old *liveWatcher, roots []string, watchDied chan<- error, logger *slog.Logger, recordWatch func(map[string]string)) *liveWatcher {
 	if old != nil {
 		if old.cancel != nil {
 			old.cancel()
@@ -414,18 +430,28 @@ func rebuildWatcher(ctx context.Context, cfg watch.Config, old *liveWatcher, roo
 			_ = old.manager.Close()
 		}
 	}
+	states := make(map[string]string, len(roots))
 	manager, err := watch.New(cfg)
 	if err != nil {
 		// Exceptional (bad debounce, or fd exhaustion in fsnotify): fall
-		// back to the ticker/poll backstop and let a later cycle retry.
+		// back to the ticker/poll backstop and let a later cycle retry. Every
+		// root is unwatched, but tick sync still covers it — say so per root.
 		logger.Error("watch rebuild failed — ticker/poll backstop only", "error", err)
+		for _, root := range roots {
+			states[root] = watchFailed("watcher unavailable: " + err.Error())
+		}
+		recordWatch(states)
 		return &liveWatcher{watched: roots}
 	}
 	for _, root := range roots {
 		if err := manager.Add(root); err != nil {
 			logger.Warn("watch root not attached", "dir", root, "error", err)
+			states[root] = watchFailed(err.Error())
+		} else {
+			states[root] = "watching"
 		}
 	}
+	recordWatch(states)
 	watchCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		err := manager.Run(watchCtx)
@@ -502,7 +528,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 	if err != nil {
 		logger.Error("load local registry", "error", err)
 		summary := &api.SyncSummary{At: time.Now().UTC(), Error: err.Error()}
-		d.record(ctx, summary)
+		d.record(ctx, summary, nil)
 		return summary, nil, false
 	}
 	// A filtered manual cycle syncs only the named folder's units, but the
@@ -521,7 +547,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 		logger.Info("sync cycle", "reason", reason,
 			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
 	}
-	d.record(ctx, summary)
+	d.record(ctx, summary, syncUnits)
 	return summary, registry.Units, true
 }
 
@@ -561,15 +587,84 @@ func enrolledFolders(units []repo.Unit) []string {
 	return folders
 }
 
-func (d *Daemon) record(ctx context.Context, summary *api.SyncSummary) {
+func (d *Daemon) record(ctx context.Context, summary *api.SyncSummary, synced []repo.Unit) {
 	d.refreshState(ctx)
+	d.recordOutcome(summary, synced)
+}
+
+// recordOutcome stores one cycle's result under d.mu: the last summary, and —
+// scoped to the folders this cycle actually synced — each folder's degraded
+// HEALTH flag and its last-cycle outcome (keyed by folder; a cycle degrades
+// folders and errors whole-fleet). Scoping to synced folders is load-bearing: a
+// filtered `sync --project X` must rewrite neither another folder's last-cycle
+// nor its degraded flag, and synced is nil when no cycle ran (registry load
+// failed), leaving both untouched.
+func (d *Daemon) recordOutcome(summary *api.SyncSummary, synced []repo.Unit) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.lastSync = summary
-	d.degraded = map[string]bool{}
+	// Clear each synced folder's degraded flag, then re-mark the ones this cycle
+	// reported degraded. NOT a wholesale wipe: that marked unsynced folders
+	// healthy — a false HEALTH=ok contradicting their still-degraded LastCycle.
+	// Orphan flags for since-untracked folders may linger, but Projects() (the
+	// only reader of d.degraded) looks them up by enrolled unit, so they are
+	// unreachable — not worth registry plumbing here to prune.
+	for _, u := range synced {
+		delete(d.degraded, u.Folder)
+	}
 	for _, folder := range summary.Degraded {
 		d.degraded[folder] = true
 	}
+	for _, u := range synced {
+		outcome := "ok"
+		switch {
+		case summary.Error != "":
+			outcome = "error"
+		case d.degraded[u.Folder]:
+			outcome = "degraded"
+		}
+		d.lastCycle[u.Folder] = &api.UnitCycleResult{Outcome: outcome, FinishedAt: summary.At}
+	}
+}
+
+// setWatchStates replaces the per-root watch posture wholesale — a rebuild always
+// reports the full current root set — and prunes trigger counts for roots that
+// dropped out (an untracked unit leaves no stale telemetry). Still-watched roots
+// keep their counts, so a rebuild (watcher death, enrollment change) does not
+// reset them.
+func (d *Daemon) setWatchStates(states map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.watchState = states
+	for root := range d.watchTriggers {
+		if _, ok := states[root]; !ok {
+			delete(d.watchTriggers, root)
+		}
+	}
+}
+
+// recordWatchTrigger counts one watch-arm trigger against every currently-watched
+// root. A trigger drives one whole-fleet cycle (ADR 07: the watcher never routes
+// per-unit), so each watched unit genuinely participates and is counted. The
+// timer backstop ("poll") is excluded — WatchTriggers is a filesystem-event
+// signal, not an uptime counter.
+func (d *Daemon) recordWatchTrigger(reason string, roots []string) {
+	if reason == "poll" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, root := range roots {
+		d.watchTriggers[root]++
+	}
+}
+
+// watchFailed formats a WatchState for a unit whose watch could not be
+// established or died: it names the reason AND conveys that the ticker/poll
+// backstop still syncs the unit, so the daemon's log-and-continue reads as a
+// degraded-but-covered unit rather than a dropped one.
+func watchFailed(reason string) string {
+	return "failed: " + reason + "; ticker/poll backstop still covers it"
 }
 
 func toSummary(report engine.Report) *api.SyncSummary {
@@ -736,10 +831,13 @@ func (d *Daemon) Projects() api.ProjectsResponse {
 	defer d.mu.Unlock()
 	for _, u := range registry.Units {
 		response.Units = append(response.Units, api.UnitInfo{
-			Provider: u.Provider,
-			Folder:   u.Folder,
-			LocalDir: u.LocalDir,
-			Degraded: d.degraded[u.Folder],
+			Provider:      u.Provider,
+			Folder:        u.Folder,
+			LocalDir:      u.LocalDir,
+			Degraded:      d.degraded[u.Folder],
+			WatchState:    d.watchState[u.LocalDir],
+			WatchTriggers: d.watchTriggers[u.LocalDir],
+			LastCycle:     d.lastCycle[u.Folder],
 		})
 	}
 	return response

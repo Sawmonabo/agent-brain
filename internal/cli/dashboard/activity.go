@@ -9,18 +9,17 @@ import (
 )
 
 // activityView renders the daemon status snapshot (spec §7): uptime, state
-// detail, quiesced-until (Task 2), and the last SyncSummary. It holds no state
-// of its own — the daemon status is owned by the root model (it also drives the
-// daemon-down screen and the Projects fleet header) and passed in at render.
+// detail, quiesced-until (Task 2), the fleet watch-trigger total, and the last
+// SyncSummary. It holds no state of its own — the daemon status and the unit
+// list are owned by the root model and passed in at render.
 //
-// The brief also lists "watch trigger counts", but no field in
-// api.StatusResponse or api.SyncSummary carries them; surfacing them would need
-// a new daemon endpoint, which this task explicitly must not add (spec §7 /
-// task brief: "If a view seems to need a new daemon endpoint, STOP"). They are
-// therefore omitted rather than invented.
+// The fleet's watch-trigger count (spec §7's "watch trigger counts") is the MAX
+// of the per-unit WatchTriggers the Projects payload now carries (Task 6.5) —
+// the raw trigger count, since triggers are fleet-global (the WHY is at the call
+// site) — so the units are passed in at render, still zero new daemon endpoints.
 type activityView struct{}
 
-func (activityView) view(status api.StatusResponse, statusErr error, now time.Time) string {
+func (activityView) view(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
 	if statusErr != nil {
 		// Daemon-down is handled by the root before any view renders; a
 		// non-down error here is some other read failure worth showing plainly.
@@ -40,6 +39,22 @@ func (activityView) view(status api.StatusResponse, statusErr error, now time.Ti
 		fmt.Fprintf(&b, "quiesced until %s (%s remaining)\n",
 			status.QuiescedUntil.Format("2006-01-02 15:04:05 MST"),
 			status.QuiescedUntil.Sub(now).Round(time.Second))
+	}
+	if len(units) > 0 {
+		// Triggers are fleet-global (ADR 07: the watcher never routes per-unit; a
+		// trigger drives one whole-fleet cycle), so each unit's WatchTriggers is a
+		// participation count — the triggers that fired while it was under watch
+		// coverage. The truthful fleet number is the MAX, not the sum: a root
+		// watched since daemon start caught every trigger, so max is the raw
+		// trigger count since the longest-watched root. Summing would amplify that
+		// raw count by fleet size.
+		var triggers uint64
+		for _, unit := range units {
+			if unit.WatchTriggers > triggers {
+				triggers = unit.WatchTriggers
+			}
+		}
+		fmt.Fprintf(&b, "watch triggers: %d\n", triggers)
 	}
 
 	b.WriteString("\n")

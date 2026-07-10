@@ -303,6 +303,20 @@ func TestDaemonWatchesSyncsAndReports(t *testing.T) {
 	if len(projects.Units) != 1 || projects.Units[0].Folder != "alpha" {
 		t.Fatalf("projects = %+v", projects)
 	}
+
+	// Per-unit telemetry (Task 6.5) is populated end to end by the same cycle:
+	// the enrolled root is watching, the filesystem write that drove the cycle
+	// counted at least one watch trigger, and the last cycle landed ok.
+	reported := projects.Units[0]
+	if reported.WatchState != "watching" {
+		t.Errorf("WatchState = %q, want watching", reported.WatchState)
+	}
+	if reported.WatchTriggers == 0 {
+		t.Errorf("WatchTriggers = 0, want the fs-driven cycle to have counted at least one trigger")
+	}
+	if reported.LastCycle == nil || reported.LastCycle.Outcome != "ok" {
+		t.Errorf("LastCycle = %+v, want ok", reported.LastCycle)
+	}
 }
 
 func TestSecondDaemonRefusesToStart(t *testing.T) {
