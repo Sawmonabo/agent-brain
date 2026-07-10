@@ -464,6 +464,12 @@ debounce = "2s"
 # poll: backstop rescan interval for filesystems fsnotify misses.
 poll = "45s"
 
+[migrate]
+# preflight_timeout: bounds the ` + "`" + `chezmoi diff` + "`" + ` subprocess the one-time
+# ` + "`" + `agent-brain migrate` + "`" + ` command runs before importing the bash-era
+# memory tree (spec §10). Must be >0 and <=10m.
+preflight_timeout = "30s"
+
 # Per-provider classification overrides (advanced; spec §6). Overriding
 # a provider REPLACES its whole table. Classes: fact | derived-index |
 # regenerated | ignore.
@@ -492,24 +498,16 @@ func stepConfigFile(_ context.Context, state *initState) error {
 }
 
 // stepService installs and starts the login service unless --skip-service
-// was given. WSL2 (service.IsWSL2()) has no reliable login service
-// manager (ADR 04; on-demand mode is Phase 4) — init prints the same
-// guidance the standalone `service install` command returns as an error
-// (service.go), but as information rather than a failure: init's overall
-// success must not depend on a service manager WSL2 does not have.
-// Install is idempotent by absorbing kardianos's one and only "already
-// installed" signal, its literal error text "Init already exists: ..."
-// (github.com/kardianos/service, darwin/systemd backends) — the package
-// exposes no typed sentinel for this the way it does for StatusNotInstalled,
-// so a substring check is the only seam available without widening
-// internal/service's contract for a single call site.
+// was given. Install/report and status/linger delegate to
+// installServiceAndReport and printServiceStatus (service.go) — the
+// same two helpers the standalone `service install`/`service status`
+// commands use, so the idempotency branch (service.ErrAlreadyInstalled,
+// errors.Is — Task 3b), the WSL2 linger warning, and the linger advisory
+// line (Task 3c) live in exactly one place rather than being duplicated
+// here (T3 review fix).
 func stepService(_ context.Context, state *initState) error {
 	if state.skipService {
 		_, err := fmt.Fprintln(state.out, "service: skipped (--skip-service)")
-		return err
-	}
-	if service.IsWSL2() {
-		_, err := fmt.Fprintln(state.out, "service: not installed — WSL2 has no reliable login service manager (on-demand mode arrives in Phase 4); run `agent-brain daemon run` in a terminal, or `agent-brain service install` later from a native Linux/macOS host")
 		return err
 	}
 
@@ -517,18 +515,13 @@ func stepService(_ context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	if err := controller.Install(); err != nil && !strings.Contains(err.Error(), "already exists") {
+	if err := installServiceAndReport(controller, state.out); err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return err
 	}
 	if err := controller.Start(); err != nil {
 		return err
 	}
-	status, err := controller.Status()
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(state.out, "service: %s\n", status)
-	return err
+	return printServiceStatus(state.out, controller)
 }
 
 // stepEnrollment offers every discovered-but-unenrolled memory root for

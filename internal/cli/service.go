@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,14 +58,25 @@ func newServiceCmd() *cobra.Command {
 		&cobra.Command{
 			Use:   "install",
 			Short: "Install the user service (launchd / systemd --user)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				if service.IsWSL2() {
-					return fmt.Errorf("service install is not supported on WSL2 — WSL lacks a reliable login service manager; on-demand mode arrives in Phase 4. Run `agent-brain daemon run` in a terminal for now")
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				controller, err := controllerFor()
+				if err != nil {
+					return err
 				}
-				return run("install", service.Controller.Install)(cmd, args)
+				return runServiceInstall(cmd.OutOrStdout(), controller)
 			},
 		},
-		&cobra.Command{Use: "uninstall", Short: "Remove the user service", RunE: run("uninstall", service.Controller.Uninstall)},
+		&cobra.Command{
+			Use:   "uninstall",
+			Short: "Remove the user service",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				controller, err := controllerFor()
+				if err != nil {
+					return err
+				}
+				return runServiceUninstall(cmd.OutOrStdout(), controller)
+			},
+		},
 		&cobra.Command{Use: "start", Short: "Start the service", RunE: run("start", service.Controller.Start)},
 		&cobra.Command{Use: "stop", Short: "Stop the service", RunE: run("stop", service.Controller.Stop)},
 		&cobra.Command{
@@ -75,17 +87,99 @@ func newServiceCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				status, err := controller.Status()
-				if err != nil {
-					return err
-				}
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "service: %s\n", status)
-				return err
+				return runServiceStatus(cmd.OutOrStdout(), controller)
 			},
 		},
 		newServiceLogsCmd(),
 	)
 	return serviceCmd
+}
+
+// installServiceAndReport installs the service and prints the outcome —
+// the idempotency branch (a second install against an already-installed
+// unit, service.ErrAlreadyInstalled matched with errors.Is, never a
+// string match, Task 3b), the ok/nothing-to-do message, and any non-fatal
+// WSL2 linger warning (Task 3c) all live here ONCE: runServiceInstall
+// (the standalone `service install` command) and stepService (init's own
+// service step, internal/cli/initsteps.go) both delegate to this rather
+// than hand-rolling the same three branches (T3 review fix). A genuine
+// install failure (anything but ErrAlreadyInstalled) is returned
+// unwrapped and prints nothing — callers add their own context prefix.
+func installServiceAndReport(controller service.Controller, out io.Writer) error {
+	warning, err := controller.Install()
+	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+		return err
+	}
+	message := "service install: ok"
+	if errors.Is(err, service.ErrAlreadyInstalled) {
+		message = "service install: already installed — nothing to do"
+	}
+	if _, printErr := fmt.Fprintln(out, message); printErr != nil {
+		return printErr
+	}
+	if warning != "" {
+		if _, printErr := fmt.Fprintln(out, warning); printErr != nil {
+			return printErr
+		}
+	}
+	return err
+}
+
+// runServiceInstall installs the service and reports the outcome,
+// wrapping a genuine (non-idempotent) failure with command-specific
+// context; see installServiceAndReport for the shared idempotency/
+// warning logic.
+func runServiceInstall(out io.Writer, controller service.Controller) error {
+	err := installServiceAndReport(controller, out)
+	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+		return fmt.Errorf("service install: %w", err)
+	}
+	return nil
+}
+
+// printServiceStatus writes the plain status line plus, on WSL2, the
+// systemd user-lingering advisory line (Task 3c) — runServiceStatus (the
+// standalone `service status` command) and stepService (init's own
+// service step) both delegate to this rather than hand-rolling the same
+// linger-line branch (T3 review fix). LingerStatus returns "" when there
+// is nothing to report (non-WSL2, or the query itself failed), so the
+// advisory line is silently omitted rather than printed empty.
+func printServiceStatus(out io.Writer, controller service.Controller) error {
+	status, err := controller.Status()
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "service: %s\n", status); err != nil {
+		return err
+	}
+	linger := controller.LingerStatus()
+	if linger == "" {
+		return nil
+	}
+	_, err = fmt.Fprintln(out, linger)
+	return err
+}
+
+// runServiceStatus reports service state plus, on WSL2, the systemd
+// user-lingering advisory line; see printServiceStatus for the shared
+// logic.
+func runServiceStatus(out io.Writer, controller service.Controller) error {
+	return printServiceStatus(out, controller)
+}
+
+// runServiceUninstall mirrors runServiceInstall's idempotent treatment
+// for the symmetric "already gone" case (service.ErrNotInstalled).
+func runServiceUninstall(out io.Writer, controller service.Controller) error {
+	err := controller.Uninstall()
+	if err != nil && !errors.Is(err, service.ErrNotInstalled) {
+		return fmt.Errorf("service uninstall: %w", err)
+	}
+	message := "service uninstall: ok"
+	if errors.Is(err, service.ErrNotInstalled) {
+		message = "service uninstall: not installed — nothing to do"
+	}
+	_, printErr := fmt.Fprintln(out, message)
+	return printErr
 }
 
 // newServiceLogsCmd is a pure file read over paths.DaemonLogFile() — no

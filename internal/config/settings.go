@@ -36,6 +36,16 @@ type SyncSettings struct {
 	Poll Duration `toml:"poll"`
 }
 
+// MigrateSettings tunes `agent-brain migrate`'s spec §10 pre-flight gate.
+type MigrateSettings struct {
+	// PreflightTimeout bounds the `chezmoi diff` subprocess migrate runs
+	// before importing the bash-era memory tree; default 30s, must be
+	// >0 and ≤10m. A cold NFS home or a huge legacy dotfiles tree can
+	// exceed a fixed 30s with no operator recourse — this makes it
+	// configurable instead of a hardcoded const.
+	PreflightTimeout Duration `toml:"preflight_timeout"`
+}
+
 // ClassifyRule overrides one classification pattern for a provider.
 // Class is one of provider.Class.String()'s exact values ("fact",
 // "derived-index", "regenerated", "ignore") — LoadSettings rejects
@@ -58,18 +68,24 @@ type ProviderSettings struct {
 // to the program (ADR 17: `agent-brain init` writes it once from a
 // template; nothing ever rewrites it, so user comments survive).
 type Settings struct {
-	Sync SyncSettings `toml:"sync"`
+	Sync    SyncSettings    `toml:"sync"`
+	Migrate MigrateSettings `toml:"migrate"`
 	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.
 	Providers map[string]ProviderSettings `toml:"providers"`
 }
 
 // DefaultSettings returns the documented defaults.
 func DefaultSettings() Settings {
-	return Settings{Sync: SyncSettings{
-		Ticker:   Duration(5 * time.Minute),
-		Debounce: Duration(2 * time.Second),
-		Poll:     Duration(45 * time.Second),
-	}}
+	return Settings{
+		Sync: SyncSettings{
+			Ticker:   Duration(5 * time.Minute),
+			Debounce: Duration(2 * time.Second),
+			Poll:     Duration(45 * time.Second),
+		},
+		Migrate: MigrateSettings{
+			PreflightTimeout: Duration(30 * time.Second),
+		},
+	}
 }
 
 // LoadSettings reads path. A missing file is the default configuration; a
@@ -106,6 +122,10 @@ func LoadSettings(path string) (Settings, error) {
 	return settings, nil
 }
 
+// migratePreflightTimeoutCeiling is preflight_timeout's upper bound
+// (inclusive) — see validate.
+const migratePreflightTimeoutCeiling = 10 * time.Minute
+
 func (s Settings) validate() error {
 	checks := []struct {
 		name  string
@@ -120,6 +140,19 @@ func (s Settings) validate() error {
 		if c.value < c.floor {
 			return fmt.Errorf("%s = %s is below the %s floor", c.name, c.value, c.floor)
 		}
+	}
+
+	// preflight_timeout has a two-sided bound (>0 and ≤10m) rather than a
+	// floor, so it doesn't fit the table above: zero/negative would
+	// otherwise pass a `< floor` check trivially at floor=0, and there is
+	// no analogous ceiling concept elsewhere in this file to generalize
+	// for a single field.
+	preflightTimeout := time.Duration(s.Migrate.PreflightTimeout)
+	if preflightTimeout <= 0 {
+		return fmt.Errorf("migrate.preflight_timeout = %s must be greater than 0", preflightTimeout)
+	}
+	if preflightTimeout > migratePreflightTimeoutCeiling {
+		return fmt.Errorf("migrate.preflight_timeout = %s exceeds the %s ceiling", preflightTimeout, migratePreflightTimeoutCeiling)
 	}
 	return nil
 }
