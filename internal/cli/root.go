@@ -33,6 +33,7 @@ func Root() *cobra.Command {
 		newTrackCmd(),
 		newUntrackCmd(),
 		newMigrateCmd(),
+		newDashboardCmd(),
 	)
 	return root
 }
