@@ -1,0 +1,77 @@
+version: 2
+
+project_name: agent-brain
+
+env:
+  # spec §8 / ADR 12: pure Go, no cgo dependency in any target.
+  - CGO_ENABLED=0
+
+builds:
+  - main: ./cmd/agent-brain
+    binary: agent-brain
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      # root.go:7's ldflags seam; -X stays required — debug.ReadBuildInfo
+      # never carries the semver tag on a detached release checkout.
+      - -s -w -X github.com/Sawmonabo/agent-brain/internal/cli.Version={{ .Version }}
+    hooks:
+      # ADR 16 decision 12: runs for every target; the script itself no-ops
+      # on non-darwin so CI and local snapshot builds sign identically.
+      post:
+        - cmd: ./scripts/adhoc-sign.sh "{{ .Path }}" "{{ .Os }}"
+          output: true
+
+archives:
+  - files:
+      # Explicit allow-list, not GoReleaser's default license*/readme* glob:
+      # keeps the archive contents a config-visible guarantee rather than an
+      # accident of which root files happen to exist (secrets/testdata hygiene).
+      - README.md
+
+changelog:
+  use: git
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Performance improvements
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: agent-brain
+    repository:
+      owner: Sawmonabo
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # ADR 16 decision 13 / decision 6: prerelease tags (v2.0.0-rc.*) publish
+    # GitHub release assets but skip the formula push, so cutover RCs never
+    # point a public `brew install` at this still-private repo's assets.
+    skip_upload: auto
+    homepage: "https://github.com/Sawmonabo/agent-brain"
+    description: "Invisible cross-machine sync for AI coding agents' per-project memory"
+    install: |
+      bin.install "agent-brain"
+    # The tap's own CI (test-formula.yml) runs `brew test` per formula —
+    # this formula ships with one so it isn't the untested outlier.
+    test: |
+      system "#{bin}/agent-brain", "--version"
