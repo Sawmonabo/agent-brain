@@ -360,6 +360,29 @@ Two deliverables with one tool (gitleaks v8.30.1 — runtime/CI dependency, NEVE
 
 **Q3 REVIEW GATE** after Task 6: reviewer over the dashboard diff. Special attention: zero new daemon endpoints, boundary greps still clean (dashboard package import allowlist), model purity (no I/O in Update paths except via Cmd), EOF/TTY contracts.
 
+### Task 6.5: Per-unit watch/cycle telemetry — additive payload growth, zero new endpoints (added 2026-07-10, standing no-deferral directive)
+
+**Why this task exists:** Task 6 execution surfaced that spec §7's Projects columns ("watch state", "last-cycle result") and Activity's "watch trigger counts" have NO carrying surface in the daemon API — `api.UnitInfo` is Provider/Folder/LocalDir/Degraded only. Task 6's read-first wall correctly forbade the dashboard task from growing the daemon mid-wave (T4 owned those files concurrently), so T6 ships honest per-unit columns only and renders fleet state once in the header. This task then builds the missing telemetry properly instead of backlogging it: the user's standing directive rejects deferring buildable capability, and a fleet dashboard whose rows show live watch health and last-cycle outcomes is the capability spec §7 was naming. **Sequencing: runs only after BOTH the Q2 gate (T4's daemon/api edits merged) and the Q3 gate (T6's dashboard merged) close** — it edits both surfaces.
+
+**Files:**
+- Modify: `internal/daemon/daemon.go` (per-unit telemetry bookkeeping — all under the existing `d.mu`, same discipline as quiesce state), `internal/daemon/api/types.go` (additive `UnitInfo` fields), the projects/status handler path in `internal/daemon/server.go` only if serialization needs it (expected: no — handlers already marshal `UnitInfo`), `internal/engine/engine.go`/`report.go` area ONLY IF `engine.Report` lacks per-unit outcome rows (verify first — see Step 1), `internal/cli/dashboard/projects.go` + `activity.go` + their tests (render the new fields), `internal/daemon/daemon_test.go`, `internal/daemon/api/types_test.go` (round-trip).
+- Do NOT create new endpoints, new packages, or new deps. The Q3 gate's "zero new daemon endpoints" grep must still pass over the whole branch at FINAL.
+
+**Design (locked):**
+- Per-unit telemetry, tracked by the daemon and served on the EXISTING projects payload: `WatchState string` (`"watching"` | `"failed: <reason>"` — value captured where the daemon today logs-and-continues on a watcher establish/runtime failure; tick sync still covers such units, which is what the fallback wording must convey), `WatchTriggers uint64` (monotonic count of watch-event-initiated sync triggers since daemon start, incremented at the same site the watch arm enqueues/coalesces a trigger), `LastCycle *UnitCycleResult` (`Outcome string` `"ok"`|`"degraded"`|`"error"`, `FinishedAt time.Time`; nil until the unit's first cycle completes). All three JSON-tagged `omitempty` — strictly additive payload; old clients unaffected.
+- Single-writer/mutex discipline: bookkeeping writes happen in the daemon goroutines that already own those events; reads snapshot under `d.mu` exactly like `Status()` does post-T2. No new goroutines, no timers.
+- `LastCycle` sourcing: Step 1 verifies whether `engine.Report` already carries per-unit outcomes. If yes, map them. If no, grow `engine.Report` with a per-unit outcome row (engine-internal type; package boundaries unchanged — `daemon` already consumes `engine.Report`).
+- Dashboard: Projects table regains the two columns the API can now honestly serve (watch state, last cycle); Activity shows the fleet trigger total (sum over units). Rendering tests extend the existing fake-snapshot pattern.
+- Blast radius to check in-task: any testscript/e2e assertions on `projects --json` / `status --json` payload shape (additive fields with omitempty should be inert — verify by grep, state the result in the report).
+
+- [ ] **Step 1 (verify sourcing):** read `engine.Report`'s shape and the daemon's watcher-failure + trigger sites; record in the report which of the two `LastCycle` sourcing branches applies. No code yet.
+- [ ] **Step 2 (RED):** daemon tests — watcher-failure path records `WatchState="failed: …"` while tick sync continues; trigger increment on watch-arm enqueue; `LastCycle` transitions nil→ok/degraded across two fake cycles; api round-trip test for the three new fields incl. omitempty absence when zero/nil. Run → FAIL.
+- [ ] **Step 3 (GREEN):** implement bookkeeping + api fields + (if Step 1 said so) the `engine.Report` per-unit row. Run package tests foreground → PASS.
+- [ ] **Step 4 (dashboard RED→GREEN):** Projects columns + Activity trigger total against the fake `dashboardData`; commit granularity `feat(daemon): per-unit watch/cycle telemetry` then `feat(dashboard): render per-unit telemetry`.
+- [ ] **Step 5:** full suite foreground `(ulimit -u 1400; go test ./... -race -count=1)` + `golangci-lint run` + `gofumpt -l .`; commit.
+
+**Review:** standard per-task review (spec = this section; quality per the standing rubric). Findings roll into the FINAL gate ledger like every task.
+
 ### Task 7: Release pipeline — GoReleaser v2, tag-push workflow, Homebrew tap (ADR 16, spec §13)
 
 Distribution is configuration plus one signing script (ADR 16) — with THREE sharp edges this task handles explicitly: (1) **the code repo is PRIVATE until the ADR-13 scrub**, and Homebrew fetches artifacts anonymously, so tap publishing must not go live against private release assets; (2) **signed-to-execute (AMFI)** — on Apple Silicon, a binary without a valid signature is SIGKILLed before it runs, and CI-cross-compiled Go darwin binaries can carry only a linker signature macOS 26 treats as invalid, so ad-hoc signing in CI is mandatory; (3) **Gatekeeper/quarantine** — casks set `com.apple.quarantine`, formulae never do, and the xattr-strip cask hook is defeated on macOS 26. All resolutions are recorded in the Decision record & sources section (decisions 12–13).
