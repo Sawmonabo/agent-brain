@@ -129,6 +129,8 @@ Expected: the two staged-state tests FAIL (staged entries survive recoverState t
 
 (`gitx.Result{Stdout, Stderr string; ExitCode int}` — verified against gitx.go:24 while writing this plan; `RunStatus` returns the code as data, `Run` errors on non-zero.)
 
+> **SUPERSEDED AS-BUILT (Q1 finding F10, fixed in `521d8d1`):** the snippet above gates on `gitx.Run(... "rev-parse" ...); err == nil`, which conflates unborn HEAD with execution failures (context cancellation, signal kill, spawn failure) and would silently skip recovery on all of them. The shipped code uses `gitx.RunStatus` and skips ONLY on a non-zero exit code (unborn HEAD); execution failures propagate as `recover: git rev-parse HEAD: %w`. Do not copy this snippet — read `internal/engine/recover.go` as-built.
+
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/engine/ -race -count=1`
