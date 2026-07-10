@@ -24,6 +24,7 @@ type fakeServiceController struct {
 	uninstallCalls int
 	uninstallErr   error
 
+	statusErr    error
 	lingerStatus string
 }
 
@@ -43,10 +44,144 @@ func (f *fakeServiceController) Uninstall() error {
 	return f.uninstallErr
 }
 
-func (f *fakeServiceController) Start() error                    { return nil }
-func (f *fakeServiceController) Stop() error                     { return nil }
-func (f *fakeServiceController) Status() (service.Status, error) { return service.StatusRunning, nil }
-func (f *fakeServiceController) LingerStatus() string            { return f.lingerStatus }
+func (f *fakeServiceController) Start() error { return nil }
+func (f *fakeServiceController) Stop() error  { return nil }
+func (f *fakeServiceController) Status() (service.Status, error) {
+	if f.statusErr != nil {
+		return service.StatusUnknown, f.statusErr
+	}
+	return service.StatusRunning, nil
+}
+func (f *fakeServiceController) LingerStatus() string { return f.lingerStatus }
+
+// --- T3 review fix: shared install/status helpers ---
+//
+// installServiceAndReport and printServiceStatus are the ONE place the
+// idempotency branch, warning print, and linger-line logic live —
+// runServiceInstall/runServiceStatus (the standalone `service install`/
+// `service status` commands) and stepService (init's own service step,
+// internal/cli/initsteps.go) all delegate to these two rather than each
+// hand-rolling the same branches. stepService itself constructs a REAL
+// service.Controller (never fake-able without touching a live system —
+// see internal/service's own "construction only" test discipline), so
+// these direct, fake-controller tests are what actually covers "the
+// stepService path": after the fix, stepService's own body is nothing
+// but "construct controller, call these two helpers."
+
+// TestInstallServiceAndReportFreshInstallPrintsOK proves a clean install
+// prints the plain success line and returns nil.
+func TestInstallServiceAndReportFreshInstallPrintsOK(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+	var out bytes.Buffer
+	if err := installServiceAndReport(controller, &out); err != nil {
+		t.Fatalf("installServiceAndReport: %v, want nil", err)
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Fatalf("output = %q, want a success line", out.String())
+	}
+}
+
+// TestInstallServiceAndReportIdempotentPrintsNothingToDo proves the
+// second call against an already-installed unit prints the nothing-to-do
+// message and returns the ErrAlreadyInstalled-wrapped error (never a
+// string match — errors.Is) so a caller can still detect idempotency if
+// it wants to.
+func TestInstallServiceAndReportIdempotentPrintsNothingToDo(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+	var firstOut bytes.Buffer
+	if err := installServiceAndReport(controller, &firstOut); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+
+	var secondOut bytes.Buffer
+	err := installServiceAndReport(controller, &secondOut)
+	if !errors.Is(err, service.ErrAlreadyInstalled) {
+		t.Fatalf("second call error = %v, want errors.Is(_, ErrAlreadyInstalled)", err)
+	}
+	if !strings.Contains(secondOut.String(), "already installed") {
+		t.Fatalf("second call output = %q, want the nothing-to-do message", secondOut.String())
+	}
+}
+
+// TestInstallServiceAndReportHardFailurePrintsNothing proves a genuine
+// install failure returns the raw error and prints NOTHING — there is no
+// "ok"/"already installed" line to show for a failed install, and no
+// warning either (there is no unit to keep alive).
+func TestInstallServiceAndReportHardFailurePrintsNothing(t *testing.T) {
+	t.Parallel()
+	want := errors.New("permission denied")
+	controller := &fakeServiceController{installErr: want}
+	var out bytes.Buffer
+	err := installServiceAndReport(controller, &out)
+	if !errors.Is(err, want) {
+		t.Fatalf("installServiceAndReport error = %v, want it to wrap %v", err, want)
+	}
+	if out.String() != "" {
+		t.Fatalf("output = %q, want nothing printed on a hard failure", out.String())
+	}
+}
+
+// TestInstallServiceAndReportPrintsWarningAfterMessage proves a non-empty
+// warning (Task 3c: a WSL2 linger failure) is printed after the success
+// line, never instead of it.
+func TestInstallServiceAndReportPrintsWarningAfterMessage(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{installWarning: "WARNING: enable-linger failed for testuser"}
+	var out bytes.Buffer
+	if err := installServiceAndReport(controller, &out); err != nil {
+		t.Fatalf("installServiceAndReport: %v, want nil", err)
+	}
+	okIndex := strings.Index(out.String(), "ok")
+	warningIndex := strings.Index(out.String(), "WARNING")
+	if okIndex == -1 || warningIndex == -1 || warningIndex < okIndex {
+		t.Fatalf("output = %q, want the success line before the warning", out.String())
+	}
+}
+
+// TestPrintServiceStatusPrintsLingerLine proves the status line plus, on
+// WSL2, the linger advisory (Task 3c) print together.
+func TestPrintServiceStatusPrintsLingerLine(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{lingerStatus: "linger: enabled (service will survive logout)"}
+	var out bytes.Buffer
+	if err := printServiceStatus(&out, controller); err != nil {
+		t.Fatalf("printServiceStatus: %v", err)
+	}
+	if !strings.Contains(out.String(), "running") {
+		t.Fatalf("output = %q, want the plain status line", out.String())
+	}
+	if !strings.Contains(out.String(), "linger: enabled") {
+		t.Fatalf("output = %q, want the linger advisory line", out.String())
+	}
+}
+
+// TestPrintServiceStatusSilentWithoutLingerLine proves the advisory is
+// omitted entirely (not printed empty) when LingerStatus reports "".
+func TestPrintServiceStatusSilentWithoutLingerLine(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+	var out bytes.Buffer
+	if err := printServiceStatus(&out, controller); err != nil {
+		t.Fatalf("printServiceStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "linger") {
+		t.Fatalf("output = %q, want no linger line", out.String())
+	}
+}
+
+// TestPrintServiceStatusPropagatesStatusError proves a Status() failure
+// is surfaced, not swallowed.
+func TestPrintServiceStatusPropagatesStatusError(t *testing.T) {
+	t.Parallel()
+	want := errors.New("dial failed")
+	controller := &fakeServiceController{statusErr: want}
+	var out bytes.Buffer
+	if err := printServiceStatus(&out, controller); !errors.Is(err, want) {
+		t.Fatalf("printServiceStatus error = %v, want it to wrap %v", err, want)
+	}
+}
 
 // --- 3b: idempotent install/uninstall UX ---
 

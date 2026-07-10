@@ -133,8 +133,8 @@ func (execRunner) Run(ctx context.Context, args ...string) (Result, error) {
 // under most invocations without relying on env), falling back to $USER
 // so a minimal environment missing NSS user lookups still works.
 func currentUsername() (string, error) {
-	if u, err := user.Current(); err == nil && u.Username != "" {
-		return u.Username, nil
+	if currentUser, err := user.Current(); err == nil && currentUser.Username != "" {
+		return currentUser.Username, nil
 	}
 	if name := os.Getenv("USER"); name != "" {
 		return name, nil

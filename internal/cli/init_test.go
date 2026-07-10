@@ -801,6 +801,14 @@ func TestStepConfigFileWritesTemplateWhenMissing(t *testing.T) {
 	if string(got) != configTemplate {
 		t.Fatalf("config.toml does not match the template:\ngot:\n%s\nwant:\n%s", got, configTemplate)
 	}
+	// T3 review gap: the template must document EVERY settings group,
+	// including [migrate] (Task 3a) — otherwise config.MigrateSettings.
+	// PreflightTimeout is only discoverable by reading source.
+	for _, want := range []string{"[migrate]", "preflight_timeout"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("config.toml template missing %q — settings must be discoverable in the written file:\n%s", want, got)
+		}
+	}
 	info, err := os.Stat(state.paths.SettingsFile())
 	if err != nil {
 		t.Fatal(err)

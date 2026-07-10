@@ -95,18 +95,20 @@ func newServiceCmd() *cobra.Command {
 	return serviceCmd
 }
 
-// runServiceInstall installs the service and reports the outcome. A
-// second, idempotent install against an already-installed unit
-// (service.ErrAlreadyInstalled, matched with errors.Is — never a string
-// match, Task 3b) prints a nothing-to-do line and exits 0 rather than
-// failing; any other error still fails the command. On WSL2, Install
-// also best-effort enables systemd user lingering so the resident unit
-// survives past the login session (Task 3c); a non-empty warning is
-// printed but never turns a successful install into a failure.
-func runServiceInstall(out io.Writer, controller service.Controller) error {
+// installServiceAndReport installs the service and prints the outcome —
+// the idempotency branch (a second install against an already-installed
+// unit, service.ErrAlreadyInstalled matched with errors.Is, never a
+// string match, Task 3b), the ok/nothing-to-do message, and any non-fatal
+// WSL2 linger warning (Task 3c) all live here ONCE: runServiceInstall
+// (the standalone `service install` command) and stepService (init's own
+// service step, internal/cli/initsteps.go) both delegate to this rather
+// than hand-rolling the same three branches (T3 review fix). A genuine
+// install failure (anything but ErrAlreadyInstalled) is returned
+// unwrapped and prints nothing — callers add their own context prefix.
+func installServiceAndReport(controller service.Controller, out io.Writer) error {
 	warning, err := controller.Install()
 	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
-		return fmt.Errorf("service install: %w", err)
+		return err
 	}
 	message := "service install: ok"
 	if errors.Is(err, service.ErrAlreadyInstalled) {
@@ -115,18 +117,34 @@ func runServiceInstall(out io.Writer, controller service.Controller) error {
 	if _, printErr := fmt.Fprintln(out, message); printErr != nil {
 		return printErr
 	}
-	if warning == "" {
-		return nil
+	if warning != "" {
+		if _, printErr := fmt.Fprintln(out, warning); printErr != nil {
+			return printErr
+		}
 	}
-	_, printErr := fmt.Fprintln(out, warning)
-	return printErr
+	return err
 }
 
-// runServiceStatus reports service state plus, on WSL2, the systemd
-// user-lingering advisory line (Task 3c). LingerStatus returns "" when
-// there is nothing to report (non-WSL2, or the query itself failed), so
-// the advisory line is silently omitted rather than printed empty.
-func runServiceStatus(out io.Writer, controller service.Controller) error {
+// runServiceInstall installs the service and reports the outcome,
+// wrapping a genuine (non-idempotent) failure with command-specific
+// context; see installServiceAndReport for the shared idempotency/
+// warning logic.
+func runServiceInstall(out io.Writer, controller service.Controller) error {
+	err := installServiceAndReport(controller, out)
+	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+		return fmt.Errorf("service install: %w", err)
+	}
+	return nil
+}
+
+// printServiceStatus writes the plain status line plus, on WSL2, the
+// systemd user-lingering advisory line (Task 3c) — runServiceStatus (the
+// standalone `service status` command) and stepService (init's own
+// service step) both delegate to this rather than hand-rolling the same
+// linger-line branch (T3 review fix). LingerStatus returns "" when there
+// is nothing to report (non-WSL2, or the query itself failed), so the
+// advisory line is silently omitted rather than printed empty.
+func printServiceStatus(out io.Writer, controller service.Controller) error {
 	status, err := controller.Status()
 	if err != nil {
 		return err
@@ -140,6 +158,13 @@ func runServiceStatus(out io.Writer, controller service.Controller) error {
 	}
 	_, err = fmt.Fprintln(out, linger)
 	return err
+}
+
+// runServiceStatus reports service state plus, on WSL2, the systemd
+// user-lingering advisory line; see printServiceStatus for the shared
+// logic.
+func runServiceStatus(out io.Writer, controller service.Controller) error {
+	return printServiceStatus(out, controller)
 }
 
 // runServiceUninstall mirrors runServiceInstall's idempotent treatment

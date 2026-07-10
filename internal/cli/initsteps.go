@@ -448,6 +448,12 @@ debounce = "2s"
 # poll: backstop rescan interval for filesystems fsnotify misses.
 poll = "45s"
 
+[migrate]
+# preflight_timeout: bounds the ` + "`" + `chezmoi diff` + "`" + ` subprocess the one-time
+# ` + "`" + `agent-brain migrate` + "`" + ` command runs before importing the bash-era
+# memory tree (spec §10). Must be >0 and <=10m.
+preflight_timeout = "30s"
+
 # Per-provider classification overrides (advanced; spec §6). Overriding
 # a provider REPLACES its whole table. Classes: fact | derived-index |
 # regenerated | ignore.
@@ -476,15 +482,13 @@ func stepConfigFile(_ context.Context, state *initState) error {
 }
 
 // stepService installs and starts the login service unless --skip-service
-// was given. Install is idempotent via service.ErrAlreadyInstalled
-// (errors.Is — Task 3b), not a string match on kardianos's own per-OS-
-// backend error text; internal/service.mapErr is the only place that
-// text is inspected. On WSL2, Install also best-effort enables systemd
-// user lingering (Task 3c) so the resident unit survives past this
-// init run's own login session — a non-fatal warning is printed rather
-// than failing init; the trailing linger advisory line (LingerStatus)
-// reports state the same way the standalone `service status` command
-// does.
+// was given. Install/report and status/linger delegate to
+// installServiceAndReport and printServiceStatus (service.go) — the
+// same two helpers the standalone `service install`/`service status`
+// commands use, so the idempotency branch (service.ErrAlreadyInstalled,
+// errors.Is — Task 3b), the WSL2 linger warning, and the linger advisory
+// line (Task 3c) live in exactly one place rather than being duplicated
+// here (T3 review fix).
 func stepService(_ context.Context, state *initState) error {
 	if state.skipService {
 		_, err := fmt.Fprintln(state.out, "service: skipped (--skip-service)")
@@ -495,30 +499,13 @@ func stepService(_ context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	warning, err := controller.Install()
-	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+	if err := installServiceAndReport(controller, state.out); err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return err
-	}
-	if warning != "" {
-		if _, err := fmt.Fprintln(state.out, warning); err != nil {
-			return err
-		}
 	}
 	if err := controller.Start(); err != nil {
 		return err
 	}
-	status, err := controller.Status()
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(state.out, "service: %s\n", status); err != nil {
-		return err
-	}
-	if linger := controller.LingerStatus(); linger != "" {
-		_, err := fmt.Fprintln(state.out, linger)
-		return err
-	}
-	return nil
+	return printServiceStatus(state.out, controller)
 }
 
 // stepEnrollment offers every discovered-but-unenrolled memory root for

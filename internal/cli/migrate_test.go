@@ -113,6 +113,58 @@ func TestRunMigratePreflightHonorsConfiguredTimeout(t *testing.T) {
 	}
 }
 
+// TestMigrateCommandRunEHonorsConfiguredPreflightTimeout is a T3-review
+// gap fix: every other preflight-timeout test drives runMigratePreflight
+// directly, which pins that FUNCTION's behavior but never proves the
+// command's own RunE actually reads config.toml's [migrate] table and
+// threads it through — a regression that hardcoded some other value (or
+// silently dropped the LoadSettings call) would slip past those tests
+// undetected. This drives the real `migrate` command end-to-end via
+// runCmd: a config.toml with preflight_timeout = "50ms" plus a
+// chezmoi.toml (so the gate actually shells out) and a fake chezmoi that
+// sleeps 2s must make the command return well before that sleep elapses.
+func TestMigrateCommandRunEHonorsConfiguredPreflightTimeout(t *testing.T) {
+	configDir := t.TempDir()
+	// t.Setenv forbids t.Parallel (runCmd's own doc comment) — belt and
+	// suspenders, also isolates os.UserHomeDir() (buildTrackDeps calls it
+	// directly) from the real machine's home.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", configDir)
+	t.Setenv("AGENT_BRAIN_DATA_DIR", t.TempDir())
+	// A short runtime dir, NOT t.TempDir(): that embeds this test's full
+	// (long) name in the path, which trips config.ValidateSocketPath's
+	// ~104-byte unix-socket cap before newAPIClient ever returns — the
+	// command would then fail at socket-path validation, before the
+	// preflight-timeout code this test targets ever runs, and the
+	// assertions below would pass vacuously for the wrong reason.
+	runtimeDir, err := os.MkdirTemp("", "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeDir) })
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", runtimeDir)
+
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[migrate]\npreflight_timeout = \"50ms\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// runMigratePreflight only shells out when chezmoi.toml exists.
+	if err := os.WriteFile(filepath.Join(configDir, "chezmoi.toml"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	withFakeChezmoiOnPath(t, `sleep 2; exit 0`)
+
+	start := time.Now()
+	_, err = runCmd(t, nil, "migrate")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("migrate: want the preflight timeout error, got nil")
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("migrate took %v to return — the configured 50ms preflight_timeout in config.toml was not honored (fake chezmoi sleeps 2s)", elapsed)
+	}
+}
+
 func TestPrintSkipPreflightWarningCitesSpecSection(t *testing.T) {
 	var out bytes.Buffer
 	if err := printSkipPreflightWarning(&out); err != nil {
