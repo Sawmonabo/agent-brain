@@ -607,7 +607,7 @@ v1.3.0 · gofrs/flock v0.13.0 · cenkalti/backoff/v5 v5.0.3 · google/renameio/v
 v2.0.2 · pelletier/go-toml/v2 v2.4.3 · google/go-cmp v0.7.0 · rogpeppe/go-internal
 v1.15.0 (testscript; pulls golang.org/x/tools v0.38.0 transitively). Runtime/CI
 tools, never vendored: gh ≥ 2.40 (CLI flags verified at v2.96.0) · golangci-lint
-v2.12.2 (ci.yml) · gitleaks v8.30.1 (ci.yml + lefthook) · govulncheck v1.5.0 (ci.yml)
+v2.12.2 (ci.yml) · gitleaks v8.30.1 (pinned in ci.yml; the lefthook hook uses the ambient install) · govulncheck v1.5.0 (ci.yml)
 · GoReleaser `~> v2` (workflow pin; v2.17.0 local, 2026-07-10) · anchore/quill v0.7.1
 (darwin ad-hoc signing, release.yml) · gofumpt 0.10.0 + lefthook v2.1.9 (local brew,
 not repo-pinned) · git-filter-repo v2.47.0 (scrub runbook). The go.mod versions above are the resolved
