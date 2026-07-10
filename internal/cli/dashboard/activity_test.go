@@ -82,10 +82,13 @@ func TestActivityDropsStaleQuiesce(t *testing.T) {
 	}
 }
 
-// TestActivityShowsFleetTriggerTotal proves Activity sums the per-unit
-// WatchTriggers into a fleet total (spec §7's "watch trigger counts"), and shows
-// no trigger line when the fleet is empty.
-func TestActivityShowsFleetTriggerTotal(t *testing.T) {
+// TestActivityShowsFleetTriggerMax proves Activity reports the fleet trigger
+// count (spec §7's "watch trigger counts") as the MAX of the per-unit
+// WatchTriggers, not the sum: triggers are fleet-global (ADR 07), so the
+// longest-watched root's count IS the raw trigger count while a sum would
+// amplify it by fleet size. The 12/30 fixture discriminates the two (max 30, not
+// sum 42). No trigger line is shown for an empty fleet.
+func TestActivityShowsFleetTriggerMax(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	status := api.StatusResponse{State: "ready", Version: "dev", StartedAt: now.Add(-time.Hour)}
@@ -94,8 +97,11 @@ func TestActivityShowsFleetTriggerTotal(t *testing.T) {
 		{Provider: "codex", Folder: "b", LocalDir: "/l/b", WatchTriggers: 30},
 	}
 	body := plain(activityView{}.view(status, nil, units, now))
-	if !strings.Contains(body, "watch triggers: 42") {
-		t.Errorf("activity view missing summed fleet trigger total 42; got:\n%s", body)
+	if !strings.Contains(body, "watch triggers: 30") {
+		t.Errorf("activity view missing max fleet trigger count 30; got:\n%s", body)
+	}
+	if strings.Contains(body, "watch triggers: 42") {
+		t.Errorf("activity view summed instead of maxing the fleet triggers; got:\n%s", body)
 	}
 
 	empty := plain(activityView{}.view(status, nil, nil, now))

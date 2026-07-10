@@ -13,9 +13,10 @@ import (
 // SyncSummary. It holds no state of its own — the daemon status and the unit
 // list are owned by the root model and passed in at render.
 //
-// The fleet's watch-trigger total (spec §7's "watch trigger counts") is the sum
-// of the per-unit WatchTriggers the Projects payload now carries (Task 6.5), so
-// the units are passed in at render — still zero new daemon endpoints.
+// The fleet's watch-trigger count (spec §7's "watch trigger counts") is the MAX
+// of the per-unit WatchTriggers the Projects payload now carries (Task 6.5) —
+// the raw trigger count, since triggers are fleet-global (the WHY is at the call
+// site) — so the units are passed in at render, still zero new daemon endpoints.
 type activityView struct{}
 
 func (activityView) view(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
@@ -40,9 +41,18 @@ func (activityView) view(status api.StatusResponse, statusErr error, units []api
 			status.QuiescedUntil.Sub(now).Round(time.Second))
 	}
 	if len(units) > 0 {
+		// Triggers are fleet-global (ADR 07: the watcher never routes per-unit; a
+		// trigger drives one whole-fleet cycle), so each unit's WatchTriggers is a
+		// participation count — the triggers that fired while it was under watch
+		// coverage. The truthful fleet number is the MAX, not the sum: a root
+		// watched since daemon start caught every trigger, so max is the raw
+		// trigger count since the longest-watched root. Summing would amplify that
+		// raw count by fleet size.
 		var triggers uint64
 		for _, unit := range units {
-			triggers += unit.WatchTriggers
+			if unit.WatchTriggers > triggers {
+				triggers = unit.WatchTriggers
+			}
 		}
 		fmt.Fprintf(&b, "watch triggers: %d\n", triggers)
 	}
