@@ -144,3 +144,7 @@ retains everything until you do. The bash-era retirement checklist is in
 - Decisions (ADRs): [docs/decisions/](docs/decisions/) — the `why`, alternatives, and
   research trail behind each choice.
 - Plans: [docs/plans/](docs/plans/)
+
+## License
+
+[MIT](LICENSE)

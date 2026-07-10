@@ -32,6 +32,7 @@ archives:
       # keeps the archive contents a config-visible guarantee rather than an
       # accident of which root files happen to exist (secrets/testdata hygiene).
       - README.md
+      - LICENSE
 
 changelog:
   use: git
@@ -69,6 +70,7 @@ brews:
     skip_upload: auto
     homepage: "https://github.com/Sawmonabo/agent-brain"
     description: "Invisible cross-machine sync for AI coding agents' per-project memory"
+    license: "MIT"
     install: |
       bin.install "agent-brain"
     # The tap's own CI (test-formula.yml) runs `brew test` per formula —
