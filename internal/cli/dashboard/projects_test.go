@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -159,5 +160,73 @@ func TestProjectsUntrackToggleCancels(t *testing.T) {
 	}
 	if !strings.Contains(plain(model.View().Content), "untrack cancelled") {
 		t.Errorf("cancel notice not shown; got:\n%s", plain(model.View().Content))
+	}
+}
+
+// TestProjectsUntrackUsesCapturedUnitNotMovingCursor pins I-1: `y` must untrack
+// the unit named in the prompt, never whatever the cursor happens to point at
+// when the key is pressed. The shared 2s poll rebuilds rows while the confirm
+// sits open, and rebuild only clamps out-of-range cursors — so an in-range
+// index can come to point at a different unit mid-confirm. Capturing the unit at
+// `t` and untracking that identity at `y` (never re-resolving through the moved
+// cursor) is the fix.
+func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
+	t.Parallel()
+	data := &fakeData{status: readyStatus(), projects: twoUnits(), untrackResp: api.UntrackResponse{Removed: true}}
+	model := loadedProjects(data) // cursor seats on row 0 = claude/agent-brain (unit X)
+
+	// Open the confirm on the highlighted unit X.
+	model, _ = step(model, key("t"))
+	if !strings.Contains(plain(model.View().Content), "untrack agent-brain? (y/N)") {
+		t.Fatalf("confirm did not open on agent-brain; got:\n%s", plain(model.View().Content))
+	}
+
+	// A poll lands mid-confirm and reorders the fleet, so cursor index 0 now
+	// points at a DIFFERENT unit Y (codex/_global).
+	reordered := api.ProjectsResponse{Units: []api.UnitInfo{
+		twoUnits().Units[1], // codex/_global now at index 0
+		twoUnits().Units[0], // claude/agent-brain now at index 1
+	}}
+	model, _ = step(model, projectsMsg{resp: reordered})
+
+	// y must untrack X (the named unit), never Y (the unit under the moved cursor).
+	_, cmd := step(model, key("y"))
+	drain(cmd)
+
+	wantX := []api.UntrackRequest{{Provider: "claude", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Purge: false}}
+	if diff := cmp.Diff(wantX, data.untrackCalls); diff != "" {
+		t.Errorf("untrack hit the wrong unit after a mid-confirm fleet reorder (-want +got):\n%s", diff)
+	}
+}
+
+// TestProjectsLoadError renders the Projects error path, matching the error
+// coverage the Conflicts, Activity, and Doctor views already carry (N-2).
+func TestProjectsLoadError(t *testing.T) {
+	t.Parallel()
+	view := newProjectsView()
+	view.setLoadErr(errors.New("dial unix: connection refused"))
+
+	body := plain(view.view())
+	for _, want := range []string{"projects unavailable", "connection refused"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("projects load-error view missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+// TestProjectsLoadingBeforeFirstLoad pins N-1: until the first projectsMsg
+// arrives the view shows a neutral loading line, so the genuinely-empty
+// "no projects enrolled" guidance cannot flash on open before data loads.
+func TestProjectsLoadingBeforeFirstLoad(t *testing.T) {
+	t.Parallel()
+	model := newTestModel(&fakeData{})
+	model, _ = step(model, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	body := plain(model.projects.view())
+	if strings.Contains(body, "no projects enrolled") {
+		t.Errorf("empty-state guidance flashed before the first load; got:\n%s", body)
+	}
+	if !strings.Contains(body, "loading") {
+		t.Errorf("pre-load view missing a loading indicator; got:\n%s", body)
 	}
 }

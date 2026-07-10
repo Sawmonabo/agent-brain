@@ -29,9 +29,16 @@ type projectsView struct {
 	table table.Model
 	units []api.UnitInfo
 	wide  bool // terminal is roomy enough for the LOCAL DIR column
+	// loaded latches true on the first projectsMsg (success or error) so the
+	// view can tell "not fetched yet" from "genuinely empty" and never flash the
+	// empty-state guidance on open.
+	loaded bool
 
-	confirming    bool
-	confirmFolder string
+	confirming bool
+	// confirmUnit is the unit captured when the confirm opened. `y` untracks
+	// exactly this identity — it is never re-resolved through the cursor, which
+	// the 2s poll can move onto a different unit while the confirm sits open.
+	confirmUnit api.UnitInfo
 
 	notice  string // transient result of the last s/t action
 	loadErr error
@@ -61,11 +68,15 @@ func (v *projectsView) setColumns(wide bool) {
 
 func (v *projectsView) setUnits(units []api.UnitInfo) {
 	v.units = units
+	v.loaded = true
 	v.loadErr = nil
 	v.rebuild()
 }
 
-func (v *projectsView) setLoadErr(err error) { v.loadErr = err }
+func (v *projectsView) setLoadErr(err error) {
+	v.loaded = true
+	v.loadErr = err
+}
 
 func (v *projectsView) setSize(width, height int) {
 	if width > 0 {
@@ -106,10 +117,9 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData) tea.Cmd {
 		switch msg.String() {
 		case "y", "Y":
 			v.confirming = false
-			unit, ok := v.selectedUnit()
-			if !ok {
-				return nil
-			}
+			// Untrack the unit captured when the confirm opened, not whatever the
+			// cursor points at now — a poll may have rebuilt the rows underneath it.
+			unit := v.confirmUnit
 			v.notice = fmt.Sprintf("untracking %s…", unit.Folder)
 			return untrackCmd(data, unit)
 		case "n", "N", "esc":
@@ -134,7 +144,7 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData) tea.Cmd {
 			return nil
 		}
 		v.confirming = true
-		v.confirmFolder = unit.Folder
+		v.confirmUnit = unit
 		v.notice = ""
 		return nil
 	}
@@ -183,6 +193,10 @@ func (v projectsView) view() string {
 		fmt.Fprintf(&b, "projects unavailable: %v", v.loadErr)
 		return b.String()
 	}
+	if !v.loaded {
+		b.WriteString(dimStyle.Render("loading projects…"))
+		return b.String()
+	}
 	if len(v.units) == 0 {
 		b.WriteString(dimStyle.Render("no projects enrolled — run `agent-brain track`"))
 		return b.String()
@@ -193,7 +207,7 @@ func (v projectsView) view() string {
 
 	switch {
 	case v.confirming:
-		b.WriteString(warnStyle.Render(fmt.Sprintf("untrack %s? (y/N)", v.confirmFolder)))
+		b.WriteString(warnStyle.Render(fmt.Sprintf("untrack %s? (y/N)", v.confirmUnit.Folder)))
 	case v.notice != "":
 		b.WriteString(dimStyle.Render(v.notice))
 	}
