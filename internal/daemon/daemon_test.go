@@ -914,9 +914,11 @@ func TestDaemonQuiesceExpires(t *testing.T) {
 	}
 }
 
-// TestDaemonQuiesceRefusesMutations quiesces, then asserts /v0/sync and
-// /v0/track return errors naming the quiesce expiry (substring "quiesced
-// until") — silently queueing them would defeat the point.
+// TestDaemonQuiesceRefusesMutations quiesces, then asserts every mutation route
+// — /v0/sync, /v0/track, /v0/untrack, /v0/migrate, /v0/reencrypt — returns an
+// error naming the quiesce expiry (substring "quiesced until"). All funnel
+// through submitAdmin's quiesce gate, so silently queueing any of them would
+// defeat the point.
 func TestDaemonQuiesceRefusesMutations(t *testing.T) {
 	paths, base := provisionMemories(t)
 	client := startDaemon(t, paths)
@@ -933,6 +935,20 @@ func TestDaemonQuiesceRefusesMutations(t *testing.T) {
 		Provider: "claude", ProjectID: "x", PreferredFolder: "x", LocalDir: base,
 	}); err == nil || !strings.Contains(err.Error(), "quiesced until") {
 		t.Fatalf("track while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+	if _, err := client.Untrack(context.Background(), api.UntrackRequest{
+		Provider: "claude", LocalDir: base,
+	}); err == nil || !strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("untrack while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+	if _, err := client.Migrate(context.Background(), api.MigrateRequest{
+		Provider: "claude", ProjectID: "x", PreferredFolder: "x", LocalDir: base, Slug: "s", SeedDir: base,
+	}); err == nil || !strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("migrate while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+	if _, err := client.Reencrypt(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("reencrypt while quiesced: err = %v, want an error naming the quiesce expiry", err)
 	}
 }
 

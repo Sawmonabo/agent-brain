@@ -26,8 +26,9 @@ type fakeController struct {
 	reencrypt api.ReencryptResponse
 	quiesce   api.QuiesceResponse
 
-	quiescedSeconds int  // last Quiesce arg, for the route's method-switch test
-	resumed         bool // set by Resume
+	reencryptErr    error // when set, Reencrypt returns it (drives the writeError envelope test)
+	quiescedSeconds int   // last Quiesce arg, for the route's method-switch test
+	resumed         bool  // set by Resume
 }
 
 func (f *fakeController) Status() api.StatusResponse { return f.status }
@@ -48,7 +49,7 @@ func (f *fakeController) Migrate(context.Context, api.MigrateRequest) (api.Migra
 }
 
 func (f *fakeController) Reencrypt(context.Context) (api.ReencryptResponse, error) {
-	return f.reencrypt, nil
+	return f.reencrypt, f.reencryptErr
 }
 
 func (f *fakeController) Quiesce(seconds int) api.QuiesceResponse {
@@ -214,6 +215,46 @@ func TestSyncRequiresPOST(t *testing.T) {
 	// Status GETs work, so the transport is fine; a GET on /v0/sync must 405.
 	if err := client.GetForTest(context.Background(), "/v0/sync"); err == nil {
 		t.Fatal("GET /v0/sync succeeded, want 405")
+	}
+}
+
+// TestReencryptRequiresPOST pins the method guard on the bodyless-POST
+// /v0/reencrypt route: a GET is a 405, the same contract TestSyncRequiresPOST
+// holds for /v0/sync.
+func TestReencryptRequiresPOST(t *testing.T) {
+	t.Parallel()
+	socketPath := startServer(t, &fakeController{}, defaultPeerUID)
+	client := api.NewClient(socketPath)
+	if err := client.GetForTest(context.Background(), "/v0/reencrypt"); err == nil ||
+		!strings.Contains(err.Error(), "405") {
+		t.Fatalf("GET /v0/reencrypt err = %v, want a 405", err)
+	}
+}
+
+// TestReencryptBodylessPOSTAndErrorEnvelope pins the route's two behaviors. A
+// bodyless POST (the client sends no body) reaches ctrl.Reencrypt and its
+// response round-trips — the route deliberately does NOT decode a body, so
+// unlike postHandler it must not 400 on the empty-body EOF. And a controller
+// error surfaces through the writeError envelope (500 + message), never as a
+// marshaled success body.
+func TestReencryptBodylessPOSTAndErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	ok := &fakeController{reencrypt: api.ReencryptResponse{Files: 4, Pushed: true}}
+	client := api.NewClient(startServer(t, ok, defaultPeerUID))
+	resp, err := client.Reencrypt(context.Background())
+	if err != nil {
+		t.Fatalf("bodyless POST /v0/reencrypt errored: %v", err)
+	}
+	if diff := cmp.Diff(ok.reencrypt, resp); diff != "" {
+		t.Fatalf("reencrypt response (-want +got):\n%s", diff)
+	}
+
+	failing := &fakeController{reencryptErr: errors.New("reencrypt boom")}
+	client = api.NewClient(startServer(t, failing, defaultPeerUID))
+	if _, err := client.Reencrypt(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "reencrypt boom") {
+		t.Fatalf("error envelope = %v, want a 500 carrying the controller message", err)
 	}
 }
 
