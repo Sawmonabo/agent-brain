@@ -507,8 +507,13 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
 - **Supply chain:** SHA-pinned actions, Dependabot, govulncheck, pinned toolchain
   (ADR 12), checksummed immutable releases (§13).
 - **Memory-content risk:** agents can write secrets into memories, which then sync
-  (encrypted at rest, plaintext across machines). v1 documents the awareness; v1.1
-  adds a gitleaks scan before memories-repo commits (ADRs 10/14).
+  (encrypted at rest, plaintext across machines). `agent-brain scan [--project]
+  [--json]` runs the user's gitleaks over enrolled plaintext on demand, and doctor's
+  advisory `secrets-scan` check reports whether gitleaks is installed — the awareness
+  surface. Per-cycle/per-commit scanning is a **decided non-goal**: a subprocess on
+  every save adds latency and false-positive fatigue for zero wire-exposure reduction
+  (the wire is ciphertext regardless). (ADRs 10/14; Task 13.1 amends ADR 14's use-(1)
+  "scan before commits" framing.)
 
 **Accepted risks, formally:**
 
@@ -528,8 +533,9 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
   `reflect.DeepEqual`; ADR 15). Table-driven, `t.Parallel()`, `t.TempDir()`.
 - **CLI/e2e:** rogpeppe/go-internal **testscript** (implemented, `test/e2e/`,
   `TestScripts`) — txtar scripts that drive the REAL binary as a subprocess against
-  `git init --bare` remotes with a faked `gh`, zero network. Five flows:
-  `init_first_machine`, `track_and_sync`, `migrate`, `doctor_fix`, `key_roundtrip`.
+  `git init --bare` remotes with a faked `gh`, zero network. Six flows:
+  `init_first_machine`, `track_and_sync`, `migrate`, `doctor_fix`, `key_roundtrip`,
+  `key_rotate`.
 - **Adversarial containment:** a STANDING corpus (`TestAdversarialContainment`, eleven
   rows as of 2026-07-09) that raw-pushes hostile input from a clone with NO filters
   wired — an attacker who never ran agent-brain — and pins each engine containment
