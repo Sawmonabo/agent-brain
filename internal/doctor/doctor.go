@@ -125,10 +125,12 @@ type checkFunc func(context.Context, Deps) (CheckResult, bool)
 // dashboard renders it (spec: settings · keyset · checkout · filters ·
 // attributes · git-meta · credential-helper · remote · gh · daemon ·
 // service · registry-local · conflict-log · claude-prereqs ·
-// codex-prereqs · legacy-leftovers). SafetyGate (gate.go) reuses these
-// same functions in its own narrower, checkout-first order — but
-// deliberately NOT checkGitMeta, whose doc comment explains why gating on
-// it would deadlock the heal.
+// codex-prereqs · legacy-leftovers · secrets-scan). SafetyGate (gate.go)
+// reuses these same functions in its own narrower, checkout-first order —
+// but deliberately NOT checkGitMeta or checkSecretsScan: checkGitMeta's
+// doc comment explains why gating on it would deadlock the heal;
+// checkSecretsScan's explains why gitleaks (an opt-in, on-demand external
+// tool) has no bearing on whether a sync cycle is safe to run.
 var battery = []checkFunc{
 	checkSettings,
 	checkKeyset,
@@ -146,6 +148,7 @@ var battery = []checkFunc{
 	checkClaudePrereqs,
 	checkCodexPrereqs,
 	checkLegacyLeftovers,
+	checkSecretsScan,
 }
 
 // Run evaluates the full check battery and returns every applicable

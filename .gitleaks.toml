@@ -1,0 +1,33 @@
+# gitleaks config for THIS repo's own history/staged-diff scans (ADR 10, ADR
+# 14): lefthook's pre-commit job (`gitleaks git --staged --no-banner`) and
+# the CI `gitleaks` job (`gitleaks git --no-banner .`, full history) both
+# auto-discover this file — gitleaks' own config precedence is
+# --config/-c, then $GITLEAKS_CONFIG, then $GITLEAKS_CONFIG_TOML, then
+# `<target path>/.gitleaks.toml` (verified against `gitleaks git --help`,
+# v8.30.1). It does NOT apply to `agent-brain scan` (internal/cli/scan.go),
+# which runs `gitleaks dir` against enrolled providers' plaintext
+# directories elsewhere on disk — those scans fall back to gitleaks'
+# embedded default ruleset, which is exactly what we want there.
+[extend]
+useDefault = true
+
+# STARTS EMPTY of allowlists: `gitleaks git --no-banner .` over develop's
+# full history (226 commits, 6.4 MB) ran CLEAN on 2026-07-09 (gitleaks
+# 8.30.1). Add an entry ONLY when a REAL fixture legitimately trips a rule
+# — gitleaks has no Tink-aware rule, so a committed base64 keyset or
+# armored-ciphertext fixture WILL trip `generic-api-key` (entropy >= 3.5 +
+# a "key"-family keyword) the moment one is committed. Every entry must be
+# path+rule-scoped with a one-line justification (verified against v8.30.1,
+# 2026-07-09), using one of:
+#
+#   [[allowlists]]                      # global, scoped by path only
+#   paths = ['''path/to/fixture\.ext''']  # why: <justification>
+#
+#   [[rules]]                           # rule-scoped: extends the named
+#   id = "generic-api-key"              # base rule instead of redefining
+#   [[rules.allowlists]]                # it — does not blank the rule's
+#   paths = ['''path/to/fixture\.ext''']  # own detection for other paths
+#
+# Never a blanket regex, and never disabling a rule outright. A REAL
+# finding (not a fixture) means STOP and escalate to the user — it is never
+# allowlisted.

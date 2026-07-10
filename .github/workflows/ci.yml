@@ -38,3 +38,26 @@ jobs:
           go-version-file: go.mod
       # govulncheck pinned for reproducibility; dependabot can't bump tool refs in run-lines, so bump manually.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0 # gitleaks git scans full commit history, not just HEAD
+      # Plain checksum-pinned binary, not gitleaks-action: keeps CI behavior
+      # byte-identical to the local lefthook hook (same binary, same
+      # invocation shape), adds zero third-party Action surface (ADR 12's
+      # SHA-pinning posture applies to an Action either way), and avoids
+      # gitleaks-action v3's custom-EULA license-key tripwire the day this
+      # repo ever moves under an org (ADR 14).
+      - name: install checksum-pinned gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb" # gitleaks_8.30.1_linux_x64.tar.gz, from the release's own checksums.txt
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | sha256sum -c -
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - run: gitleaks git --no-banner .

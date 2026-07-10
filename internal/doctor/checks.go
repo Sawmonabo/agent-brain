@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -459,4 +460,26 @@ func checkLegacyLeftovers(_ context.Context, deps Deps) (CheckResult, bool) {
 		}, true
 	}
 	return CheckResult{Name: name, Status: StatusOK, Detail: "no bash-era leftovers found"}, true
+}
+
+// checkSecretsScan is ADVISORY ONLY — ok or warn, NEVER fail — and it must
+// NEVER join SafetyGate (gate.go's membership rule: a check belongs there
+// only if a cycle cannot safely run while it fails AND running a cycle
+// cannot repair it; neither holds here, since gitleaks is an opt-in,
+// user-installed external tool that only `agent-brain scan` (internal/cli/
+// scan.go) shells out to, on demand — its absence has no bearing on
+// whether a sync cycle is safe to run). This just reports presence, the
+// same shape as checkGH but without checkGH's hard-fail severity: gh is a
+// v1 hard requirement (ADR 08), gitleaks is not.
+func checkSecretsScan(_ context.Context, _ Deps) (CheckResult, bool) {
+	const name = "secrets-scan"
+	path, err := exec.LookPath("gitleaks")
+	if err != nil {
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: "gitleaks not installed — `agent-brain scan` cannot run",
+			Fix:    "install gitleaks (`brew install gitleaks` on macOS; see https://github.com/gitleaks/gitleaks#installing otherwise)",
+		}, true
+	}
+	return CheckResult{Name: name, Status: StatusOK, Detail: "gitleaks installed at " + path}, true
 }
