@@ -78,7 +78,38 @@ func (e *Engine) integrate(ctx context.Context) (integrateOutcome, error) {
 	if len(conflicts) == 0 {
 		conflicts = rebaseConflicts
 	}
+	// Restore the worktree the failed ladder may have stranded before returning
+	// degraded — see restoreWorktreeToHead: this closes the smudge-failure
+	// data-loss class and MUST run on every non-Integrated return.
+	if err := e.restoreWorktreeToHead(ctx); err != nil {
+		return integrateOutcome{}, err
+	}
 	return degradeByPaths(conflicts), nil
+}
+
+// restoreWorktreeToHead re-checks-out every tracked path from HEAD, healing a
+// worktree a failed rebase/merge left diverged. It enforces the invariant:
+// integrate never returns non-Integrated with a worktree diverged from HEAD.
+//
+// Class it closes: a partial worktree update whose smudge fails mid-rebase/merge
+// — the local keyset cannot decrypt an upstream blob after a key rotation (or
+// any admin re-encrypt), so git deletes the old worktree file, fails to write
+// the new one, and its --abort does NOT restore the deletion (git treats the
+// half-applied change as a local edit to preserve). Left unhealed, the next
+// cycle's commitProjects `git add -A` stages that stray deletion and commits it
+// as a real memory deletion, which mirror-out propagates: silent data loss
+// (spec §5/§11).
+//
+// The heal cannot clobber legitimate work: integrate runs after mirror-in and
+// commitProjects (spec §4), so the worktree equals HEAD on entry, and a degraded
+// peer always smudges its OWN pre-rotation HEAD. A failure here (disk, unexpected
+// git state) is surfaced, never swallowed — proceeding past a failed heal would
+// re-open the exact data-loss window this closes.
+func (e *Engine) restoreWorktreeToHead(ctx context.Context) error {
+	if _, err := gitx.Run(ctx, e.checkout, "checkout", "--force", "HEAD", "--", "."); err != nil {
+		return fmt.Errorf("integrate: restore worktree after degrade: %w", err)
+	}
+	return nil
 }
 
 // conflictedPaths lists unmerged paths while a rebase/merge conflict is

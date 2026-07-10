@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,5 +158,27 @@ func TestIntegrateMetaConflictDegradesAll(t *testing.T) {
 	}
 	if outcome.Integrated || !outcome.DegradedAll {
 		t.Fatalf("outcome = %+v, want DegradedAll", outcome)
+	}
+}
+
+// TestRestoreWorktreeToHeadPropagatesFailure pins addition (1) of the
+// degrade->recover fix: a failed heal must SURFACE, never be swallowed —
+// continuing past a failed heal would re-open the exact data-loss window it
+// closes. A canceled context kills the checkout mid-run; restoreWorktreeToHead
+// must return that error wrapping context.Canceled (the same execution-failure
+// contract recoverState holds in recover_test.go).
+func TestRestoreWorktreeToHeadPropagatesFailure(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := engine.restoreWorktreeToHead(ctx)
+	if err == nil {
+		t.Fatal("restoreWorktreeToHead returned nil under a canceled context; a failed heal must surface, never be swallowed")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("restoreWorktreeToHead error does not wrap context.Canceled: %v", err)
 	}
 }

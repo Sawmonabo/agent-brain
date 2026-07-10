@@ -217,3 +217,81 @@ func TestKeyRotationRecoveryViaKeyImport(t *testing.T) {
 		t.Fatalf("B fact2 after recovery = %q, want %q", got, rotText2)
 	}
 }
+
+// TestKeyRotationDegradeThenRecoverKeepsAllFacts is the characterization test
+// for the degrade->recover data-loss class (plan Task 4, integrate worktree
+// heal). It runs the FULL realistic sequence a stale peer takes: a degraded
+// cycle on the old key (which, pre-fix, stranded an uncommitted worktree
+// deletion — a fast-forward rebase deletes the old blob, then cannot smudge the
+// rotated ciphertext, and neither git abort restores it), THEN a key import and
+// recovery cycle (where, pre-fix, commitProjects `git add -A` committed that
+// stray deletion as a real memory deletion and mirror-out propagated it). Both
+// facts must survive B's provider dir AND the wire. This FAILS before the
+// integrate heal and passes after — the two component tests above never take
+// the degrade-then-recover path, so only this test pins the bug.
+func TestKeyRotationDegradeThenRecoverKeepsAllFacts(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", os.Getenv("AGENT_BRAIN_CONFIG_DIR"))
+	a, b, bare, kaDir, kbDir := twoMachinesDistinctKeysets(t)
+
+	repoPath1 := "alpha/claude/" + rotFact1
+	repoPath2 := "alpha/claude/" + rotFact2
+
+	// A writes both facts and syncs; B (still on the shared pre-rotation key)
+	// syncs and reads them.
+	useKeyset(kaDir)
+	a.write(t, rotFact1, rotText1)
+	a.write(t, rotFact2, rotText2)
+	a.sync(t)
+	useKeyset(kbDir)
+	b.sync(t)
+	if got := b.read(t, rotFact2); got != rotText2 {
+		t.Fatalf("B pre-rotation fact2 = %q, want %q", got, rotText2)
+	}
+
+	// A rotates and re-encrypts every blob under the new primary.
+	useKeyset(kaDir)
+	if err := keys.Rotate(filepath.Join(kaDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.engine.ReencryptAll(ctx); err != nil {
+		t.Fatalf("ReencryptAll: %v", err)
+	}
+
+	// (c) Degraded cycle: B is still on the old key, so its fast-forward
+	// integrate cannot smudge the rotated blobs and alpha degrades. This is the
+	// cycle that strands the worktree deletion of fact2 pre-fix.
+	useKeyset(kbDir)
+	reportC, errC := b.engine.Sync(ctx, []repo.Unit{b.unit})
+	if errC != nil {
+		t.Fatalf("B degraded sync errored instead of degrading: %v", errC)
+	}
+	if !contains(reportC.Degraded, "alpha") {
+		t.Fatalf("B degraded sync did not degrade alpha: Degraded=%v", reportC.Degraded)
+	}
+
+	// (d) Recovery: B imports the rotated keyset and syncs. It must recover with
+	// BOTH facts intact — not silently commit and propagate the stranded
+	// deletion of fact2 that the degraded cycle left in the worktree.
+	copyKeyset(t, kbDir, kaDir)
+	useKeyset(kbDir)
+	reportD := b.sync(t)
+	if len(reportD.Degraded) != 0 {
+		t.Fatalf("B still degraded after importing the rotated keyset: %v", reportD.Degraded)
+	}
+
+	// Both facts survive in B's provider dir...
+	if got := b.read(t, rotFact1); got != rotText1 {
+		t.Fatalf("fact1 after degrade->recover = %q, want %q", got, rotText1)
+	}
+	if got := b.read(t, rotFact2); got != rotText2 {
+		t.Fatalf("fact2 after degrade->recover = %q, want %q — the degraded cycle's stranded worktree deletion was committed as a real deletion", got, rotText2)
+	}
+	// ...and on the wire both blobs are still present, ciphertext, no plaintext.
+	after1 := remoteBlob(t, bare, repoPath1)
+	after2 := remoteBlob(t, bare, repoPath2)
+	if !strings.HasPrefix(after1, magicPrefix) || !strings.HasPrefix(after2, magicPrefix) {
+		t.Fatal("a recovered blob is not agent-brain ciphertext on the wire")
+	}
+	assertNoPlaintextOnWire(t, bare, rotText1, rotText2)
+}
