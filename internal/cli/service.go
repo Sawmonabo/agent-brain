@@ -59,9 +59,6 @@ func newServiceCmd() *cobra.Command {
 			Use:   "install",
 			Short: "Install the user service (launchd / systemd --user)",
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				if service.IsWSL2() {
-					return fmt.Errorf("service install is not supported on WSL2 — WSL lacks a reliable login service manager; on-demand mode arrives in Phase 4. Run `agent-brain daemon run` in a terminal for now")
-				}
 				controller, err := controllerFor()
 				if err != nil {
 					return err
@@ -90,12 +87,7 @@ func newServiceCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				status, err := controller.Status()
-				if err != nil {
-					return err
-				}
-				_, err = fmt.Fprintf(cmd.OutOrStdout(), "service: %s\n", status)
-				return err
+				return runServiceStatus(cmd.OutOrStdout(), controller)
 			},
 		},
 		newServiceLogsCmd(),
@@ -107,9 +99,12 @@ func newServiceCmd() *cobra.Command {
 // second, idempotent install against an already-installed unit
 // (service.ErrAlreadyInstalled, matched with errors.Is — never a string
 // match, Task 3b) prints a nothing-to-do line and exits 0 rather than
-// failing; any other error still fails the command.
+// failing; any other error still fails the command. On WSL2, Install
+// also best-effort enables systemd user lingering so the resident unit
+// survives past the login session (Task 3c); a non-empty warning is
+// printed but never turns a successful install into a failure.
 func runServiceInstall(out io.Writer, controller service.Controller) error {
-	err := controller.Install()
+	warning, err := controller.Install()
 	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return fmt.Errorf("service install: %w", err)
 	}
@@ -117,8 +112,34 @@ func runServiceInstall(out io.Writer, controller service.Controller) error {
 	if errors.Is(err, service.ErrAlreadyInstalled) {
 		message = "service install: already installed — nothing to do"
 	}
-	_, printErr := fmt.Fprintln(out, message)
+	if _, printErr := fmt.Fprintln(out, message); printErr != nil {
+		return printErr
+	}
+	if warning == "" {
+		return nil
+	}
+	_, printErr := fmt.Fprintln(out, warning)
 	return printErr
+}
+
+// runServiceStatus reports service state plus, on WSL2, the systemd
+// user-lingering advisory line (Task 3c). LingerStatus returns "" when
+// there is nothing to report (non-WSL2, or the query itself failed), so
+// the advisory line is silently omitted rather than printed empty.
+func runServiceStatus(out io.Writer, controller service.Controller) error {
+	status, err := controller.Status()
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "service: %s\n", status); err != nil {
+		return err
+	}
+	linger := controller.LingerStatus()
+	if linger == "" {
+		return nil
+	}
+	_, err = fmt.Fprintln(out, linger)
+	return err
 }
 
 // runServiceUninstall mirrors runServiceInstall's idempotent treatment

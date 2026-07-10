@@ -476,21 +476,18 @@ func stepConfigFile(_ context.Context, state *initState) error {
 }
 
 // stepService installs and starts the login service unless --skip-service
-// was given. WSL2 (service.IsWSL2()) has no reliable login service
-// manager (ADR 04; on-demand mode is Phase 4) — init prints the same
-// guidance the standalone `service install` command returns as an error
-// (service.go), but as information rather than a failure: init's overall
-// success must not depend on a service manager WSL2 does not have.
-// Install is idempotent via service.ErrAlreadyInstalled (errors.Is —
-// Task 3b), not a string match on kardianos's own per-OS-backend error
-// text; internal/service.mapErr is the only place that text is inspected.
+// was given. Install is idempotent via service.ErrAlreadyInstalled
+// (errors.Is — Task 3b), not a string match on kardianos's own per-OS-
+// backend error text; internal/service.mapErr is the only place that
+// text is inspected. On WSL2, Install also best-effort enables systemd
+// user lingering (Task 3c) so the resident unit survives past this
+// init run's own login session — a non-fatal warning is printed rather
+// than failing init; the trailing linger advisory line (LingerStatus)
+// reports state the same way the standalone `service status` command
+// does.
 func stepService(_ context.Context, state *initState) error {
 	if state.skipService {
 		_, err := fmt.Fprintln(state.out, "service: skipped (--skip-service)")
-		return err
-	}
-	if service.IsWSL2() {
-		_, err := fmt.Fprintln(state.out, "service: not installed — WSL2 has no reliable login service manager (on-demand mode arrives in Phase 4); run `agent-brain daemon run` in a terminal, or `agent-brain service install` later from a native Linux/macOS host")
 		return err
 	}
 
@@ -498,8 +495,14 @@ func stepService(_ context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	if err := controller.Install(); err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
+	warning, err := controller.Install()
+	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return err
+	}
+	if warning != "" {
+		if _, err := fmt.Fprintln(state.out, warning); err != nil {
+			return err
+		}
 	}
 	if err := controller.Start(); err != nil {
 		return err
@@ -508,8 +511,14 @@ func stepService(_ context.Context, state *initState) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(state.out, "service: %s\n", status)
-	return err
+	if _, err := fmt.Fprintf(state.out, "service: %s\n", status); err != nil {
+		return err
+	}
+	if linger := controller.LingerStatus(); linger != "" {
+		_, err := fmt.Fprintln(state.out, linger)
+		return err
+	}
+	return nil
 }
 
 // stepEnrollment offers every discovered-but-unenrolled memory root for

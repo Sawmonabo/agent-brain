@@ -23,14 +23,16 @@ type fakeServiceController struct {
 
 	uninstallCalls int
 	uninstallErr   error
+
+	lingerStatus string
 }
 
-func (f *fakeServiceController) Install() error {
+func (f *fakeServiceController) Install() (string, error) {
 	f.installCalls++
 	if f.installCalls > 1 {
-		return service.ErrAlreadyInstalled
+		return f.installWarning, service.ErrAlreadyInstalled
 	}
-	return f.installErr
+	return f.installWarning, f.installErr
 }
 
 func (f *fakeServiceController) Uninstall() error {
@@ -44,6 +46,7 @@ func (f *fakeServiceController) Uninstall() error {
 func (f *fakeServiceController) Start() error                    { return nil }
 func (f *fakeServiceController) Stop() error                     { return nil }
 func (f *fakeServiceController) Status() (service.Status, error) { return service.StatusRunning, nil }
+func (f *fakeServiceController) LingerStatus() string            { return f.lingerStatus }
 
 // --- 3b: idempotent install/uninstall UX ---
 
@@ -80,6 +83,57 @@ func TestRunServiceInstallPropagatesRealErrors(t *testing.T) {
 	var out bytes.Buffer
 	if err := runServiceInstall(&out, controller); err == nil {
 		t.Fatal("runServiceInstall: want the real error to propagate")
+	}
+}
+
+// --- 3c: WSL2 systemd lingering ---
+
+// TestRunServiceInstallPrintsLingerWarning proves a non-empty warning
+// from Install (Task 3c: a WSL2 enable-linger failure) is printed after
+// the success line — informational only, never turns a successful
+// install into a failing command.
+func TestRunServiceInstallPrintsLingerWarning(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{installWarning: "WARNING: failed to enable systemd lingering for testuser — run `loginctl enable-linger testuser` by hand"}
+	var out bytes.Buffer
+	if err := runServiceInstall(&out, controller); err != nil {
+		t.Fatalf("runServiceInstall: %v, want nil (a linger warning must not fail install)", err)
+	}
+	if !strings.Contains(out.String(), "loginctl enable-linger testuser") {
+		t.Fatalf("runServiceInstall output = %q, want the linger warning printed", out.String())
+	}
+}
+
+// TestRunServiceStatusPrintsLingerAdvisory proves `service status` prints
+// the WSL2 linger advisory line after the plain status line when the
+// controller reports one.
+func TestRunServiceStatusPrintsLingerAdvisory(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{lingerStatus: "linger: enabled (service will survive logout)"}
+	var out bytes.Buffer
+	if err := runServiceStatus(&out, controller); err != nil {
+		t.Fatalf("runServiceStatus: %v", err)
+	}
+	if !strings.Contains(out.String(), "running") {
+		t.Fatalf("runServiceStatus output = %q, want the plain status line", out.String())
+	}
+	if !strings.Contains(out.String(), "linger: enabled") {
+		t.Fatalf("runServiceStatus output = %q, want the linger advisory line", out.String())
+	}
+}
+
+// TestRunServiceStatusSilentWhenNoLingerAdvisory proves the advisory
+// line is omitted entirely (not printed empty) on non-WSL2, where
+// LingerStatus reports "".
+func TestRunServiceStatusSilentWhenNoLingerAdvisory(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+	var out bytes.Buffer
+	if err := runServiceStatus(&out, controller); err != nil {
+		t.Fatalf("runServiceStatus: %v", err)
+	}
+	if strings.Contains(out.String(), "linger") {
+		t.Fatalf("runServiceStatus output = %q, want no linger line when LingerStatus() is empty", out.String())
 	}
 }
 

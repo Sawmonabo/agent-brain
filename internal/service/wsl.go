@@ -5,8 +5,15 @@ import (
 	"strings"
 )
 
-// IsWSL2 reports whether we're inside WSL (ADR 04: service install is
-// refused there; WSL2 runs on-demand mode, Phase 4).
+// IsWSL2 reports whether we're inside WSL. Task 3c: this drives
+// kardianosController's best-effort `loginctl enable-linger` on Install
+// and LingerStatus's advisory line on `service status` — WSL2 has no
+// display manager or login-session keyring to keep a resident systemd
+// --user unit running past logout, unlike native macOS/Linux session
+// management. It no longer gates whether service install runs at all;
+// ADR 04's original WSL2 on-demand-mode split is a pragmatic
+// resident+linger install for now, pending Task 10.7's re-evaluation
+// against real measurements.
 func IsWSL2() bool { return detectWSL2(os.ReadFile) }
 
 // detectWSL2 takes the reader as a seam so both branches unit-test on
