@@ -592,17 +592,26 @@ func (d *Daemon) record(ctx context.Context, summary *api.SyncSummary, synced []
 	d.recordOutcome(summary, synced)
 }
 
-// recordOutcome stores one cycle's result under d.mu: the last summary, the
-// folder-keyed degraded snapshot, and each synced unit's last-cycle outcome
-// (keyed by folder — a cycle degrades folders and errors whole-fleet). Only
-// folders synced THIS cycle update their last-cycle, so a filtered `sync
-// --project X` never rewrites another folder's history. synced is nil when no
-// cycle ran (e.g. the registry failed to load), leaving last-cycle untouched.
+// recordOutcome stores one cycle's result under d.mu: the last summary, and —
+// scoped to the folders this cycle actually synced — each folder's degraded
+// HEALTH flag and its last-cycle outcome (keyed by folder; a cycle degrades
+// folders and errors whole-fleet). Scoping to synced folders is load-bearing: a
+// filtered `sync --project X` must rewrite neither another folder's last-cycle
+// nor its degraded flag, and synced is nil when no cycle ran (registry load
+// failed), leaving both untouched.
 func (d *Daemon) recordOutcome(summary *api.SyncSummary, synced []repo.Unit) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.lastSync = summary
-	d.degraded = map[string]bool{}
+	// Clear each synced folder's degraded flag, then re-mark the ones this cycle
+	// reported degraded. NOT a wholesale wipe: that marked unsynced folders
+	// healthy — a false HEALTH=ok contradicting their still-degraded LastCycle.
+	// Orphan flags for since-untracked folders may linger, but Projects() (the
+	// only reader of d.degraded) looks them up by enrolled unit, so they are
+	// unreachable — not worth registry plumbing here to prune.
+	for _, u := range synced {
+		delete(d.degraded, u.Folder)
+	}
 	for _, folder := range summary.Degraded {
 		d.degraded[folder] = true
 	}

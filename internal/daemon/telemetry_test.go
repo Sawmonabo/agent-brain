@@ -149,6 +149,61 @@ func TestRecordOutcomeTransitions(t *testing.T) {
 	}
 }
 
+// TestRecordOutcomeScopesDegradedToSyncedFolders pins the HEALTH (degraded)
+// bookkeeping: a cycle rewrites the degraded flag ONLY for the folders it synced.
+// A filtered `sync --project X` must never silently mark an unsynced-but-degraded
+// folder healthy, and a nil-synced cycle (registry load failed) must preserve
+// every flag. Absorbs the review-t6 observation: the old wholesale
+// `d.degraded = map[string]bool{}` wipe reported HEALTH=ok for a folder whose
+// (correctly preserved) LastCycle still read degraded.
+func TestRecordOutcomeScopesDegradedToSyncedFolders(t *testing.T) {
+	t.Parallel()
+	unitA := repo.Unit{Provider: "claude", Folder: "alpha", LocalDir: "/l/alpha"}
+	unitB := repo.Unit{Provider: "claude", Folder: "beta", LocalDir: "/l/beta"}
+	d := telemetryDaemon(t, unitA, unitB)
+
+	degradedByFolder := func() map[string]bool {
+		byFolder := map[string]bool{}
+		for _, u := range d.Projects().Units {
+			byFolder[u.Folder] = u.Degraded
+		}
+		return byFolder
+	}
+
+	t0 := time.Date(2026, 7, 10, 9, 0, 0, 0, time.UTC)
+	// Full cycle 1: beta degraded, alpha clean.
+	d.recordOutcome(&api.SyncSummary{At: t0, Degraded: []string{"beta"}}, []repo.Unit{unitA, unitB})
+	if got := degradedByFolder(); got["alpha"] || !got["beta"] {
+		t.Fatalf("after full cycle 1 = %v, want alpha ok / beta degraded", got)
+	}
+
+	// (a) Filtered cycle for alpha only (alpha still clean): beta was NOT synced,
+	// so its degraded flag must survive — the wholesale wipe used to clear it,
+	// falsely reporting HEALTH=ok for a folder this cycle never touched.
+	t1 := t0.Add(time.Minute)
+	d.recordOutcome(&api.SyncSummary{At: t1}, []repo.Unit{unitA})
+	if got := degradedByFolder(); got["alpha"] || !got["beta"] {
+		t.Errorf("after filtered cycle for alpha = %v, want beta STILL degraded (an unsynced folder must not be marked healthy)", got)
+	}
+
+	// (b) Full cycle where beta now re-syncs clean: its flag clears.
+	t2 := t1.Add(time.Minute)
+	d.recordOutcome(&api.SyncSummary{At: t2}, []repo.Unit{unitA, unitB})
+	if got := degradedByFolder(); got["alpha"] || got["beta"] {
+		t.Errorf("after clean full cycle = %v, want both healthy (beta re-synced clean)", got)
+	}
+
+	// (c) nil-synced cycle (registry failed to load): nothing synced, so every
+	// flag is preserved — the wipe used to clear all HEALTH on a no-op cycle.
+	t3 := t2.Add(time.Minute)
+	d.recordOutcome(&api.SyncSummary{At: t3, Degraded: []string{"beta"}}, []repo.Unit{unitA, unitB})
+	t4 := t3.Add(time.Minute)
+	d.recordOutcome(&api.SyncSummary{At: t4, Error: "load local registry: boom"}, nil)
+	if got := degradedByFolder(); got["alpha"] || !got["beta"] {
+		t.Errorf("after nil-synced cycle = %v, want beta's degraded flag preserved", got)
+	}
+}
+
 // TestSetWatchStatesReplacesAndPrunes proves a rebuild replaces the watch-state
 // snapshot wholesale and prunes trigger counts for roots no longer watched
 // (untracked), while still-watched roots keep their counts across the rebuild.
