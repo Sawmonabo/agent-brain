@@ -325,6 +325,22 @@ Spec §5 designed rotation into the key model from day one ("Tink keysets are na
 
 **Review:** standard per-task review; special attention: the check can NEVER reach SafetyGate (gate.go untouched + its hardcoded list), Warn-vs-Info boundaries (empty states never Warn), probe cost (one blob, one decrypt — no repo walk).
 
+### Task 4.6: cycle-start heal of stray worktree deletions — crash-window data-loss sibling (added 2026-07-10, standing no-deferral directive)
+
+**Why this task exists:** T4 execution found and fixed (in-task) a silent data-loss bug: a degraded integrate's `git rebase`/`git merge` can partially update the worktree before the smudge fails on an undecryptable upstream blob, and the git `--abort`s restore HEAD+index but NOT the worktree — leaving a stray unstaged deletion that the next cycle's `commitProjects` (`git add -A`, commit.go:113) commits and mirror-out propagates fleet-wide. T4's heal closes the main path (integrate.go restores the worktree to HEAD on every degraded/failed return). The SIBLING this task closes: if the daemon CRASHES in the window between the failed rebase and T4's heal, the stray deletion survives to the next cycle and the amplifier still fires. The clean fix lives at cycle start (prepareCheckout/recoverState) and deliberately overturns Task 1's pinned semantic ("mixed reset — never touch the worktree; mirror-in owns worktree edits"), so it is its own designed task with its own review — not a rider on T4. **Sequencing: after the Q2 gate closes** (needs T4's integrate heal + rotate harness merged).
+
+**The safe signature (established by T4's instrumentation):** a legitimate memory deletion ONLY ever appears as a STAGED `git rm` created by mirror-in in the same cycle; an UNSTAGED (worktree-only) deletion at cycle start is ALWAYS git residue (interrupted checkout-update, crash mid-integrate) and never user intent. Restoring such files from HEAD is therefore always safe: if the provider copy is also gone (real deletion interrupted pre-staging), mirror-in re-detects it THIS cycle and stages the deletion properly; if the provider copy exists (residue), restoration prevents the loss.
+
+**Files:**
+- Modify: `internal/engine/recover.go` (recoverState grows a worktree-deletion heal after the staged-index reset: list unstaged deletions (`git ls-files --deleted`), restore them from HEAD (`git checkout --quiet HEAD -- <paths>` batched); unborn-HEAD guard already exists), `internal/engine/recover_test.go` (REVISED EXPECTATIONS — deliberate, reviewed semantics change: the two Task-1 rows asserting "worktree untouched" become "staged residue reset AND stray unstaged deletions restored"; add rows: residue-restored (provider present), interrupted-real-deletion (provider absent → file restored at cycle start, then the cycle's mirror-in re-stages the deletion — asserted via a full-cycle test), heal-failure propagation (canceled ctx)), `test/e2e/rotate_test.go` or a sibling e2e (crash-window characterization: construct the stranded post-abort state directly — stray `_D` + provider file present — run a cycle, assert NO deletion commit and the fact survives).
+- Do NOT touch integrate.go (T4 owns that heal), mirror_in/mirror_out semantics, or the merge driver.
+
+- [ ] **Step 1 (RED):** e2e crash-window characterization + recover_test rows. Run → FAIL (deletion gets committed today).
+- [ ] **Step 2 (GREEN):** implement the recoverState heal (deletions only — never restores modifications; comment states the signature rationale verbatim). Package + targeted e2e foreground → PASS.
+- [ ] **Step 3:** full suite foreground `(ulimit -u 1400; go test ./... -race -count=1)` + adversarial corpus + `golangci-lint run` + `gofumpt -l .`. Commit `fix(engine): recoverState restores stray worktree deletions — crash-window loss (Task 4.6)`.
+
+**Review:** standard per-task review, engine diff = Critical-class scrutiny; special attention: the T1 expectation change is EXPLICIT and justified in both test comments and the report; deletions-only scope (a stray worktree MODIFICATION is still out of scope — mirror-in overwrites those legitimately); no behavior change for staged deletions (legitimate path).
+
 ### Task 5: gitleaks — repo CI/hook scanning + `agent-brain scan` for memory plaintext (ADRs 10/14)
 
 Two deliverables with one tool (gitleaks v8.30.1 — runtime/CI dependency, NEVER vendored, same posture as gh):
