@@ -1,11 +1,7 @@
 package cli
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,15 +11,6 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
-
-// conflictRecord is the one shape shared by the merge driver's writer
-// (logConflict, merge.go) and this file's reader: a round-trip test pins
-// that the two never drift apart.
-type conflictRecord struct {
-	Time string `json:"time"`
-	Path string `json:"path"`
-	Mode string `json:"mode"`
-}
 
 // defaultConflictsLimit bounds `conflicts list` output absent --limit.
 const defaultConflictsLimit = 50
@@ -77,38 +64,24 @@ func newConflictsShowCmd() *cobra.Command {
 	}
 }
 
-// runConflictsList reads the conflict log directly (a pure file read —
-// readers don't violate the single-writer invariant, spec §5/§11) and
-// prints up to limit records, newest first. logConflict appends in
-// chronological order, so reversing the read order is sufficient — no
-// timestamp parsing/sorting is needed. It only ever reads the live log
-// path, so a Task 6 `.1` rotation sibling sitting alongside it is
-// automatically tolerated (never touched, never mistaken for the live file).
+// runConflictsList reads the conflict log through config.ReadConflictLog (a
+// pure file read — readers don't violate the single-writer invariant, spec
+// §5/§11) and prints up to limit records, newest first. The reader returns
+// records in write order and logConflict appends chronologically, so reversing
+// is sufficient — no timestamp parsing/sorting is needed. Newest-first ordering,
+// the limit, and the empty-state message are presentation and live here, not in
+// the shared reader. Only the live log path is read, so a Task 6 `.1` rotation
+// sibling sitting alongside it is automatically tolerated (never touched, never
+// mistaken for the live file).
 func runConflictsList(cmd *cobra.Command, limit int) error {
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		return err
 	}
 	logPath := paths.ConflictLogFile()
-	data, err := os.ReadFile(logPath) //nolint:gosec // G304: logPath is the program-derived conflict-log location (config.Paths), not untrusted input
+	records, err := config.ReadConflictLog(logPath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			_, printErr := fmt.Fprintf(cmd.OutOrStdout(), "no conflicts logged at %s\n", logPath)
-			return printErr
-		}
 		return err
-	}
-
-	var records []conflictRecord
-	for _, line := range bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n")) {
-		if len(line) == 0 {
-			continue
-		}
-		var record conflictRecord
-		if err := json.Unmarshal(line, &record); err != nil {
-			return fmt.Errorf("parse conflict log %s: %w", logPath, err)
-		}
-		records = append(records, record)
 	}
 	if len(records) == 0 {
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "no conflicts logged at %s\n", logPath)

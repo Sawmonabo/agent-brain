@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/crypto"
 )
 
@@ -67,7 +68,7 @@ func logConflict(pathname string) {
 		return
 	}
 	defer func() { _ = file.Close() }()
-	line, err := json.Marshal(conflictRecord{
+	line, err := json.Marshal(config.ConflictRecord{
 		Time: time.Now().UTC().Format(time.RFC3339),
 		Path: pathname,
 		Mode: "fact",

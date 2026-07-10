@@ -34,6 +34,7 @@ func Root() *cobra.Command {
 		newUntrackCmd(),
 		newMigrateCmd(),
 		newScanCmd(),
+		newDashboardCmd(),
 	)
 	return root
 }
