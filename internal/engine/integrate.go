@@ -59,14 +59,18 @@ func (e *Engine) integrate(ctx context.Context) (outcome integrateOutcome, err e
 		return integrateOutcome{Integrated: true}, nil
 	}
 
+	// PLACEMENT CONSTRAINT: this deferred heal MUST stay registered before the
+	// first worktree-touching op (the rebase just below). The invariant's truth
+	// depends on it — any op that can mutate the worktree has to sit AFTER this
+	// line, or a non-Integrated return from that op escapes the heal. The returns
+	// ABOVE it need none: fetch and rev-list are read-only, so the worktree still
+	// equals HEAD there.
+	//
 	// From here the rebase/merge ladder can partially update the worktree and
 	// then smudge-fail (a stale key cannot decrypt a rotated upstream blob),
 	// stranding the worktree diverged from HEAD even after git's own --abort.
-	// This deferred heal restores it on EVERY non-Integrated return past this
-	// point — a conflict degrade OR an infra/ctx-cancel failure in any rung of
-	// the ladder — which is what makes the invariant above true. The returns
-	// ABOVE need no heal: fetch and rev-list are read-only, so the worktree
-	// still equals HEAD there.
+	// The heal restores it on EVERY non-Integrated return past this point — a
+	// conflict degrade OR an infra/ctx-cancel failure in any rung of the ladder.
 	defer func() { err = e.healAfterFailedIntegrate(outcome, err) }()
 
 	rebase, rebaseErr := gitx.RunStatus(ctx, e.checkout, "rebase", upstreamRef)
@@ -167,7 +171,7 @@ func (e *Engine) conflictedPaths(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var paths []string
-	for _, p := range strings.Split(res.Stdout, "\x00") {
+	for p := range strings.SplitSeq(res.Stdout, "\x00") {
 		if p != "" {
 			paths = append(paths, p)
 		}
