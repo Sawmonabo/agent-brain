@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,39 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/daemon"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
+
+// quiesceHoldForInit is how many seconds init's repo-state step and
+// doctor --fix ask a resident daemon to hold its cycles during checkout
+// surgery: comfortably longer than the surgery, well under the daemon's 600s
+// clamp, and auto-released if this process crashes mid-way.
+const quiesceHoldForInit = 120
+
+// tryAPIClient returns a client to a daemon answering its socket RIGHT NOW, or
+// nil if none does — a non-blocking probe (contrast pollForDaemonClient's
+// bounded wait). init's repo-state step and doctor --fix use it to quiesce an
+// already-resident daemon before checkout surgery; a first-ever run with no
+// daemon yet gets nil and proceeds exactly as before.
+func tryAPIClient(ctx context.Context) *api.Client {
+	client, err := newAPIClient()
+	if err != nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := client.Status(probeCtx); err != nil {
+		return nil
+	}
+	return client
+}
+
+// resumeQuietly releases a hold best-effort, on a short independent deadline so
+// a hung or shutting-down daemon can never wedge the caller's return path; the
+// daemon's TTL auto-release is the ultimate backstop if this send is lost.
+func resumeQuietly(client *api.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = client.Resume(ctx)
+}
 
 // newAPIClient dials the daemon, translating a dead socket into guidance
 // instead of a raw dial error. It validates the socket path BEFORE dialing
@@ -134,6 +168,14 @@ func newStatusCmd() *cobra.Command {
 			// leave the human surface saying "uninitialized" with no reason.
 			if status.StateDetail != "" {
 				report.printf("  detail: %s\n", status.StateDetail)
+			}
+			// A hold pauses cycles and refuses sync/mutations; say so on the
+			// human surface (NO_COLOR-safe plain text), not only in --json, or
+			// `status` would look idle for no visible reason.
+			if status.QuiescedUntil != nil {
+				report.printf("quiesced until %s (%s remaining)\n",
+					status.QuiescedUntil.Format("2006-01-02 15:04:05 MST"),
+					time.Until(*status.QuiescedUntil).Round(time.Second))
 			}
 			if status.LastSync == nil {
 				report.println("last sync: never")

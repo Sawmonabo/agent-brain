@@ -26,6 +26,8 @@ type controller interface {
 	Track(ctx context.Context, req api.TrackRequest) (api.TrackResponse, error)
 	Untrack(ctx context.Context, req api.UntrackRequest) (api.UntrackResponse, error)
 	Migrate(ctx context.Context, req api.MigrateRequest) (api.MigrateResponse, error)
+	Quiesce(seconds int) api.QuiesceResponse
+	Resume() api.QuiesceResponse
 }
 
 // peerUIDFunc extracts the connecting process's UID from a unix socket
@@ -96,6 +98,25 @@ func newServer(ctrl controller, peerUID peerUIDFunc) *http.Server {
 	mux.HandleFunc("/v0/track", postHandler(ctrl.Track))
 	mux.HandleFunc("/v0/untrack", postHandler(ctrl.Untrack))
 	mux.HandleFunc("/v0/migrate", postHandler(ctrl.Migrate))
+	// /v0/quiesce carries both verbs on one route: POST sets/extends the hold
+	// (clamped, body api.QuiesceRequest), DELETE releases it. Both reply with
+	// api.QuiesceResponse — the resulting deadline (zero = released). Clamp
+	// and last-writer-wins live in the controller (daemon.go), not here.
+	mux.HandleFunc("/v0/quiesce", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			var req api.QuiesceRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, ctrl.Quiesce(req.Seconds))
+		case http.MethodDelete:
+			writeJSON(w, ctrl.Resume())
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
 
 	return &http.Server{
 		Handler: requireSameUser(mux),

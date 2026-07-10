@@ -40,6 +40,23 @@ const (
 	adminWaitTimeout = 60 * time.Second
 )
 
+// quiesceMin and quiesceMax bound a requested quiesce TTL (Phase-4 F2): long
+// enough to cover init/doctor's checkout surgery, short enough that a crashed
+// caller cannot wedge the daemon for long — auto-release at the deadline is
+// the backstop, and the ceiling caps the worst case.
+const (
+	quiesceMin = 1 * time.Second
+	quiesceMax = 600 * time.Second
+)
+
+// errQuiesced is the refusal an explicit sync or a mutating op returns while a
+// hold is active — it names the expiry so the caller knows when to retry, and
+// says who can lift it early (the CLI that requested the hold). Silently
+// queueing the op would defeat the point of quiescing.
+func errQuiesced(until time.Time) error {
+	return fmt.Errorf("daemon quiesced until %s — retry after, or release with the CLI that requested it", until.Format(time.RFC3339))
+}
+
 // statusError carries an HTTP status code for the server's error envelope
 // (spec §7: an unknown --project folder is a 400, not a 500).
 type statusError struct {
@@ -108,6 +125,13 @@ type Daemon struct {
 	stateDetail string
 	lastSync    *api.SyncSummary
 	degraded    map[string]bool
+	// quiescedUntil is the deadline of an active hold (POST /v0/quiesce),
+	// zero when not quiesced. It shares d.mu with the state above: "may an
+	// automatic cycle start now?" must be one atomic read, or a cycle could
+	// slip through between a quiesce write and the loop's check. Auto-release
+	// needs no timer — the loop compares the deadline against the wall clock
+	// each cycle, and a stale deadline simply reads as not-quiesced.
+	quiescedUntil time.Time
 
 	syncRequests  chan syncRequest
 	adminRequests chan adminRequest
@@ -312,19 +336,33 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		}
 	}
 
+	// runAutomatic gates the tick/watch/retry cycles behind the quiesce hold:
+	// while quiesced they are SKIPPED (one log line), not rescheduled — the
+	// next tick fires normally after the deadline passes, so auto-release
+	// needs no timer. Explicit /v0/sync and mutations do NOT funnel here;
+	// they are refused synchronously at their handlers (TriggerSync,
+	// submitAdmin) so the caller learns the expiry instead of blocking.
+	runAutomatic := func(reason, filter string) {
+		if until, held := d.quiesced(time.Now()); held {
+			logger.Info("cycle skipped: quiesced", "reason", reason, "until", until.Format(time.RFC3339))
+			return
+		}
+		runCycle(reason, filter)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case trigger := <-live.triggers:
-			runCycle(trigger.Reason, "")
+			runAutomatic(trigger.Reason, "")
 		case err := <-watchDied:
 			logger.Error("watch manager died — rebuilding", "error", err)
 			live = rebuildWatcher(ctx, watchCfg, live, live.watched, watchDied, logger)
 		case <-ticker.C:
-			runCycle("ticker", "")
+			runAutomatic("ticker", "")
 		case <-retryC:
-			runCycle("retry", "")
+			runAutomatic("retry", "")
 		case request := <-d.syncRequests:
 			runCycle("manual", request.filter)
 			d.mu.Lock()
@@ -584,11 +622,13 @@ func hostname() string {
 
 // --- controller implementation (Task 10 interface) ---
 
-// Status implements controller.
+// Status implements controller. QuiescedUntil is reported only while a hold
+// is genuinely active (deadline in the future) — an expired deadline reads as
+// nil, so status never advertises a hold auto-release already lifted.
 func (d *Daemon) Status() api.StatusResponse {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return api.StatusResponse{
+	response := api.StatusResponse{
 		Version:     d.cfg.Version,
 		State:       d.state,
 		StateDetail: d.stateDetail,
@@ -596,6 +636,48 @@ func (d *Daemon) Status() api.StatusResponse {
 		StartedAt:   d.startedAt,
 		LastSync:    d.lastSync,
 	}
+	if !d.quiescedUntil.IsZero() && time.Now().Before(d.quiescedUntil) {
+		until := d.quiescedUntil
+		response.QuiescedUntil = &until
+	}
+	return response
+}
+
+// quiesced reports whether a hold is active as of now, returning the deadline
+// for the skip-log / refusal message. The read is a single lock so a cycle
+// can never slip through between a quiesce write and this check.
+func (d *Daemon) quiesced(now time.Time) (time.Time, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.quiescedUntil.IsZero() || !now.Before(d.quiescedUntil) {
+		return time.Time{}, false
+	}
+	return d.quiescedUntil, true
+}
+
+// Quiesce holds automatic sync cycles until now+clamp(seconds) and refuses
+// explicit sync + mutations until then (Phase-4 F2). A fresh Quiesce while
+// already held REPLACES the deadline — last writer wins, so the same CLI
+// retrying simply resets the window rather than stacking holds. Implements
+// controller.
+func (d *Daemon) Quiesce(seconds int) api.QuiesceResponse {
+	ttl := time.Duration(seconds) * time.Second
+	ttl = min(max(ttl, quiesceMin), quiesceMax)
+	until := time.Now().Add(ttl)
+	d.mu.Lock()
+	d.quiescedUntil = until
+	d.mu.Unlock()
+	return api.QuiesceResponse{Until: until}
+}
+
+// Resume lifts a hold early; idempotent — resuming a daemon that is not
+// quiesced clears an already-zero deadline and returns the zero time.
+// Implements controller.
+func (d *Daemon) Resume() api.QuiesceResponse {
+	d.mu.Lock()
+	d.quiescedUntil = time.Time{}
+	d.mu.Unlock()
+	return api.QuiesceResponse{}
 }
 
 // TriggerSync implements controller: hand the request to the loop,
@@ -603,6 +685,9 @@ func (d *Daemon) Status() api.StatusResponse {
 // cancels the cycle itself. A non-empty project filters the cycle to that
 // repo folder; an unknown folder is a 400 naming the enrolled folders.
 func (d *Daemon) TriggerSync(ctx context.Context, project string) (api.SyncResponse, error) {
+	if until, held := d.quiesced(time.Now()); held {
+		return api.SyncResponse{}, errQuiesced(until)
+	}
 	if state, detail := d.refreshState(ctx); state != "ready" {
 		return api.SyncResponse{}, fmt.Errorf("%w: %s", errNotInitialized, detail)
 	}
@@ -664,6 +749,9 @@ func (d *Daemon) Projects() api.ProjectsResponse {
 // bounded for its reply. The op itself is fast local git work; the wait
 // absorbs the time it queues behind any running cycle.
 func (d *Daemon) submitAdmin(ctx context.Context, reason string, run func(context.Context, *engine.Engine) (any, error)) (any, error) {
+	if until, held := d.quiesced(time.Now()); held {
+		return nil, errQuiesced(until)
+	}
 	if state, detail := d.refreshState(ctx); state != "ready" {
 		return nil, fmt.Errorf("%w: %s", errNotInitialized, detail)
 	}

@@ -81,6 +81,20 @@ func TestStatusCommandPrintsState(t *testing.T) {
 	}
 }
 
+// TestStatusCommandRendersQuiesce proves the human status surface reports an
+// active hold (NO_COLOR-safe plain text) — printing it only in --json would
+// leave `status` silent about why cycles are paused.
+func TestStatusCommandRendersQuiesce(t *testing.T) {
+	until := time.Now().Add(90 * time.Second)
+	startFakeDaemon(t,
+		api.StatusResponse{Version: "1.0", State: "ready", PID: 7, QuiescedUntil: &until},
+		api.SyncResponse{}, api.ProjectsResponse{})
+	out := runCommand(t, "status")
+	if !strings.Contains(out, "quiesced until") {
+		t.Fatalf("status output does not report the quiesce hold:\n%s", out)
+	}
+}
+
 func TestSyncCommandPrintsSummary(t *testing.T) {
 	startFakeDaemon(t, api.StatusResponse{},
 		api.SyncResponse{Status: "completed", Summary: &api.SyncSummary{

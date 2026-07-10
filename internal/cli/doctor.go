@@ -44,6 +44,16 @@ func newDoctorCmd() *cobra.Command {
 			}
 			var report doctor.Report
 			if fix {
+				// --fix re-wires the checkout's git config and rewrites
+				// .gitattributes; a resident daemon's cycle racing that surgery
+				// contends on git locks (same Phase-3 F2 hazard init closes).
+				// Hold its cycles best-effort — a daemon that is down or refuses
+				// is the status quo, never a reason to fail the repair.
+				if client := tryAPIClient(cmd.Context()); client != nil {
+					if _, qerr := client.Quiesce(cmd.Context(), quiesceHoldForInit); qerr == nil {
+						defer resumeQuietly(client)
+					}
+				}
 				report, err = doctor.Fix(cmd.Context(), deps)
 				if err != nil {
 					return err

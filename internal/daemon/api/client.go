@@ -84,6 +84,23 @@ func (c *Client) Migrate(ctx context.Context, req MigrateRequest) (MigrateRespon
 	return out, err
 }
 
+// Quiesce asks the daemon to hold automatic sync cycles for seconds (clamped
+// server-side to [1, 600]); the returned Until is the resulting deadline.
+// init and doctor --fix call it best-effort before checkout surgery.
+func (c *Client) Quiesce(ctx context.Context, seconds int) (QuiesceResponse, error) {
+	var out QuiesceResponse
+	err := c.do(ctx, http.MethodPost, "/v0/quiesce", QuiesceRequest{Seconds: seconds}, &out)
+	return out, err
+}
+
+// Resume releases a hold early (DELETE /v0/quiesce). Idempotent: resuming a
+// daemon that is not quiesced is a no-op returning the zero deadline.
+func (c *Client) Resume(ctx context.Context) (QuiesceResponse, error) {
+	var out QuiesceResponse
+	err := c.do(ctx, http.MethodDelete, "/v0/quiesce", nil, &out)
+	return out, err
+}
+
 // GetForTest issues a bare GET so tests can probe method handling.
 func (c *Client) GetForTest(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodGet, path, nil, &struct{}{})

@@ -40,6 +40,27 @@ type StatusResponse struct {
 	PID         int          `json:"pid"`
 	StartedAt   time.Time    `json:"started_at"`
 	LastSync    *SyncSummary `json:"last_sync,omitempty"`
+	// QuiescedUntil is the deadline of an active hold (POST /v0/quiesce):
+	// while set and in the future the daemon skips tick/watch cycles and
+	// refuses explicit sync + mutations. nil when not quiesced (including a
+	// deadline already in the past — status reports honestly, not stale).
+	QuiescedUntil *time.Time `json:"quiesced_until,omitempty"`
+}
+
+// QuiesceRequest asks the daemon to hold automatic sync cycles for a bounded
+// window (POST /v0/quiesce). Seconds is clamped server-side to [1, 600]; the
+// hold auto-releases at the deadline, so a crashed caller can never wedge the
+// daemon permanently. init and doctor --fix use it to keep the engine off the
+// checkout during their git surgery (Phase-4 F2).
+type QuiesceRequest struct {
+	Seconds int `json:"seconds"`
+}
+
+// QuiesceResponse reports the resulting hold deadline. A zero Until means
+// released — the DELETE /v0/quiesce (resume) reply, or a resume of a daemon
+// that was not quiesced.
+type QuiesceResponse struct {
+	Until time.Time `json:"until"`
 }
 
 // SyncRequest is the optional POST /v0/sync body (spec §7:

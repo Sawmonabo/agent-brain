@@ -350,6 +350,22 @@ func ensureRepoIdentity(ctx context.Context, memories string) error {
 // (healJoiningMachine materializes the working tree and heals a
 // non-canonical root .gitattributes if needed).
 func stepRepoState(ctx context.Context, state *initState) error {
+	// A daemon already resident on this machine (a prior init installed the
+	// service) runs cycles that would race this step's commit/push on git
+	// locks (Phase-3 F2). Hold its automatic cycles for the surgery, best
+	// effort: a daemon that is down, mid-shutdown, or refuses is the
+	// pre-quiesce status quo — the transient-error fallback — never a reason
+	// to fail init. The daemon's TTL auto-releases even if this process dies.
+	if client := tryAPIClient(ctx); client != nil {
+		if _, err := client.Quiesce(ctx, quiesceHoldForInit); err != nil {
+			if _, werr := fmt.Fprintf(state.out, "repo state: could not quiesce the daemon (%v) — proceeding\n", err); werr != nil {
+				return werr
+			}
+		} else {
+			defer resumeQuietly(client)
+		}
+	}
+
 	memories := state.paths.MemoriesDir()
 	layout := repo.NewLayout(memories)
 

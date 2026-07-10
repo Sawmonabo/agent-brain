@@ -773,6 +773,233 @@ func TestSyncProjectFilterScopesCycleAndRejectsUnknown(t *testing.T) {
 	}
 }
 
+// TestDaemonQuiesceClampsTTL pins the clamp bounds (Phase-4 F2): a requested
+// TTL below the 1s floor, above the 600s ceiling, or in range yields a
+// deadline of exactly the clamped duration from "now". The daemon has no
+// injected clock, so the assertion brackets Until between before+want and
+// after+want rather than asserting a single instant.
+func TestDaemonQuiesceClampsTTL(t *testing.T) {
+	paths, _ := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	for _, tc := range []struct {
+		name    string
+		seconds int
+		want    time.Duration
+	}{
+		{"below floor clamps up to 1s", 0, 1 * time.Second},
+		{"negative clamps up to 1s", -5, 1 * time.Second},
+		{"in range is exact", 120, 120 * time.Second},
+		{"above ceiling clamps down to 600s", 9999, 600 * time.Second},
+	} {
+		before := time.Now()
+		resp, err := client.Quiesce(context.Background(), tc.seconds)
+		after := time.Now()
+		if err != nil {
+			t.Fatalf("%s: quiesce: %v", tc.name, err)
+		}
+		earliest, latest := before.Add(tc.want), after.Add(tc.want)
+		if resp.Until.Before(earliest) || resp.Until.After(latest) {
+			t.Fatalf("%s: Until=%s, want within [%s, %s]", tc.name, resp.Until, earliest, latest)
+		}
+	}
+	// Release so the harness's clean-shutdown assertion is unaffected.
+	if _, err := client.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonQuiesceSkipsCycles quiesces via the API, writes a memory file
+// (which would normally debounce-trigger a cycle), waits past the debounce
+// window, and asserts NO cycle ran. Then resumes and asserts the next
+// trigger DOES run. Also asserts /v0/status advertises the hold.
+func TestDaemonQuiesceSkipsCycles(t *testing.T) {
+	paths, unit := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	resp, err := client.Quiesce(context.Background(), 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Until.IsZero() {
+		t.Fatal("quiesce returned a zero deadline")
+	}
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.QuiescedUntil == nil {
+		t.Fatal("status.QuiescedUntil is nil while quiesced")
+	}
+
+	if err := os.MkdirAll(filepath.Join(unit.LocalDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unit.LocalDir, "memories", "held.md"), []byte("held\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Debounce is 50ms and a cycle records LastSync on completion (~1.5s in
+	// isolation); 3s with LastSync still nil is decisive proof the trigger
+	// was skipped, not merely slow. The resume half below carries the flake
+	// ceiling for the "quiesce never releases" failure mode.
+	time.Sleep(3 * time.Second)
+	status, err = client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.LastSync != nil {
+		t.Fatalf("a cycle ran while quiesced: LastSync=%+v", status.LastSync)
+	}
+
+	if _, err := client.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unit.LocalDir, "memories", "after.md"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := client.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.LastSync != nil && status.LastSync.MirrorIn.Copied > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no cycle after resume; last status %+v", status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestDaemonQuiesceExpires quiesces with Seconds=1, waits past expiry,
+// triggers, and asserts a cycle runs WITHOUT an explicit resume — the
+// auto-release backstop. Status must also read QuiescedUntil == nil once the
+// deadline has passed.
+func TestDaemonQuiesceExpires(t *testing.T) {
+	paths, unit := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	if _, err := client.Quiesce(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	// Past the 1s TTL, with NO resume call. Writing only after expiry means
+	// the trigger this creates is a fresh one the loop must honor (a write
+	// during the hold would be skipped, and the ticker is parked at 1h).
+	time.Sleep(1500 * time.Millisecond)
+
+	if err := os.MkdirAll(filepath.Join(unit.LocalDir, "memories"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unit.LocalDir, "memories", "fact.md"), []byte("post-expiry\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := client.Status(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.LastSync != nil && status.LastSync.MirrorIn.Copied > 0 {
+			if status.QuiescedUntil != nil {
+				t.Fatalf("QuiescedUntil still set after expiry: %s", status.QuiescedUntil)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no cycle after quiesce expiry; last status %+v", status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestDaemonQuiesceRefusesMutations quiesces, then asserts /v0/sync and
+// /v0/track return errors naming the quiesce expiry (substring "quiesced
+// until") — silently queueing them would defeat the point.
+func TestDaemonQuiesceRefusesMutations(t *testing.T) {
+	paths, base := provisionMemories(t)
+	client := startDaemon(t, paths)
+
+	if _, err := client.Quiesce(context.Background(), 60); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Sync(context.Background(), ""); err == nil ||
+		!strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("sync while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+	if _, err := client.Track(context.Background(), api.TrackRequest{
+		Provider: "claude", ProjectID: "x", PreferredFolder: "x", LocalDir: base,
+	}); err == nil || !strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("track while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+}
+
+// TestDaemonReQuiesceReplacesDeadline pins last-writer-wins: a second quiesce
+// while already held REPLACES the deadline (even with a shorter TTL — it does
+// not keep the max), and /v0/status reflects the replacement.
+func TestDaemonReQuiesceReplacesDeadline(t *testing.T) {
+	paths, _ := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	long, err := client.Quiesce(context.Background(), 600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	short, err := client.Quiesce(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !short.Until.Before(long.Until) {
+		t.Fatalf("re-quiesce did not replace the deadline: long=%s short=%s", long.Until, short.Until)
+	}
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.QuiescedUntil == nil || !status.QuiescedUntil.Equal(short.Until) {
+		t.Fatalf("status deadline = %v, want the replaced %s", status.QuiescedUntil, short.Until)
+	}
+	if _, err := client.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDaemonResumeIsIdempotent pins that resume is safe to repeat and safe
+// with no active hold — both return the zero deadline, and status clears.
+func TestDaemonResumeIsIdempotent(t *testing.T) {
+	paths, _ := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	resp, err := client.Resume(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Until.IsZero() {
+		t.Fatalf("resume with no hold returned %s, want zero", resp.Until)
+	}
+	if _, err := client.Quiesce(context.Background(), 60); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		resp, err := client.Resume(context.Background())
+		if err != nil {
+			t.Fatalf("resume #%d: %v", i, err)
+		}
+		if !resp.Until.IsZero() {
+			t.Fatalf("resume #%d returned %s, want zero", i, resp.Until)
+		}
+	}
+	status, err := client.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.QuiescedUntil != nil {
+		t.Fatalf("QuiescedUntil = %s after resume, want nil", status.QuiescedUntil)
+	}
+}
+
 // TestAdminOpsRequireInitializedRepo pins the state gate: track/untrack/
 // migrate against an uninitialized checkout return the same actionable error
 // as sync (mapped to a 500).
