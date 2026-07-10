@@ -150,8 +150,28 @@ type scanFinding struct {
 // specify: `gitleaks dir <dir> --no-banner --report-format json
 // --report-path -`. The `dir` mode family (not the deprecated-since-v8.19.0
 // `detect`/`protect`) is the ADR-14-verified surface.
-func scanGitleaksArgs(dir string) []string {
-	return []string{"dir", dir, "--no-banner", "--report-format", "json", "--report-path", "-"}
+//
+// redact appends gitleaks' own `--redact` flag (bare, so gitleaks' default
+// 100%), which replaces both the `Secret` and `Match` fields with the
+// literal string "REDACTED" in gitleaks' OWN JSON report — verified
+// directly against the real 8.30.1 binary, 2026-07-09 — before that report
+// ever reaches this process. Every other field (RuleID, File, StartLine,
+// Fingerprint, ...) survives untouched, which is all `agent-brain scan`
+// needs to locate and rotate a finding. This is the Q2 review's binding
+// adjudication on Task 5's flagged judgment call (p4-task-5-review.md): a
+// scan command's own `--json` output is exactly the kind of persistent sink
+// (redirected file, CI log, terminal scrollback) this feature exists to
+// keep secrets out of, so redaction is the default, gated off only by the
+// explicit `--reveal-secrets` flag (newScanCmd). Passing `--redact` at the
+// gitleaks-invocation layer — rather than scrubbing Secret/Match in Go after
+// the fact — means the raw secret never enters this process's stdout
+// buffer at all in the default case.
+func scanGitleaksArgs(dir string, redact bool) []string {
+	args := []string{"dir", dir, "--no-banner", "--report-format", "json", "--report-path", "-"}
+	if redact {
+		args = append(args, "--redact")
+	}
+	return args
 }
 
 // scanUnit runs one gitleaks invocation over unit's plaintext LocalDir and
@@ -159,9 +179,10 @@ func scanGitleaksArgs(dir string) []string {
 // 0 when clean (both are DATA, not failure — mirrored by gitleaksRunner's
 // contract above); any other exit code is a real gitleaks failure (bad
 // flags, unreadable config) and is surfaced as an error rather than
-// silently read as "no findings".
-func scanUnit(ctx context.Context, runner gitleaksRunner, unit repo.Unit) ([]scanFinding, error) {
-	result, err := runner.Run(ctx, scanGitleaksArgs(unit.LocalDir)...)
+// silently read as "no findings". redact is forwarded to scanGitleaksArgs
+// verbatim — see its doc comment for why redaction defaults on.
+func scanUnit(ctx context.Context, runner gitleaksRunner, unit repo.Unit, redact bool) ([]scanFinding, error) {
+	result, err := runner.Run(ctx, scanGitleaksArgs(unit.LocalDir, redact)...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,10 +204,13 @@ func scanUnit(ctx context.Context, runner gitleaksRunner, unit repo.Unit) ([]sca
 // deterministic order (folder, then provider, then file, then line) — a
 // slice built by iterating several subprocess invocations must never leave
 // the printed report's order to depend on anything but the data itself.
-func scanUnits(ctx context.Context, runner gitleaksRunner, units []repo.Unit) ([]scanFinding, error) {
+// redact is forwarded to every scanUnit call unchanged — one gitleaks
+// invocation per enrolled unit, all scanned under the same redaction
+// policy for a single `agent-brain scan` run.
+func scanUnits(ctx context.Context, runner gitleaksRunner, units []repo.Unit, redact bool) ([]scanFinding, error) {
 	findings := []scanFinding{}
 	for _, unit := range units {
-		unitFindings, err := scanUnit(ctx, runner, unit)
+		unitFindings, err := scanUnit(ctx, runner, unit, redact)
 		if err != nil {
 			return nil, fmt.Errorf("scan %s/%s: %w", unit.Folder, unit.Provider, err)
 		}
@@ -226,8 +250,12 @@ func filterUnitsByFolder(units []repo.Unit, folder string) []repo.Unit {
 // findings" line. The raw secret/match text is deliberately NOT printed
 // here — the rule, folder, provider, file, and line are enough to locate
 // and rotate it, without echoing a live credential into a terminal,
-// scrollback, or session log any more than necessary; --json carries the
-// full gitleaks finding (including Secret/Match) for scripted use.
+// scrollback, or session log any more than necessary. --json is no more
+// permissive by default: gitleaks itself redacts Secret/Match to
+// "REDACTED" before the report ever reaches this process (scanGitleaksArgs)
+// unless the user passes --reveal-secrets, since a --json stdout stream is
+// itself a persistent sink (redirected file, CI log) this feature exists
+// to keep secrets out of.
 func renderScanReport(report *reportWriter, findings []scanFinding) {
 	if len(findings) == 0 {
 		report.println("no findings")
@@ -241,6 +269,7 @@ func renderScanReport(report *reportWriter, findings []scanFinding) {
 func newScanCmd() *cobra.Command {
 	var project string
 	var jsonOut bool
+	var revealSecrets bool
 	cmd := &cobra.Command{
 		Use:   "scan",
 		Short: "Scan enrolled memory for pasted secrets (gitleaks)",
@@ -261,6 +290,13 @@ func newScanCmd() *cobra.Command {
 				}
 			}
 			if len(units) == 0 {
+				// Honor --json even on this empty-state path (Q2 review,
+				// Minor finding): a scripted consumer that unconditionally
+				// decodes stdout as JSON must not hit a parse error just
+				// because nothing happens to be enrolled yet.
+				if jsonOut {
+					return printJSON(cmd, []scanFinding{})
+				}
 				report := &reportWriter{w: cmd.OutOrStdout()}
 				report.println("no projects enrolled — run `agent-brain track`")
 				return report.err
@@ -272,7 +308,7 @@ func newScanCmd() *cobra.Command {
 			}
 			runner := &gitleaksExecRunner{binaryPath: binaryPath}
 
-			findings, err := scanUnits(cmd.Context(), runner, units)
+			findings, err := scanUnits(cmd.Context(), runner, units, !revealSecrets)
 			if err != nil {
 				return err
 			}
@@ -297,5 +333,6 @@ func newScanCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&project, "project", "", "limit the scan to one enrolled folder (see `agent-brain projects`); default is every enrolled unit")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print findings as JSON")
+	cmd.Flags().BoolVar(&revealSecrets, "reveal-secrets", false, "DANGER: output will contain live, usable secret material — disables gitleaks' --redact so findings carry the raw Secret/Match text instead of \"REDACTED\"; only for scripted remediation with a specific, considered reason")
 	return cmd
 }

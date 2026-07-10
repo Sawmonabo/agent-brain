@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,17 +21,19 @@ import (
 // withFakeGitleaksOnPath installs a fake `gitleaks` on PATH that always
 // prints stdout and exits with exitCode, regardless of its arguments — this
 // command only ever invokes gitleaks one documented way (scanGitleaksArgs),
-// so the fake doesn't need to branch on argv. It also appends the
-// directory argument (argv[2]: `gitleaks dir <dir> ...`) to a log file,
-// whose path it returns, so a caller that cares WHICH unit(s) were actually
-// scanned (TestScanCommandProjectFlagFiltersToOneUnit) can assert on
-// invocation scope rather than only on (possibly identical) canned output.
+// so the fake doesn't need to branch on argv. It also appends the FULL
+// argument list ("$*": `dir <dir> --no-banner --report-format json
+// --report-path - [--redact]`) to a log file, whose path it returns, so a
+// caller can assert on exactly which directory was scanned
+// (TestScanCommandProjectFlagFiltersToOneUnit) and/or whether --redact was
+// present (TestScanCommandRedactFlag) rather than only on (possibly
+// identical) canned output.
 func withFakeGitleaksOnPath(t *testing.T, exitCode int, stdout string) (invocationLog string) {
 	t.Helper()
 	dir := t.TempDir()
 	invocationLog = filepath.Join(dir, "invocations.log")
 	script := filepath.Join(dir, "gitleaks")
-	content := fmt.Sprintf("#!/bin/sh\necho \"$2\" >> %s\ncat <<'GITLEAKS_FAKE_EOF'\n%s\nGITLEAKS_FAKE_EOF\nexit %d\n", invocationLog, stdout, exitCode)
+	content := fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %s\ncat <<'GITLEAKS_FAKE_EOF'\n%s\nGITLEAKS_FAKE_EOF\nexit %d\n", invocationLog, stdout, exitCode)
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +145,13 @@ func TestScanCommandProjectFlagFiltersToOneUnit(t *testing.T) {
 		t.Fatal(readErr)
 	}
 	invoked := strings.TrimSpace(string(data))
-	if invoked != dirA {
-		t.Fatalf("scan --project project-a invoked gitleaks on %q, want exactly %q (project-b must not be scanned)", invoked, dirA)
+	// One invocation only, and with exactly the args scanGitleaksArgs
+	// produces for dirA under the default (redact=true) policy — this
+	// also pins that project-b was never scanned and that --redact is
+	// present by default, not just that "some dir" was scanned.
+	want := strings.Join(scanGitleaksArgs(dirA, true), " ")
+	if invoked != want {
+		t.Fatalf("scan --project project-a invoked gitleaks with %q, want exactly %q (project-b must not be scanned)", invoked, want)
 	}
 }
 
@@ -169,11 +177,34 @@ func TestScanCommandNoProjectsEnrolled(t *testing.T) {
 	}
 }
 
+// TestScanCommandNoProjectsEnrolledJSON is the --json row for the
+// zero-enrolled-units path (Q2 review, Minor finding): previously this path
+// ignored --json entirely and always printed the human sentence, which
+// broke a scripted consumer that unconditionally decodes stdout as JSON.
+func TestScanCommandNoProjectsEnrolledJSON(t *testing.T) {
+	scanTestPaths(t)
+	out, err := runCmd(t, nil, "scan", "--json")
+	if err != nil {
+		t.Fatalf("scan --json with nothing enrolled failed: %v\noutput:\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "[]" {
+		t.Fatalf("scan --json with nothing enrolled = %q, want []", strings.TrimSpace(string(out)))
+	}
+}
+
 func TestScanCommandJSONOutputRoundTrips(t *testing.T) {
 	paths := scanTestPaths(t)
 	localDir := t.TempDir()
 	enrollUnits(t, paths, repo.Unit{Provider: "claude", Folder: "myproj", LocalDir: localDir})
-	withFakeGitleaksOnPath(t, 1, fmt.Sprintf(`[{"RuleID":"generic-api-key","Description":"d","StartLine":3,"File":"%s/x.json","Secret":"s","Match":"m"}]`, localDir))
+	// The canned Secret/Match here are literally "REDACTED": under the
+	// default (no --reveal-secrets) invocation this fake stands in for, a
+	// real gitleaks binary given --redact has already replaced both fields
+	// with that exact string before scan.go ever sees the report (verified
+	// against the real 8.30.1 binary — scanGitleaksArgs' doc comment) — the
+	// fake can't perform real redaction itself (it ignores its own argv),
+	// but its canned output should still look like what --redact actually
+	// produces, not an unrelated placeholder.
+	withFakeGitleaksOnPath(t, 1, fmt.Sprintf(`[{"RuleID":"generic-api-key","Description":"d","StartLine":3,"File":"%s/x.json","Secret":"REDACTED","Match":"REDACTED"}]`, localDir))
 
 	out, err := runCmd(t, nil, "scan", "--json")
 	if err == nil {
@@ -185,6 +216,9 @@ func TestScanCommandJSONOutputRoundTrips(t *testing.T) {
 	}
 	if len(findings) != 1 || findings[0].Finding.RuleID != "generic-api-key" || findings[0].Folder != "myproj" {
 		t.Fatalf("scan --json findings = %+v, want one generic-api-key finding in folder myproj", findings)
+	}
+	if findings[0].Finding.Secret != "REDACTED" || findings[0].Finding.Match != "REDACTED" {
+		t.Fatalf("scan --json findings = %+v, want Secret/Match == \"REDACTED\" under the default (redacted) invocation", findings)
 	}
 }
 
@@ -199,6 +233,43 @@ func TestScanCommandJSONCleanIsEmptyArrayNotNull(t *testing.T) {
 	}
 	if strings.TrimSpace(string(out)) != "[]" {
 		t.Fatalf("scan --json clean output = %q, want []", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestScanCommandRedactFlag pins both arg shapes gitleaks is actually
+// invoked with (Q2 review, Important finding): --redact is present by
+// default (gitleaks itself then replaces Secret/Match with "REDACTED"
+// before its report ever reaches this process — verified empirically
+// against the real binary; see scanGitleaksArgs' doc comment) and absent
+// only when the user explicitly opts in via --reveal-secrets.
+func TestScanCommandRedactFlag(t *testing.T) {
+	tests := []struct {
+		name       string
+		extraArgs  []string
+		wantRedact bool
+	}{
+		{name: "default redacts", wantRedact: true},
+		{name: "reveal-secrets omits redact", extraArgs: []string{"--reveal-secrets"}, wantRedact: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			paths := scanTestPaths(t)
+			enrollUnits(t, paths, repo.Unit{Provider: "claude", Folder: "myproj", LocalDir: t.TempDir()})
+			invocationLog := withFakeGitleaksOnPath(t, 0, `[]`)
+
+			args := append([]string{"scan"}, test.extraArgs...)
+			if _, err := runCmd(t, nil, args...); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(invocationLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotRedact := strings.Contains(string(data), "--redact")
+			if gotRedact != test.wantRedact {
+				t.Fatalf("gitleaks invoked with --redact = %v, want %v\ninvocation: %s", gotRedact, test.wantRedact, data)
+			}
+		})
 	}
 }
 
@@ -232,7 +303,7 @@ func TestScanUnitsMergesAndSortsAcrossUnits(t *testing.T) {
 		{Provider: "claude", Folder: "zzz-folder", LocalDir: "/a"},
 		{Provider: "claude", Folder: "aaa-folder", LocalDir: "/b"},
 	}
-	findings, err := scanUnits(context.Background(), runner, units)
+	findings, err := scanUnits(context.Background(), runner, units, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +319,7 @@ func TestScanUnitsPropagatesRunnerError(t *testing.T) {
 	t.Parallel()
 	runner := &fakeGitleaksRunner{results: map[string]gitleaksResult{}} // no canned results: every call errors
 	units := []repo.Unit{{Provider: "claude", Folder: "f", LocalDir: "/nope"}}
-	if _, err := scanUnits(context.Background(), runner, units); err == nil {
+	if _, err := scanUnits(context.Background(), runner, units, true); err == nil {
 		t.Fatal("scanUnits with a failing runner succeeded; want an error")
 	}
 }
@@ -258,8 +329,33 @@ func TestScanUnitRejectsUnexpectedExitCode(t *testing.T) {
 	runner := &fakeGitleaksRunner{results: map[string]gitleaksResult{
 		"/a": {ExitCode: 2, Stderr: "bad config"},
 	}}
-	if _, err := scanUnit(context.Background(), runner, repo.Unit{LocalDir: "/a"}); err == nil {
+	if _, err := scanUnit(context.Background(), runner, repo.Unit{LocalDir: "/a"}, true); err == nil {
 		t.Fatal("scanUnit with exit code 2 succeeded; want an error")
+	}
+}
+
+// TestScanGitleaksArgsRedactFlag pins scanGitleaksArgs' pure argv contract
+// directly (Q2 review, Important finding), independent of the command-level
+// TestScanCommandRedactFlag, which pins the same behavior end-to-end through
+// the real exec path.
+func TestScanGitleaksArgsRedactFlag(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		redact     bool
+		wantRedact bool
+	}{
+		{name: "redact=true appends --redact", redact: true, wantRedact: true},
+		{name: "redact=false omits --redact", redact: false, wantRedact: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			args := scanGitleaksArgs("/some/dir", test.redact)
+			got := slices.Contains(args, "--redact")
+			if got != test.wantRedact {
+				t.Fatalf("scanGitleaksArgs(%q, %v) = %v, --redact present = %v, want %v", "/some/dir", test.redact, args, got, test.wantRedact)
+			}
+		})
 	}
 }
 
