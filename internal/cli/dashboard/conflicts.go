@@ -3,24 +3,26 @@ package dashboard
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Sawmonabo/agent-brain/internal/config"
 )
 
 // maxConflictRows bounds how many records the Conflicts view renders at once —
 // the log is retained indefinitely and there is no scroll component here, so a
-// pathological log must not blow up one frame. Newest-first (parseConflictLog
-// already reversed), so the cap keeps the most recent events.
+// pathological log must not blow up one frame. Records arrive newest-first (the
+// data adapter already reversed them), so the cap keeps the most recent events.
 const maxConflictRows = 200
 
 // conflictsView lists retained retain-both conflict records (spec §7), loaded
 // from the read-only conflict log via dashboardData.Conflicts. It owns its
 // snapshot because no other view or root-level decision needs it.
 type conflictsView struct {
-	records []ConflictRecord
+	records []config.ConflictRecord
 	err     error
 	loaded  bool
 }
 
-func (v *conflictsView) set(records []ConflictRecord, err error) {
+func (v *conflictsView) set(records []config.ConflictRecord, err error) {
 	v.records = records
 	v.err = err
 	v.loaded = true

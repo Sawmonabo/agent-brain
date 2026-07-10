@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/crypto"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
 )
@@ -42,8 +43,8 @@ func writeCipher(t *testing.T, codec *crypto.Codec, path string, plaintext []byt
 }
 
 // TestConflictRecordRoundTrip pins the writer/reader contract: logConflict
-// (merge.go) marshals conflictRecord, and this test proves the bytes it
-// writes unmarshal cleanly back into that same type.
+// (merge.go) marshals config.ConflictRecord, and this test proves the bytes it
+// writes unmarshal cleanly back into that same config-owned type.
 func TestConflictRecordRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "conflicts.jsonl")
@@ -55,9 +56,9 @@ func TestConflictRecordRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var record conflictRecord
+	var record config.ConflictRecord
 	if err := json.Unmarshal(bytes.TrimRight(data, "\n"), &record); err != nil {
-		t.Fatalf("logConflict output does not unmarshal into conflictRecord: %v", err)
+		t.Fatalf("logConflict output does not unmarshal into config.ConflictRecord: %v", err)
 	}
 	if record.Path != "roundtrip.md" {
 		t.Fatalf("record.Path = %q, want %q", record.Path, "roundtrip.md")

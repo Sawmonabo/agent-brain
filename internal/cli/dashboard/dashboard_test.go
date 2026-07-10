@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
@@ -39,7 +40,7 @@ type fakeData struct {
 	projectsErr  error
 	report       doctor.Report
 	doctorErr    error
-	conflicts    []ConflictRecord
+	conflicts    []config.ConflictRecord
 	conflictsErr error
 
 	syncResp    api.SyncResponse
@@ -81,7 +82,7 @@ func (f *fakeData) Doctor(context.Context) (doctor.Report, error) {
 	return f.report, f.doctorErr
 }
 
-func (f *fakeData) Conflicts() ([]ConflictRecord, error) {
+func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 	return f.conflicts, f.conflictsErr
 }
 

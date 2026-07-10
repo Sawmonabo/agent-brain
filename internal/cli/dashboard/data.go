@@ -11,14 +11,7 @@
 package dashboard
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io/fs"
-	"os"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -28,7 +21,8 @@ import (
 // dashboardData is the read/command seam every view renders from. The
 // production implementation (apiData) wraps *api.Client for the daemon calls,
 // runs the doctor battery through an injected closure, and reads the conflict
-// log directly. Tests inject a fake so no view test touches a socket, the
+// log through config.ReadConflictLog (the same format owner the `conflicts`
+// command reads). Tests inject a fake so no view test touches a socket, the
 // filesystem, or the doctor battery — the reason the models stay pure and
 // logic-heavy (task brief testing strategy).
 //
@@ -44,19 +38,7 @@ type dashboardData interface {
 	Track(context.Context, api.TrackRequest) (api.TrackResponse, error)
 	Untrack(context.Context, api.UntrackRequest) (api.UntrackResponse, error)
 	Doctor(context.Context) (doctor.Report, error)
-	Conflicts() ([]ConflictRecord, error)
-}
-
-// ConflictRecord is one retain-both event from the conflict log — the same
-// on-disk shape the merge driver writes and `agent-brain conflicts` reads
-// (internal/cli/conflicts.go's conflictRecord). The dashboard re-reads it here
-// because that loader is unexported in package cli, which this package's import
-// allowlist (ADR 05 amendment) forbids importing; the format is a stable wire
-// pinned by cli's own round-trip test.
-type ConflictRecord struct {
-	Time string `json:"time"`
-	Path string `json:"path"`
-	Mode string `json:"mode"`
+	Conflicts() ([]config.ConflictRecord, error)
 }
 
 // apiData is the production dashboardData.
@@ -97,49 +79,19 @@ func (d *apiData) Doctor(ctx context.Context) (doctor.Report, error) {
 	return d.runDoctor(ctx)
 }
 
-// Conflicts reads the conflict log newest-first (a pure file read; readers
-// never violate the single-writer invariant, spec §5/§11), mirroring
-// runConflictsList. An absent log is not an error — it means no conflicts have
-// been logged, which the Conflicts view renders as an empty state.
-func (d *apiData) Conflicts() ([]ConflictRecord, error) {
+// Conflicts reads the conflict log through the shared config.ReadConflictLog
+// (a pure file read; readers never violate the single-writer invariant, spec
+// §5/§11) and returns records newest-first for display. The reader yields write
+// order and logConflict appends chronologically, so reversing is enough — no
+// timestamp parsing. An absent log is not an error — config.ReadConflictLog
+// returns no records, which the Conflicts view renders as an empty state.
+func (d *apiData) Conflicts() ([]config.ConflictRecord, error) {
 	paths, err := config.DefaultPaths()
 	if err != nil {
 		return nil, err
 	}
-	logPath := paths.ConflictLogFile()
-	data, err := os.ReadFile(logPath) //nolint:gosec // G304: program-derived conflict-log path (config.Paths), not untrusted input
+	records, err := config.ReadConflictLog(paths.ConflictLogFile())
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	records, err := parseConflictLog(data)
-	if err != nil {
-		return nil, fmt.Errorf("parse conflict log %s: %w", logPath, err)
-	}
-	return records, nil
-}
-
-// parseConflictLog decodes the newline-delimited JSON log and returns records
-// newest-first. logConflict appends chronologically, so reversing the read
-// order is sufficient — no timestamp parsing is needed.
-func parseConflictLog(data []byte) ([]ConflictRecord, error) {
-	var records []ConflictRecord
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var record ConflictRecord
-		if err := json.Unmarshal(line, &record); err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
 	for i, j := 0, len(records)-1; i < j; i, j = i+1, j-1 {

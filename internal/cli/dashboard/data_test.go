@@ -1,57 +1,52 @@
 package dashboard
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/Sawmonabo/agent-brain/internal/config"
 )
 
-func TestParseConflictLog(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		input   string
-		want    []ConflictRecord
-		wantErr bool
-	}{
-		{
-			name:  "empty input yields no records",
-			input: "",
-			want:  nil,
-		},
-		{
-			name: "records return newest-first with blanks skipped",
-			input: `{"time":"t1","path":"a.md","mode":"retain-both"}
+// TestApiDataConflictsNewestFirst covers the dashboard-specific transform the
+// adapter adds on top of the shared config.ReadConflictLog: records are
+// returned newest-first for display, and a machine with no log yields an empty
+// slice rather than an error. The parse/format behaviour itself is covered by
+// config's own TestReadConflictLog. Not parallel — it sets process env.
+func TestApiDataConflictsNewestFirst(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", t.TempDir())
+	t.Setenv("AGENT_BRAIN_DATA_DIR", dataDir)
 
-{"time":"t2","path":"b.md","mode":"retain-both"}
-`,
-			want: []ConflictRecord{
-				{Time: "t2", Path: "b.md", Mode: "retain-both"},
-				{Time: "t1", Path: "a.md", Mode: "retain-both"},
-			},
-		},
-		{
-			name:    "malformed line errors",
-			input:   `{"time":"t1"` + "\n" + `not json`,
-			wantErr: true,
-		},
+	data := &apiData{}
+
+	// No log yet → empty, no error (the never-conflicted machine).
+	got, err := data.Conflicts()
+	if err != nil {
+		t.Fatalf("Conflicts with no log: %v", err)
 	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			got, err := parseConflictLog([]byte(testCase.input))
-			if testCase.wantErr {
-				if err == nil {
-					t.Fatalf("expected an error, got records %+v", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if diff := cmp.Diff(testCase.want, got); diff != "" {
-				t.Errorf("records mismatch (-want +got):\n%s", diff)
-			}
-		})
+	if len(got) != 0 {
+		t.Fatalf("Conflicts with no log = %+v, want empty", got)
+	}
+
+	// Records appended oldest-first must come back newest-first.
+	logPath := filepath.Join(dataDir, "conflicts.jsonl")
+	lines := `{"time":"t1","path":"a.md","mode":"fact"}` + "\n" +
+		`{"time":"t2","path":"b.md","mode":"fact"}` + "\n"
+	if err := os.WriteFile(logPath, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = data.Conflicts()
+	if err != nil {
+		t.Fatalf("Conflicts: %v", err)
+	}
+	want := []config.ConflictRecord{
+		{Time: "t2", Path: "b.md", Mode: "fact"},
+		{Time: "t1", Path: "a.md", Mode: "fact"},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Conflicts order mismatch (-want +got):\n%s", diff)
 	}
 }

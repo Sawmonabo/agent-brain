@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
@@ -63,7 +64,7 @@ type (
 		err  error
 	}
 	conflictsMsg struct {
-		records []ConflictRecord
+		records []config.ConflictRecord
 		err     error
 	}
 	doctorMsg struct {

@@ -4,13 +4,15 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Sawmonabo/agent-brain/internal/config"
 )
 
 func TestConflictsView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name       string
-		records    []ConflictRecord
+		records    []config.ConflictRecord
 		err        error
 		loaded     bool
 		wantSubstr []string
@@ -28,7 +30,7 @@ func TestConflictsView(t *testing.T) {
 		{
 			name:   "records render time path mode",
 			loaded: true,
-			records: []ConflictRecord{
+			records: []config.ConflictRecord{
 				{Time: "2026-07-09T11:00:00Z", Path: "MEMORY.md", Mode: "retain-both"},
 			},
 			wantSubstr: []string{"TIME", "PATH", "MODE", "2026-07-09T11:00:00Z", "MEMORY.md", "retain-both"},
