@@ -156,7 +156,10 @@ type UnitInfo struct {
 	// WatchTriggers counts filesystem-driven watch triggers (fs/overflow, not the
 	// timer backstop) that swept this unit since its dir was first watched. A
 	// watch trigger drives one whole-fleet cycle (ADR 07), so every watched unit
-	// is counted; the dashboard sums this over units for a fleet total.
+	// is counted; the dashboard takes the MAX over units for a fleet total — a
+	// root watched since daemon start caught every trigger, so the max is the raw
+	// trigger count since the longest-watched root (a sum would amplify it by
+	// fleet size).
 	WatchTriggers uint64 `json:"watch_triggers,omitempty"`
 	// LastCycle is this unit's most recent completed cycle outcome, nil until its
 	// folder has cycled at least once.

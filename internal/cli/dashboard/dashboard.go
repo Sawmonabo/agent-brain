@@ -156,7 +156,7 @@ func (m Model) reloadCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity's fleet watch-trigger total sums the per-unit WatchTriggers
+		// Activity's fleet watch-trigger total is the max of the per-unit WatchTriggers
 		// (Task 6.5), so it needs the projects payload alongside the status above.
 		cmds = append(cmds, m.projectsCmd())
 	}
@@ -179,7 +179,7 @@ func (m Model) switchCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity's fleet watch-trigger total sums the per-unit WatchTriggers
+		// Activity's fleet watch-trigger total is the max of the per-unit WatchTriggers
 		// (Task 6.5), so fetch the projects payload on arrival too, not just status.
 		cmds = append(cmds, m.projectsCmd())
 	}
