@@ -312,15 +312,18 @@ Spec §5 designed rotation into the key model from day one ("Tink keysets are na
 
 **Files:**
 - Modify: `internal/doctor/checks.go` (+`checkKeysetDecrypt`, separate function — `checkKeyset` untouched), `internal/doctor/doctor.go` (battery append, LAST position, order comment updated — same convention as T5's append), `internal/doctor/checks_test.go` (new rows), `test/e2e/rotate_test.go` (B-side: after stale-keyset degradation, run the doctor battery and assert the check goes Warn and its message contains `agent-brain key import --force`).
+- Modify (absorbed Minor, see below): `internal/cli/doctor.go` + its command test file.
 - Do NOT touch `internal/doctor/gate.go` — SafetyGate's hardcoded check list must not gain this check (membership rule: a unit's cycle CAN safely run while decrypt fails — it degrades fail-closed — so the check is advisory by the gate's own documented criterion).
+
+**Absorbed Minor (controller absorption routing, 2026-07-10):** T2 residual — the `doctor` command silently ignores a failed daemon Quiesce while `init` prints a note in the identical situation (observability inconsistency; both correctly proceed). Fix here because it is the same command surface this task already touches: match `init`'s printed-note pattern (read `init`'s wording and mirror its shape on stderr; behavior otherwise unchanged), pinned by a test row (fake client whose Quiesce errors → note printed, doctor checks still run). Cite "absorbs T2 residual Minor" in the commit body.
 
 **Design (locked):**
 - `checkKeysetDecrypt`: StatusInfo/StatusWarn advisory. Probe: load the keyset primitive; pick ONE ciphertext sample from the memories checkout — the newest `agb1\x00`-prefixed blob reachable from HEAD (via existing gitx helpers; the newest blob is the one most recently (re-)encrypted, so it flips promptly after a fleet rotation) — and attempt `DecryptDeterministically`. Outcomes: decrypt OK → StatusOK; no checkout / unborn HEAD / zero encrypted blobs → StatusInfo "nothing to probe" (never Warn on empty state); decrypt FAILS → StatusWarn with fix text naming `agent-brain key export` (on a rotated machine) / `agent-brain key import --force` (here). Message text must name the command verbatim — the e2e greps for it.
 - No new Deps fields if the existing Deps already carries the checkout path + keyset path (verify first; if a field is genuinely missing, add the narrowest one).
 - Tests: table rows for all four outcomes (ok, no-checkout, no-encrypted-blobs, stale-keyset-warn) using the existing check-test fixtures + a bare-remote fixture with a rotated keyset; ADR 15 rules throughout.
 
-- [ ] **Step 1 (RED):** checks_test.go rows + the rotate_test.go doctor assertion. Run → FAIL (check does not exist).
-- [ ] **Step 2 (GREEN):** implement `checkKeysetDecrypt` + battery append. Package tests + `go test ./test/e2e/ -run TestRotate -race -count=1` foreground → PASS.
+- [ ] **Step 1 (RED):** checks_test.go rows + the rotate_test.go doctor assertion + the absorbed-Minor test row (doctor prints a note when Quiesce fails). Run → FAIL (check does not exist; note not printed).
+- [ ] **Step 2 (GREEN):** implement `checkKeysetDecrypt` + battery append + the `cli/doctor.go` quiesce-failure note. Package tests + `go test ./test/e2e/ -run TestRotate -race -count=1` foreground → PASS.
 - [ ] **Step 3:** full suite foreground `(ulimit -u 1400; go test ./... -race -count=1)` + `golangci-lint run` + `gofumpt -l .`; grep-prove gate.go unchanged (`git diff --stat` shows no gate.go). Commit `feat(doctor): keyset-decrypt advisory probe — stale-keyset guidance (Task 4.5)`.
 
 **Review:** standard per-task review; special attention: the check can NEVER reach SafetyGate (gate.go untouched + its hardcoded list), Warn-vs-Info boundaries (empty states never Warn), probe cost (one blob, one decrypt — no repo walk).
