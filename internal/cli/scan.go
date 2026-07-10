@@ -308,7 +308,20 @@ func newScanCmd() *cobra.Command {
 			}
 			runner := &gitleaksExecRunner{binaryPath: binaryPath}
 
-			findings, err := scanUnits(cmd.Context(), runner, units, !revealSecrets)
+			// --reveal-secrets only affects --json. Table rendering never reads
+			// Secret/Match, so dropping gitleaks' --redact outside --json would pull
+			// raw secret material into the child report and this process's memory for
+			// zero benefit — keep redaction ON there and note it on stderr (stdout
+			// stays the parseable report). The 0-clean/1-findings exit contract that
+			// wrappers depend on is unchanged: this is a note, not a usage error.
+			redact := !revealSecrets || !jsonOut
+			if revealSecrets && !jsonOut {
+				if _, err := fmt.Fprintln(cmd.ErrOrStderr(), "--reveal-secrets has no effect without --json; secrets stay redacted in the table"); err != nil {
+					return err
+				}
+			}
+
+			findings, err := scanUnits(cmd.Context(), runner, units, redact)
 			if err != nil {
 				return err
 			}
@@ -333,6 +346,6 @@ func newScanCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&project, "project", "", "limit the scan to one enrolled folder (see `agent-brain projects`); default is every enrolled unit")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print findings as JSON")
-	cmd.Flags().BoolVar(&revealSecrets, "reveal-secrets", false, "DANGER: output will contain live, usable secret material — disables gitleaks' --redact so findings carry the raw Secret/Match text instead of \"REDACTED\"; only for scripted remediation with a specific, considered reason")
+	cmd.Flags().BoolVar(&revealSecrets, "reveal-secrets", false, "DANGER: output will contain live, usable secret material — disables gitleaks' --redact (effective only together with --json; otherwise ignored with a stderr note) so findings carry the raw Secret/Match text instead of \"REDACTED\"; only for scripted remediation with a specific, considered reason")
 	return cmd
 }

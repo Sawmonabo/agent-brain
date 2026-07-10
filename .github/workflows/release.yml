@@ -14,10 +14,16 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
-      - name: "Install quill (ADR 16 decision 12: darwin ad-hoc signing)"
+      - name: "Install quill (ADR 16 decision 12: darwin ad-hoc signing; digest-pinned)"
+        env:
+          QUILL_VERSION: "0.7.1"
+          QUILL_SHA256: "e58c6f86378a22507c1123e24412afd4ee2d3bb32ebd94d6059827dc0c1b3fbf" # quill_0.7.1_linux_amd64.tar.gz, from the release's own checksums.txt (tarball byte-verified 2026-07-10)
         run: |
-          mkdir -p "${RUNNER_TEMP}/quill-bin"
-          curl -sSfL https://get.anchore.io/quill | sh -s -- -b "${RUNNER_TEMP}/quill-bin" v0.7.1
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/anchore/quill/releases/download/v${QUILL_VERSION}/quill_${QUILL_VERSION}_linux_amd64.tar.gz"
+          echo "${QUILL_SHA256}  quill_${QUILL_VERSION}_linux_amd64.tar.gz" | sha256sum -c -
+          mkdir -p quill-bin
+          tar -xz -C quill-bin -f "quill_${QUILL_VERSION}_linux_amd64.tar.gz" quill
           echo "${RUNNER_TEMP}/quill-bin" >> "$GITHUB_PATH"
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:

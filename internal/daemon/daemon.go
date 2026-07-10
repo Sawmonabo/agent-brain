@@ -92,7 +92,17 @@ type syncRequest struct {
 	// AFTER the registry loads; watch/ticker cycles pass "" and stay
 	// whole-fleet.
 	filter string
-	reply  chan api.SyncResponse
+	reply  chan syncReply
+}
+
+// syncReply carries a manual cycle's outcome back to TriggerSync. A serviced
+// cycle replies with response and a nil err; err is the quiesce refusal the
+// loop's syncRequests arm returns when a hold landed after TriggerSync's entry
+// check but before the loop serviced the request — the same errQuiesced shape
+// TriggerSync returns up front (M-N1). Mirrors adminReply's result+err split.
+type syncReply struct {
+	response api.SyncResponse
+	err      error
 }
 
 // adminRequest is a checkout mutation (track/untrack/migrate) submitted to the
@@ -377,11 +387,19 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 		case <-retryC:
 			runAutomatic("retry", "")
 		case request := <-d.syncRequests:
+			// Re-check the hold HERE, on the engine goroutine: a quiesce that
+			// landed after TriggerSync's entry check but before this arm serviced
+			// the request would otherwise run one manual cycle inside the hold
+			// (M-N1). refuseManualSyncIfQuiesced replies with the same errQuiesced
+			// refusal and we skip the cycle — quiesce refuses, it never drains.
+			if d.refuseManualSyncIfQuiesced(request, time.Now()) {
+				continue
+			}
 			runCycle("manual", request.filter)
 			d.mu.Lock()
 			last := d.lastSync
 			d.mu.Unlock()
-			request.reply <- api.SyncResponse{Status: "completed", Summary: last}
+			request.reply <- syncReply{response: api.SyncResponse{Status: "completed", Summary: last}}
 		case request := <-d.adminRequests:
 			// Enrollment/purge/seed run HERE, on the one engine goroutine
 			// (ADR 03). Reply first (the fast local git work is done), then
@@ -750,6 +768,23 @@ func (d *Daemon) quiesced(now time.Time) (time.Time, bool) {
 	return d.quiescedUntil, true
 }
 
+// refuseManualSyncIfQuiesced closes TriggerSync's check-then-enqueue window. A
+// quiesce landing after TriggerSync's entry check (d.quiesced) but before the
+// loop's syncRequests arm services the request would otherwise run one manual
+// cycle inside the hold. The arm calls this FIRST: a true return means it has
+// already replied with the same errQuiesced refusal TriggerSync uses up front,
+// so the arm skips the cycle; false means no hold is active and the cycle
+// proceeds. request.reply is buffered (TriggerSync), so the send never blocks
+// the loop even if the caller has already timed out and moved on.
+func (d *Daemon) refuseManualSyncIfQuiesced(request syncRequest, now time.Time) bool {
+	until, held := d.quiesced(now)
+	if !held {
+		return false
+	}
+	request.reply <- syncReply{err: errQuiesced(until)}
+	return true
+}
+
 // Quiesce holds automatic sync cycles until now+clamp(seconds) and refuses
 // explicit sync + mutations until then (Phase-4 F2). A fresh Quiesce while
 // already held REPLACES the deadline — last writer wins, so the same CLI
@@ -801,7 +836,7 @@ func (d *Daemon) TriggerSync(ctx context.Context, project string) (api.SyncRespo
 			}
 		}
 	}
-	request := syncRequest{filter: project, reply: make(chan api.SyncResponse, 1)}
+	request := syncRequest{filter: project, reply: make(chan syncReply, 1)}
 	timeout := time.After(syncWaitTimeout)
 	select {
 	case d.syncRequests <- request:
@@ -811,8 +846,8 @@ func (d *Daemon) TriggerSync(ctx context.Context, project string) (api.SyncRespo
 		return api.SyncResponse{}, ctx.Err()
 	}
 	select {
-	case response := <-request.reply:
-		return response, nil
+	case reply := <-request.reply:
+		return reply.response, reply.err
 	case <-timeout:
 		return api.SyncResponse{Status: "running"}, nil
 	case <-ctx.Done():
