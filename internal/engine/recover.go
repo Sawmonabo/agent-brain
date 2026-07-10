@@ -118,6 +118,13 @@ func (e *Engine) restoreStrayWorktreeDeletions(ctx context.Context) error {
 	// One checkout restores every stray deletion: HEAD's blob for each path,
 	// smudged back into the worktree (and the index, already == HEAD after the
 	// reset above). --quiet silences progress only; a real failure still errors.
+	//
+	// Every path rides in a single argv, so the batch is bounded by the OS ARG_MAX
+	// (darwin's ~256 KiB is the tightest platform we target). That is ample at
+	// memory-tree scale — the deleted set is a handful of small provider files, not
+	// a repo-wide checkout. If some future caller ever drives this over
+	// pathologically many paths, the escape hatch is to stream them on stdin with
+	// `--pathspec-from-file=- --pathspec-file-nul` instead of packing the argv.
 	args := append([]string{"checkout", "--quiet", "HEAD", "--"}, paths...)
 	if _, err := gitx.Run(ctx, e.checkout, args...); err != nil {
 		return fmt.Errorf("recover: restore stray worktree deletions: %w", err)
