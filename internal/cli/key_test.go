@@ -233,7 +233,10 @@ func TestKeyImportForceValidatesBeforeTouchingExistingKeyset(t *testing.T) {
 // /v0/reencrypt hit and answers it with resp. It points the CLI at itself via
 // AGENT_BRAIN_RUNTIME_DIR (t.Setenv ⇒ no t.Parallel), the same shape the other
 // CLI fake daemons use.
-func startFakeDaemonForRotate(t *testing.T, resp api.ReencryptResponse) func() int {
+// startFakeRotateDaemon serves /v0/status as "ready" and routes /v0/reencrypt to
+// reencrypt (after counting the hit), returning the reencrypt hit counter. It
+// points AGENT_BRAIN_RUNTIME_DIR at this socket so newAPIClient dials it.
+func startFakeRotateDaemon(t *testing.T, reencrypt http.HandlerFunc) func() int {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ab")
 	if err != nil {
@@ -248,11 +251,11 @@ func startFakeDaemonForRotate(t *testing.T, resp api.ReencryptResponse) func() i
 	mux.HandleFunc("/v0/status", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(api.StatusResponse{State: "ready"})
 	})
-	mux.HandleFunc("/v0/reencrypt", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/v0/reencrypt", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		hits++
 		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(resp)
+		reencrypt(w, r)
 	})
 	listener, err := net.Listen("unix", filepath.Join(dir, "agent-brain.sock"))
 	if err != nil {
@@ -270,6 +273,14 @@ func startFakeDaemonForRotate(t *testing.T, resp api.ReencryptResponse) func() i
 		defer mu.Unlock()
 		return hits
 	}
+}
+
+// startFakeDaemonForRotate serves a canned successful reencrypt response.
+func startFakeDaemonForRotate(t *testing.T, resp api.ReencryptResponse) func() int {
+	t.Helper()
+	return startFakeRotateDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(resp)
+	})
 }
 
 // TestKeyRotateRefusesWhenDaemonDown pins the design refusal: with no daemon to
@@ -432,5 +443,64 @@ func TestKeyRotateHappyPathRotatesAndReencrypts(t *testing.T) {
 	}
 	if bytes.Equal(oldSealed, newSealed) {
 		t.Fatal("primary did not switch: identical plaintext sealed identically after rotate")
+	}
+}
+
+// TestKeyRotateReencryptFailureNamesReRotate pins the F2 fix: once the keyset is
+// rotated but the daemon's re-encrypt fails, the repo is mixed-primary, and the
+// error must direct the user to re-run `agent-brain key rotate` (which reseals) —
+// NOT to `agent-brain sync`, which only touches changed blobs and would leave the
+// repo mixed-primary under the old key. Security-relevant: the (possibly
+// compromised) old key still opens every un-resealed blob on the wire.
+func TestKeyRotateReencryptFailureNamesReRotate(t *testing.T) {
+	reencryptHits := startFakeRotateDaemon(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "reencrypt boom", http.StatusInternalServerError)
+	})
+	configDir := t.TempDir()
+	keysetPath := filepath.Join(configDir, "keyset.json")
+	if err := keys.Generate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(keysetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	mustNotPrompt := func() (bool, error) {
+		t.Fatal("--yes must skip the confirmation prompt")
+		return false, nil
+	}
+	err = runKeyRotate(context.Background(), client, keysetPath, &out, &errOut, true, mustNotPrompt)
+	if err == nil {
+		t.Fatal("a failed daemon re-encrypt must surface as an error")
+	}
+
+	// The daemon WAS asked to re-encrypt, so the keyset really did rotate first.
+	if got := reencryptHits(); got != 1 {
+		t.Fatalf("daemon re-encrypt called %d times; want 1", got)
+	}
+	// The corrected recovery: re-run `key rotate`, and NOT the old `sync` misdirection.
+	if !strings.Contains(err.Error(), "re-run `agent-brain key rotate`") {
+		t.Fatalf("re-encrypt-failure error must direct the user to re-run `agent-brain key rotate`: %v", err)
+	}
+	if strings.Contains(err.Error(), "will re-encrypt on its next cycle") {
+		t.Fatalf("error still carries the old misdirection to `agent-brain sync`: %v", err)
+	}
+	// The wrapped daemon failure is preserved for diagnosis.
+	if !strings.Contains(err.Error(), "reencrypt boom") {
+		t.Fatalf("error dropped the wrapped daemon failure: %v", err)
+	}
+	// The hazard the message warns about is real: the keyset already rotated.
+	after, err := os.ReadFile(keysetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(before, after) {
+		t.Fatal("keyset unchanged after a re-encrypt failure; the test no longer exercises the mixed-primary hazard")
 	}
 }

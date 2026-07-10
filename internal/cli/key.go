@@ -220,8 +220,9 @@ func runKeyRotate(ctx context.Context, client *api.Client, keysetPath string, ou
 	// failure here is NOT a clean abort: name the manual completion path.
 	resp, err := client.Reencrypt(ctx)
 	if err != nil {
-		return fmt.Errorf("keyset rotated, but the re-encrypt failed — once the daemon is healthy, "+
-			"`agent-brain sync` will re-encrypt on its next cycle: %w", err)
+		return fmt.Errorf("keyset rotated, but the re-encrypt failed — the repo is now mixed-primary; "+
+			"once the daemon is healthy, re-run `agent-brain key rotate` to reseal every blob under the new "+
+			"primary (a plain `agent-brain sync` will NOT re-encrypt the unchanged blobs): %w", err)
 	}
 	report.printf("key rotate: re-encrypted %d files under the new primary\n", resp.Files)
 	switch {
