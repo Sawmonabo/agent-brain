@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -258,5 +259,102 @@ func TestDaemonDownStartServiceOffer(t *testing.T) {
 	}
 	if !containsMsg[serviceStartedMsg](msgs) {
 		t.Error("start-service Cmd did not produce serviceStartedMsg")
+	}
+}
+
+func TestWatchState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+	tests := []struct {
+		name   string
+		status api.StatusResponse
+		want   string
+	}{
+		{name: "ready", status: api.StatusResponse{State: "ready"}, want: "watching"},
+		{name: "held when quiesced in future", status: api.StatusResponse{State: "ready", QuiescedUntil: &future}, want: "held"},
+		{name: "stale quiesce reads as watching", status: api.StatusResponse{State: "ready", QuiescedUntil: &past}, want: "watching"},
+		{name: "uninitialized verbatim", status: api.StatusResponse{State: "uninitialized"}, want: "uninitialized"},
+		{name: "empty state dash", status: api.StatusResponse{}, want: "—"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := watchState(testCase.status, now); got != testCase.want {
+				t.Errorf("watchState = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestLastCycle(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status api.StatusResponse
+		want   string
+	}{
+		{name: "never", status: api.StatusResponse{}, want: "never"},
+		{name: "ok", status: api.StatusResponse{LastSync: &api.SyncSummary{Pushed: true}}, want: "ok"},
+		{name: "error", status: api.StatusResponse{LastSync: &api.SyncSummary{Error: "boom"}}, want: "error"},
+		{name: "degraded", status: api.StatusResponse{LastSync: &api.SyncSummary{Degraded: []string{"x"}}}, want: "degraded"},
+		{name: "scrubbed", status: api.StatusResponse{LastSync: &api.SyncSummary{Scrubbed: []string{"y"}}}, want: "scrubbed"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := lastCycle(testCase.status); got != testCase.want {
+				t.Errorf("lastCycle = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestStatusHeader proves the persistent fleet header renders daemon posture,
+// shows a live quiesce deadline, and degrades to a plain notice when status is
+// unavailable.
+func TestStatusHeader(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	quiesce := now.Add(30 * time.Minute)
+	tests := []struct {
+		name    string
+		model   Model
+		want    []string
+		notWant []string
+	}{
+		{
+			name:  "ready with last sync",
+			model: Model{now: now, status: api.StatusResponse{State: "ready", LastSync: &api.SyncSummary{Pushed: true}}},
+			want:  []string{"daemon: watching", "last cycle: ok"},
+		},
+		{
+			name:  "held shows the quiesce deadline",
+			model: Model{now: now, status: api.StatusResponse{State: "ready", QuiescedUntil: &quiesce}},
+			want:  []string{"daemon: held", "quiesced until"},
+		},
+		{
+			name:    "status error degrades gracefully",
+			model:   Model{now: now, statusErr: errors.New("boom")},
+			want:    []string{"daemon status unavailable"},
+			notWant: []string{"last cycle"},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := plain(testCase.model.statusHeader())
+			for _, want := range testCase.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("status header missing %q; got:\n%s", want, got)
+				}
+			}
+			for _, notWant := range testCase.notWant {
+				if strings.Contains(got, notWant) {
+					t.Errorf("status header should not contain %q; got:\n%s", notWant, got)
+				}
+			}
+		})
 	}
 }

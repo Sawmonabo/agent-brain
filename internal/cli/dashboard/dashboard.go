@@ -241,7 +241,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status, m.statusErr = msg.resp, msg.err
 		m.daemonDown = errors.Is(msg.err, api.ErrDaemonNotRunning)
-		m.projects.setStatus(msg.resp)
 		return m, nil
 
 	case projectsMsg:
@@ -337,7 +336,7 @@ func (m Model) View() tea.View {
 	if m.daemonDown {
 		body = m.daemonDownView()
 	} else {
-		body = strings.Join([]string{m.tabBar(), m.activeBody(), m.footer()}, "\n\n")
+		body = strings.Join([]string{m.statusHeader(), m.tabBar(), m.activeBody(), m.footer()}, "\n\n")
 	}
 	view := tea.NewView(body)
 	view.AltScreen = true
@@ -375,6 +374,57 @@ func (m Model) tabBar() string {
 
 func (m Model) footer() string {
 	return dimStyle.Render("tab/1–4 switch · s sync · t untrack · q quit")
+}
+
+// statusHeader renders the fleet-level facts once, persistently above the tab
+// bar, so daemon posture is glanceable from every view. Projects rows
+// deliberately do not repeat these — they are fleet-wide, not per-unit
+// (spec §7; plan Task 6.5 adds genuine per-unit telemetry).
+func (m Model) statusHeader() string {
+	if m.statusErr != nil {
+		return dimStyle.Render("daemon status unavailable")
+	}
+	segments := []string{"daemon: " + watchState(m.status, m.now)}
+	if quiesce := m.status.QuiescedUntil; quiesce != nil && quiesce.After(m.now) {
+		segments = append(segments, "quiesced until "+quiesce.Format("15:04:05"))
+	}
+	segments = append(segments, "last cycle: "+lastCycle(m.status))
+	return dimStyle.Render(strings.Join(segments, " · "))
+}
+
+// watchState derives the fleet's watch posture from the daemon status. A live
+// hold (QuiescedUntil in the future) wins; otherwise a "ready" daemon is
+// watching and any other state (e.g. "uninitialized") is surfaced verbatim. It
+// takes now so a stale hold (a quiesce whose deadline has passed) reads as
+// watching, matching the Activity view's guard.
+func watchState(status api.StatusResponse, now time.Time) string {
+	if status.QuiescedUntil != nil && status.QuiescedUntil.After(now) {
+		return "held"
+	}
+	switch status.State {
+	case "ready":
+		return "watching"
+	case "":
+		return "—"
+	default:
+		return status.State
+	}
+}
+
+// lastCycle summarises the last fleet cycle's outcome for the status header.
+func lastCycle(status api.StatusResponse) string {
+	switch {
+	case status.LastSync == nil:
+		return "never"
+	case status.LastSync.Error != "":
+		return "error"
+	case len(status.LastSync.Degraded) > 0:
+		return "degraded"
+	case len(status.LastSync.Scrubbed) > 0:
+		return "scrubbed"
+	default:
+		return "ok"
+	}
 }
 
 func (m Model) daemonDownView() string {

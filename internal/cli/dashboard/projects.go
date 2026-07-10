@@ -11,20 +11,24 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
-// projectsView is the enrolled-fleet table (spec §7). Columns are
-// provider · folder · watch · last-cycle · health; watch and last-cycle are
-// fleet-derived from the daemon status (api.UnitInfo carries no per-unit signal
-// for them — deriving from existing status adds no daemon endpoint), while
-// health is the genuinely per-unit Degraded flag.
+// projectsView is the enrolled-fleet table (spec §7). Its columns are
+// genuinely per-unit — provider · folder · health — with an optional local-dir
+// column on a roomy terminal. Fleet-level posture (daemon state, quiesce, last
+// cycle) is deliberately NOT rendered per row: those values are identical down
+// every row, so repeating them would fabricate per-unit granularity the API
+// does not have. They live once in the persistent status header and in
+// Activity. api.UnitInfo carries no per-unit watch-state or last-cycle signal
+// today; plan Task 6.5 adds those fields additively, after which they become
+// real columns here.
 //
 // Keys: `s` syncs the selected folder (client.Sync), `t` toggles tracking with
 // an inline y/N confirm. Because the list holds only already-enrolled units,
 // the toggle direction is always untrack (client.Untrack, never --purge — a
 // purge is a destructive typed-confirm operation reserved for the CLI).
 type projectsView struct {
-	table  table.Model
-	status api.StatusResponse
-	units  []api.UnitInfo
+	table table.Model
+	units []api.UnitInfo
+	wide  bool // terminal is roomy enough for the LOCAL DIR column
 
 	confirming    bool
 	confirmFolder string
@@ -34,21 +38,25 @@ type projectsView struct {
 }
 
 func newProjectsView() projectsView {
-	columns := []table.Column{
-		{Title: "PROVIDER", Width: 9},
-		{Title: "FOLDER", Width: 26},
-		{Title: "WATCH", Width: 9},
-		{Title: "LAST CYCLE", Width: 10},
-		{Title: "HEALTH", Width: 9},
-	}
-	return projectsView{
-		table: table.New(table.WithColumns(columns), table.WithFocused(true), table.WithHeight(10)),
-	}
+	view := projectsView{}
+	view.table = table.New(table.WithFocused(true), table.WithHeight(10))
+	view.setColumns(false)
+	return view
 }
 
-func (v *projectsView) setStatus(status api.StatusResponse) {
-	v.status = status
-	v.rebuild()
+// setColumns installs the per-unit column set. wide adds LOCAL DIR, shown only
+// when the terminal can carry the full path without crowding the essentials.
+func (v *projectsView) setColumns(wide bool) {
+	columns := []table.Column{
+		{Title: "PROVIDER", Width: 9},
+		{Title: "FOLDER", Width: 28},
+		{Title: "HEALTH", Width: 9},
+	}
+	if wide {
+		columns = append(columns, table.Column{Title: "LOCAL DIR", Width: 48})
+	}
+	v.wide = wide
+	v.table.SetColumns(columns)
 }
 
 func (v *projectsView) setUnits(units []api.UnitInfo) {
@@ -62,15 +70,19 @@ func (v *projectsView) setLoadErr(err error) { v.loadErr = err }
 func (v *projectsView) setSize(width, height int) {
 	if width > 0 {
 		v.table.SetWidth(width)
+		if wide := width >= 100; wide != v.wide {
+			v.setColumns(wide)
+			v.rebuild()
+		}
 	}
-	// Leave room for the tab bar, section title, footer, and notice line.
-	if bodyHeight := height - 12; bodyHeight > 3 {
+	// Leave room for the status header, tab bar, section title, footer, notice.
+	if bodyHeight := height - 13; bodyHeight > 3 {
 		v.table.SetHeight(bodyHeight)
 	}
 }
 
 func (v *projectsView) rebuild() {
-	v.table.SetRows(projectRows(v.status, v.units))
+	v.table.SetRows(projectRows(v.units, v.wide))
 	if len(v.units) == 0 {
 		return
 	}
@@ -188,51 +200,20 @@ func (v projectsView) view() string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func projectRows(status api.StatusResponse, units []api.UnitInfo) []table.Row {
-	watch := watchState(status)
-	last := lastCycle(status)
+func projectRows(units []api.UnitInfo, wide bool) []table.Row {
 	rows := make([]table.Row, len(units))
 	for i, unit := range units {
 		health := "ok"
 		if unit.Degraded {
 			health = "degraded"
 		}
-		rows[i] = table.Row{unit.Provider, unit.Folder, watch, last, health}
+		row := table.Row{unit.Provider, unit.Folder, health}
+		if wide {
+			row = append(row, unit.LocalDir)
+		}
+		rows[i] = row
 	}
 	return rows
-}
-
-// watchState derives the fleet's watch posture from the daemon status. A hold
-// (QuiescedUntil) wins; otherwise a "ready" daemon is watching and any other
-// state (e.g. "uninitialized") is surfaced verbatim.
-func watchState(status api.StatusResponse) string {
-	if status.QuiescedUntil != nil {
-		return "held"
-	}
-	switch status.State {
-	case "ready":
-		return "watching"
-	case "":
-		return "—"
-	default:
-		return status.State
-	}
-}
-
-// lastCycle summarises the last fleet cycle's outcome for the table column.
-func lastCycle(status api.StatusResponse) string {
-	switch {
-	case status.LastSync == nil:
-		return "never"
-	case status.LastSync.Error != "":
-		return "error"
-	case len(status.LastSync.Degraded) > 0:
-		return "degraded"
-	case len(status.LastSync.Scrubbed) > 0:
-		return "scrubbed"
-	default:
-		return "ok"
-	}
 }
 
 func syncCmd(data dashboardData, folder string) tea.Cmd {

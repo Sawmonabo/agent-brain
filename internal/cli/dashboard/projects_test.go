@@ -43,10 +43,36 @@ func TestProjectsTableRenders(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	model := loadedProjects(data)
 
-	body := plain(model.View().Content)
-	for _, want := range []string{"claude", "agent-brain", "codex", "_global", "watching", "degraded"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("projects view missing %q; got:\n%s", want, body)
+	// The table carries only genuinely per-unit columns.
+	table := plain(model.projects.view())
+	for _, want := range []string{"PROVIDER", "FOLDER", "HEALTH", "claude", "agent-brain", "codex", "_global", "degraded"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("projects table missing %q; got:\n%s", want, table)
+		}
+	}
+	// Fleet-wide posture must NOT be fabricated as a per-row column.
+	if strings.Contains(table, "watching") {
+		t.Errorf("projects table fabricated fleet watch-state as a column; got:\n%s", table)
+	}
+
+	// It lives once in the persistent header instead.
+	header := plain(model.statusHeader())
+	for _, want := range []string{"daemon", "watching", "last cycle"} {
+		if !strings.Contains(header, want) {
+			t.Errorf("status header missing %q; got:\n%s", want, header)
+		}
+	}
+}
+
+func TestProjectsWideTableShowsLocalDir(t *testing.T) {
+	t.Parallel()
+	data := &fakeData{status: readyStatus(), projects: twoUnits()}
+	model := loadedProjects(data) // sized 110 wide → roomy
+
+	table := plain(model.projects.view())
+	for _, want := range []string{"LOCAL DIR", "/home/u/.claude/projects/agent-brain/memory"} {
+		if !strings.Contains(table, want) {
+			t.Errorf("wide projects table missing %q; got:\n%s", want, table)
 		}
 	}
 }
@@ -133,51 +159,5 @@ func TestProjectsUntrackToggleCancels(t *testing.T) {
 	}
 	if !strings.Contains(plain(model.View().Content), "untrack cancelled") {
 		t.Errorf("cancel notice not shown; got:\n%s", plain(model.View().Content))
-	}
-}
-
-func TestWatchState(t *testing.T) {
-	t.Parallel()
-	future := time.Now().Add(time.Hour)
-	tests := []struct {
-		name   string
-		status api.StatusResponse
-		want   string
-	}{
-		{name: "ready", status: api.StatusResponse{State: "ready"}, want: "watching"},
-		{name: "held when quiesced", status: api.StatusResponse{State: "ready", QuiescedUntil: &future}, want: "held"},
-		{name: "uninitialized verbatim", status: api.StatusResponse{State: "uninitialized"}, want: "uninitialized"},
-		{name: "empty state dash", status: api.StatusResponse{}, want: "—"},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			if got := watchState(testCase.status); got != testCase.want {
-				t.Errorf("watchState = %q, want %q", got, testCase.want)
-			}
-		})
-	}
-}
-
-func TestLastCycle(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		status api.StatusResponse
-		want   string
-	}{
-		{name: "never", status: api.StatusResponse{}, want: "never"},
-		{name: "ok", status: api.StatusResponse{LastSync: &api.SyncSummary{Pushed: true}}, want: "ok"},
-		{name: "error", status: api.StatusResponse{LastSync: &api.SyncSummary{Error: "boom"}}, want: "error"},
-		{name: "degraded", status: api.StatusResponse{LastSync: &api.SyncSummary{Degraded: []string{"x"}}}, want: "degraded"},
-		{name: "scrubbed", status: api.StatusResponse{LastSync: &api.SyncSummary{Scrubbed: []string{"y"}}}, want: "scrubbed"},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			if got := lastCycle(testCase.status); got != testCase.want {
-				t.Errorf("lastCycle = %q, want %q", got, testCase.want)
-			}
-		})
 	}
 }
