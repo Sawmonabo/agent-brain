@@ -254,6 +254,14 @@ func remoteCheckFixture(t *testing.T, bareURL string) doctor.Deps {
 	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "init", "--quiet", "--initial-branch=main"); err != nil {
 		t.Fatal(err)
 	}
+	// Repo-local identity, same as newFixture: commits in this checkout must
+	// never depend on (or read) the machine's global git config.
+	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "config", "user.name", "doctor-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "config", "user.email", "doctor-test@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "remote", "add", "origin", bareURL); err != nil {
 		t.Fatal(err)
 	}
