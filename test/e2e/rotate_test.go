@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,12 +44,7 @@ func copyKeyset(t *testing.T, dst, src string) {
 
 // contains reports whether folder is in the degraded set.
 func contains(folders []string, folder string) bool {
-	for _, f := range folders {
-		if f == folder {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(folders, folder)
 }
 
 // doctorPathsFor bridges a syncMachine's checkout into a config.Paths for

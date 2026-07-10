@@ -608,7 +608,7 @@ func trackedPaths(ctx context.Context, dir, rev string) []string {
 // splitNulPaths splits a -z-delimited git plumbing path list.
 func splitNulPaths(output string) []string {
 	var paths []string
-	for _, path := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
+	for path := range strings.SplitSeq(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if path != "" {
 			paths = append(paths, path)
 		}
