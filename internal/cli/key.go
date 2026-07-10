@@ -229,7 +229,8 @@ func runKeyRotate(ctx context.Context, client *api.Client, keysetPath string, ou
 	case resp.Pushed:
 		report.println("key rotate: pushed to the remote")
 	case resp.PushQueued:
-		report.println("key rotate: re-encrypt commit queued — it will push on the next successful cycle")
+		report.println("key rotate: re-encrypt commit queued — it will push on the next successful cycle; " +
+			"re-run `agent-brain key rotate` after it pushes if you need every blob resealed now")
 	}
 	return report.err
 }
