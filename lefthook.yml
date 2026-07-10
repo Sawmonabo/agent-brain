@@ -10,6 +10,15 @@ pre-commit:
     - name: mod-tidy
       glob: "go.{mod,sum}"
       run: go mod tidy -diff
+    # No glob: secrets can land in any file, not just *.go. `--staged` is
+    # gitleaks v8.30.1's own recommendation for pre-commit (`gitleaks git
+    # --help`). Do NOT "improve" this to `--pre-commit --staged` — that
+    # combination regresses to a full-history scan on every commit
+    # (gitleaks issue #1522). If `--staged` alone ever misbehaves, the
+    # documented fallback is `git diff --cached | gitleaks stdin --no-banner`
+    # (ADR 14; docs/decisions/14-adr-reliability-libraries.md).
+    - name: gitleaks
+      run: gitleaks git --staged --no-banner
 pre-push:
   jobs:
     - name: test-race
