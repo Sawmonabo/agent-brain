@@ -1,0 +1,219 @@
+package e2e
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Sawmonabo/agent-brain/internal/keys"
+	"github.com/Sawmonabo/agent-brain/internal/repo"
+)
+
+// useKeyset points the process-wide AGENT_BRAIN_CONFIG_DIR at dir, so the
+// clean/smudge filter subprocesses git spawns from here on read that keyset
+// (gitx has no per-call env injection — the filter resolves the keyset from
+// the inherited process env). The rotation proof needs two machines on
+// DISTINCT keysets, so these tests flip this between each machine's ops; that
+// is only safe in a NON-parallel test (t.Setenv both asserts that and restores
+// the suite keyset on cleanup).
+func useKeyset(dir string) {
+	_ = os.Setenv("AGENT_BRAIN_CONFIG_DIR", dir)
+}
+
+// copyKeyset installs a byte-identical copy of src's keyset.json under dst —
+// the test's stand-in for `key export | key import --force`: the receiving
+// machine ends up holding exactly the sender's key material.
+func copyKeyset(t *testing.T, dst, src string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(src, "keyset.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, "keyset.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// contains reports whether folder is in the degraded set.
+func contains(folders []string, folder string) bool {
+	for _, f := range folders {
+		if f == folder {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	rotFact1 = "memories/testing-style.md"
+	rotFact2 = "memories/architecture.md"
+	rotText1 = "the codebase uses table-driven tests exclusively\n"
+	rotText2 = "the engine is the single writer to the checkout\n"
+)
+
+// twoMachinesDistinctKeysets sets up the shared spec §5 shape for the rotation
+// proofs: a bare remote plus machines A and B on SEPARATE keyset dirs (kb is a
+// byte copy of ka, so both smudge the pre-rotation content). Rotation touches
+// only ka, making B the stale peer. The caller must have installed the
+// non-parallel + restore guard (t.Setenv AGENT_BRAIN_CONFIG_DIR) already.
+func twoMachinesDistinctKeysets(t *testing.T) (a, b *syncMachine, bare, kaDir, kbDir string) {
+	t.Helper()
+	configRoot := t.TempDir()
+	kaDir = filepath.Join(configRoot, "machine-a")
+	kbDir = filepath.Join(configRoot, "machine-b")
+	if err := keys.Generate(filepath.Join(kaDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	copyKeyset(t, kbDir, kaDir)
+
+	bare = newBareRepo(t)
+	useKeyset(kaDir)
+	a = newSyncMachine(t, "host-a", bare, true)
+	useKeyset(kbDir)
+	b = newSyncMachine(t, "host-b", bare, false)
+	return a, b, bare, kaDir, kbDir
+}
+
+// TestKeyRotationReencryptsWireFailsClosed is the spec §5 rotation wire proof,
+// across two machines holding SEPARATE keysets — what only the two-machine
+// engine harness can express. It proves: keys.Rotate + engine.ReencryptAll
+// (the exact daemon path, daemon.Reencrypt -> submitAdmin -> ReencryptAll)
+// reseals EVERY memory blob under the new primary (changed on the wire AND
+// still agb1\x00, no plaintext), and a peer without the new key fails closed
+// (its folder degrades, the provider dir keeps its intact pre-rotation
+// plaintext, and a direct smudge of the rotated blob is refused). Recovery via
+// `key import` is proven in TestKeyRotationRecoveryViaKeyImport. The real
+// `key rotate --yes` CLI->daemon path is proven in scripts/key_rotate.txt.
+func TestKeyRotationReencryptsWireFailsClosed(t *testing.T) {
+	ctx := context.Background()
+
+	// t.Setenv: non-parallel guard + restore the suite keyset on cleanup.
+	// os.Setenv (useKeyset) flips between ka/kb during the test.
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", os.Getenv("AGENT_BRAIN_CONFIG_DIR"))
+	a, b, bare, kaDir, kbDir := twoMachinesDistinctKeysets(t)
+
+	repoPath1 := "alpha/claude/" + rotFact1
+	repoPath2 := "alpha/claude/" + rotFact2
+
+	// (a) A writes two facts and syncs; B syncs and reads them in plaintext.
+	useKeyset(kaDir)
+	a.write(t, rotFact1, rotText1)
+	a.write(t, rotFact2, rotText2)
+	if r := a.sync(t); !r.Pushed {
+		t.Fatalf("A initial push failed: %+v", r)
+	}
+	before1 := remoteBlob(t, bare, repoPath1)
+	before2 := remoteBlob(t, bare, repoPath2)
+	if !strings.HasPrefix(before1, magicPrefix) || !strings.HasPrefix(before2, magicPrefix) {
+		t.Fatal("pre-rotation blobs are not agent-brain ciphertext")
+	}
+	useKeyset(kbDir)
+	b.sync(t)
+	if got := b.read(t, rotFact1); got != rotText1 {
+		t.Fatalf("B pre-rotation fact1 = %q, want %q", got, rotText1)
+	}
+
+	// (b) A rotates and re-encrypts the whole repo under the new primary.
+	useKeyset(kaDir)
+	if err := keys.Rotate(filepath.Join(kaDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	report, err := a.engine.ReencryptAll(ctx)
+	if err != nil {
+		t.Fatalf("ReencryptAll: %v", err)
+	}
+	if report.Files != 2 {
+		t.Fatalf("ReencryptAll Files = %d, want 2 (both facts resealed)", report.Files)
+	}
+	if !report.Pushed {
+		t.Fatalf("ReencryptAll did not push: %+v", report)
+	}
+
+	// Wire: every memory blob CHANGED and is still ciphertext under the new
+	// primary; no plaintext anywhere in the bare repo (every object).
+	after1 := remoteBlob(t, bare, repoPath1)
+	after2 := remoteBlob(t, bare, repoPath2)
+	if after1 == before1 || after2 == before2 {
+		t.Fatal("a memory blob did not change on rotation — re-encrypt did not reseal under the new primary")
+	}
+	if !strings.HasPrefix(after1, magicPrefix) || !strings.HasPrefix(after2, magicPrefix) {
+		t.Fatal("post-rotation blob lost the agent-brain magic prefix")
+	}
+	assertNoPlaintextOnWire(t, bare, rotText1, rotText2)
+
+	// (c) B, still on the OLD keyset, syncs. Fail-closed: it cannot smudge the
+	// new-primary ciphertext, so alpha degrades — gracefully (no hard error) —
+	// and its provider dir keeps the intact pre-rotation plaintext (mirror-out
+	// is withheld for a degraded folder, spec §11: a stale peer is never left
+	// with a half-decrypted file).
+	useKeyset(kbDir)
+	reportC, errC := b.engine.Sync(ctx, []repo.Unit{b.unit})
+	if errC != nil {
+		t.Fatalf("B stale-key sync errored instead of degrading: %v", errC)
+	}
+	if !contains(reportC.Degraded, "alpha") {
+		t.Fatalf("B stale-key sync did not degrade alpha (fail-closed): Degraded=%v", reportC.Degraded)
+	}
+	if got := b.read(t, rotFact1); got != rotText1 {
+		t.Fatalf("B provider dir corrupted by a failed smudge: fact1 = %q, want %q", got, rotText1)
+	}
+
+	// Direct proof the degradation CAUSE is the missing key, not an unrelated
+	// conflict: checking the rotated blob out of origin/main with B's stale
+	// keyset must fail closed (required smudge, missing new primary). Restore
+	// B's worktree afterward.
+	staleEnv := []string{"AGENT_BRAIN_CONFIG_DIR=" + kbDir}
+	if _, err := gitRunEnv(t, b.checkout, staleEnv, "checkout", "origin/main", "--", repoPath1); err == nil {
+		t.Fatal("smudging the rotated blob with the stale keyset succeeded — fail-closed broken")
+	}
+	gitRun(t, b.checkout, "checkout", "--", repoPath1)
+}
+
+// TestKeyRotationRecoveryViaKeyImport proves the recovery half of spec §5:
+// once the stale peer imports the rotated keyset (`key import --force`,
+// modeled by copyKeyset), it syncs cleanly and reads every fact back in
+// plaintext. Importing the keyset is the ONLY change, so it is provably what
+// unblocks B.
+func TestKeyRotationRecoveryViaKeyImport(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("AGENT_BRAIN_CONFIG_DIR", os.Getenv("AGENT_BRAIN_CONFIG_DIR"))
+	a, b, _, kaDir, kbDir := twoMachinesDistinctKeysets(t)
+
+	useKeyset(kaDir)
+	a.write(t, rotFact1, rotText1)
+	a.write(t, rotFact2, rotText2)
+	a.sync(t)
+	useKeyset(kbDir)
+	b.sync(t)
+	if got := b.read(t, rotFact1); got != rotText1 {
+		t.Fatalf("B pre-rotation fact1 = %q, want %q", got, rotText1)
+	}
+
+	useKeyset(kaDir)
+	if err := keys.Rotate(filepath.Join(kaDir, "keyset.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.engine.ReencryptAll(ctx); err != nil {
+		t.Fatalf("ReencryptAll: %v", err)
+	}
+
+	// B imports A's rotated keyset, then syncs: the folder recovers and BOTH
+	// facts read back in plaintext.
+	copyKeyset(t, kbDir, kaDir)
+	useKeyset(kbDir)
+	reportD := b.sync(t)
+	if len(reportD.Degraded) != 0 {
+		t.Fatalf("B still degraded after importing the rotated keyset: %v", reportD.Degraded)
+	}
+	if got := b.read(t, rotFact1); got != rotText1 {
+		t.Fatalf("B fact1 after recovery = %q, want %q", got, rotText1)
+	}
+	if got := b.read(t, rotFact2); got != rotText2 {
+		t.Fatalf("B fact2 after recovery = %q, want %q", got, rotText2)
+	}
+}
