@@ -346,6 +346,6 @@ func newScanCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&project, "project", "", "limit the scan to one enrolled folder (see `agent-brain projects`); default is every enrolled unit")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print findings as JSON")
-	cmd.Flags().BoolVar(&revealSecrets, "reveal-secrets", false, "DANGER: output will contain live, usable secret material — disables gitleaks' --redact so findings carry the raw Secret/Match text instead of \"REDACTED\"; only for scripted remediation with a specific, considered reason")
+	cmd.Flags().BoolVar(&revealSecrets, "reveal-secrets", false, "DANGER: output will contain live, usable secret material — disables gitleaks' --redact (effective only together with --json; otherwise ignored with a stderr note) so findings carry the raw Secret/Match text instead of \"REDACTED\"; only for scripted remediation with a specific, considered reason")
 	return cmd
 }

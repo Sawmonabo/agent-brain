@@ -254,6 +254,7 @@ func TestScanCommandRedactFlag(t *testing.T) {
 		wantRedact bool
 	}{
 		{name: "default redacts", wantRedact: true},
+		{name: "json alone still redacts", extraArgs: []string{"--json"}, wantRedact: true},
 		{name: "reveal-secrets with --json omits redact", extraArgs: []string{"--reveal-secrets", "--json"}, wantRedact: false},
 	}
 	for _, test := range tests {
