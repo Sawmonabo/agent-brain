@@ -94,6 +94,12 @@ type Runner interface {
 // config.MigrateSettings.PreflightTimeout, Task 3a).
 const lingerTimeout = 5 * time.Second
 
+// loginctlWaitDelay bounds cleanup after lingerTimeout kills loginctl: a
+// descendant still holding the output pipes must not block Wait past the
+// deadline the timeout promised (same bound gitx and ghx apply to their
+// subprocesses).
+const loginctlWaitDelay = 10 * time.Second
+
 // execRunner shells the real loginctl binary. args come only from this
 // package's own call sites, never unsanitized user input.
 type execRunner struct{}
@@ -101,6 +107,7 @@ type execRunner struct{}
 func (execRunner) Run(ctx context.Context, args ...string) (Result, error) {
 	//nolint:gosec // G204: "loginctl" is a constant, args are internal to this package
 	cmd := exec.CommandContext(ctx, "loginctl", args...)
+	cmd.WaitDelay = loginctlWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

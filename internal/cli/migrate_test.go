@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -89,27 +92,58 @@ func TestRunMigratePreflightRefusesWhenChezmoiBinaryMissing(t *testing.T) {
 }
 
 // TestRunMigratePreflightHonorsConfiguredTimeout proves the timeout
-// argument — not a hardcoded const — bounds the chezmoi subprocess: a
-// fake chezmoi that sleeps far longer than the configured timeout must
-// still make runMigratePreflight return well before the sleep elapses
+// argument — not a hardcoded const — bounds the chezmoi subprocess even
+// when the child forks helpers (real chezmoi shells out to git): the fake
+// backgrounds a long-lived grandchild that inherits the stdout pipe, so a
+// naive single-PID kill would leave the pipe held and Wait blocked for
+// the grandchild's full lifetime. The call must return well before that,
+// and the process-group kill must take the grandchild down with it
 // (spec §10; a cold NFS home or a huge legacy tree must be able to raise
-// this past the old fixed 30s via config.MigrateSettings).
+// the timeout past the old fixed 30s via config.MigrateSettings).
 func TestRunMigratePreflightHonorsConfiguredTimeout(t *testing.T) {
-	withFakeChezmoiOnPath(t, `sleep 2; exit 0`)
+	grandchildPIDPath := filepath.Join(t.TempDir(), "grandchild.pid")
+	// The 1s timeout dwarfs the fake's startup (~10ms) so the PID file is
+	// written before the kill fires even on a badly starved runner, and the
+	// 30s sleeps dwarf every bound below so neither ends by natural exit.
+	withFakeChezmoiOnPath(t, fmt.Sprintf(`sleep 30 & echo $! > %q
+sleep 30; exit 0`, grandchildPIDPath))
 	configPath := filepath.Join(t.TempDir(), "chezmoi.toml")
 	if err := os.WriteFile(configPath, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	start := time.Now()
-	err := runMigratePreflight(context.Background(), configPath, 50*time.Millisecond)
+	err := runMigratePreflight(context.Background(), configPath, time.Second)
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("runMigratePreflight: want a timeout error, got nil")
 	}
-	if elapsed >= 2*time.Second {
-		t.Fatalf("runMigratePreflight took %v to return — the configured 50ms timeout was not honored (fake chezmoi sleeps 2s)", elapsed)
+	// Generous ceiling: timeout (1s) + WaitDelay (2s) + heavy-runner
+	// scheduling slack still land far under 5s; only an unbounded wait for
+	// the 30s grandchild can breach it.
+	if elapsed >= 5*time.Second {
+		t.Fatalf("runMigratePreflight took %v to return — the configured 1s timeout did not bound the call (fake chezmoi's grandchild sleeps 30s)", elapsed)
+	}
+
+	pidBytes, err := os.ReadFile(grandchildPIDPath)
+	if err != nil {
+		t.Fatalf("fake chezmoi never wrote its grandchild PID: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatalf("grandchild PID file content %q: %v", pidBytes, err)
+	}
+	// The process-group kill must reap the grandchild, not just chezmoi
+	// itself — poll briefly, since SIGKILL delivery is asynchronous.
+	// syscall.Kill(pid, 0) probes liveness: ESRCH means the grandchild is
+	// gone.
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("grandchild (pid %d) survived the preflight timeout — the process-group kill did not reach it", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -151,7 +185,7 @@ func TestMigrateCommandRunEHonorsConfiguredPreflightTimeout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configDir, "chezmoi.toml"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	withFakeChezmoiOnPath(t, `sleep 2; exit 0`)
+	withFakeChezmoiOnPath(t, `sleep 10; exit 0`)
 
 	start := time.Now()
 	_, err = runCmd(t, nil, "migrate")
@@ -160,8 +194,11 @@ func TestMigrateCommandRunEHonorsConfiguredPreflightTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("migrate: want the preflight timeout error, got nil")
 	}
-	if elapsed >= 2*time.Second {
-		t.Fatalf("migrate took %v to return — the configured 50ms preflight_timeout in config.toml was not honored (fake chezmoi sleeps 2s)", elapsed)
+	// Generous ceiling (same rationale as the function-level test): the
+	// 50ms timeout plus WaitDelay plus scheduling slack stay far under 5s;
+	// only waiting out the fake's full 10s sleep can breach it.
+	if elapsed >= 5*time.Second {
+		t.Fatalf("migrate took %v to return — the configured 50ms preflight_timeout in config.toml did not bound the call (fake chezmoi sleeps 10s)", elapsed)
 	}
 }
 

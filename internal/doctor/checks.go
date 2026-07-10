@@ -288,11 +288,35 @@ func checkRemote(ctx context.Context, deps Deps) (CheckResult, bool) {
 	const name = "remote"
 	timeoutCtx, cancel := context.WithTimeout(ctx, remoteCheckTimeout)
 	defer cancel()
-	result, err := gitx.RunStatus(timeoutCtx, deps.Paths.MemoriesDir(), "ls-remote", "--exit-code", "origin", "HEAD")
+	// Reachability only — deliberately NOT `--exit-code HEAD`: a remote whose
+	// HEAD symref is unborn or dangling (a brand-new empty repo, or a bare
+	// whose default branch never matched the pushed `main`) advertises no
+	// HEAD and would exit 2 under --exit-code, indistinguishable from a dead
+	// network. Reaching the remote at all is what this row reports; whether
+	// our branch exists there is the sync engine's business.
+	result, err := gitx.RunStatus(timeoutCtx, deps.Paths.MemoriesDir(), "ls-remote", "origin", "HEAD")
 	if err != nil || result.ExitCode != 0 {
-		return CheckResult{Name: name, Status: StatusFail, Detail: "origin is unreachable — commits will queue locally", Fix: "check network connectivity and `gh auth status`"}, true
+		detail := "origin is unreachable — commits will queue locally"
+		// Carry git's own first stderr line (or the spawn/timeout error):
+		// "unreachable" alone has already cost a debugging session that a
+		// `Could not read from remote repository` suffix would have ended.
+		if err != nil {
+			detail += ": " + firstLine(err.Error())
+		} else if s := strings.TrimSpace(result.Stderr); s != "" {
+			detail += ": " + firstLine(s)
+		}
+		return CheckResult{Name: name, Status: StatusFail, Detail: detail, Fix: "check network connectivity and `gh auth status`"}, true
 	}
 	return CheckResult{Name: name, Status: StatusOK, Detail: "origin is reachable"}, true
+}
+
+// firstLine trims a potentially multi-line message to its first line, so a
+// check Detail stays a single table row.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func checkGH(ctx context.Context, deps Deps) (CheckResult, bool) {

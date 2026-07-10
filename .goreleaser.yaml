@@ -34,6 +34,13 @@ archives:
       - README.md
       - LICENSE
 
+release:
+  # Semver-prerelease tags (v2.0.0-rc.*) mark their GitHub release as a
+  # prerelease so they never present as the repo's "latest"; brews'
+  # skip_upload: auto below keys off the same semver rule, keeping the two
+  # publish gates consistent.
+  prerelease: auto
+
 changelog:
   use: git
   sort: asc

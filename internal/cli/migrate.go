@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -97,6 +98,12 @@ type migrateCallbacks struct {
 // config.MigrateSettings.PreflightTimeout (default 30s) — a cold NFS home
 // or a huge legacy tree can exceed a fixed timeout with no operator
 // recourse, so the caller resolves it from settings rather than a const.
+// preflightKillWaitDelay bounds how long a timed-out preflight waits for
+// stray chezmoi descendants (double-forked helpers that escaped the
+// process-group kill) to release the output pipe before Wait force-closes
+// it. Healthy calls never reach it — it only starts after the cancel.
+const preflightKillWaitDelay = 2 * time.Second
+
 func runMigratePreflight(ctx context.Context, chezmoiConfigPath string, timeout time.Duration) error {
 	if _, err := os.Stat(chezmoiConfigPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -110,6 +117,18 @@ func runMigratePreflight(ctx context.Context, chezmoiConfigPath string, timeout 
 
 	//nolint:gosec // G204: "chezmoi" is a constant; chezmoiConfigPath is program-resolved (config.DefaultPaths), not untrusted input
 	cmd := exec.CommandContext(timeoutCtx, "chezmoi", "--config", chezmoiConfigPath, "diff")
+	// chezmoi shells out to git and diff helpers. On timeout the default
+	// cancel kills only chezmoi itself; a surviving helper inherits the
+	// stdout pipe and Wait blocks until IT exits, so the configured
+	// deadline would not actually bound this call. Give the child its own
+	// process group and kill the whole group on cancel; WaitDelay caps the
+	// pipe hold of any descendant that escaped the group (gitx applies the
+	// same bound to git).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = preflightKillWaitDelay
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("migrate: pre-flight chezmoi diff failed (spec §10): %w — adjudicate every orphan first: restore keepers to their destination, `chezmoi forget` confirmed deletions, commit+push the legacy source, then re-run (or pass --skip-preflight only once you have already done this)", err)

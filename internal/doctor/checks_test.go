@@ -239,3 +239,90 @@ func TestRunKeysetDecryptStaleKeysetWarns(t *testing.T) {
 		t.Fatalf("keyset-decrypt fix = %q, missing verbatim `agent-brain key import --force`", got.Fix)
 	}
 }
+
+// remoteCheckFixture builds the minimum the remote row needs: a git
+// checkout at MemoriesDir (branch main) with `origin` pointing at bareURL.
+// No keyset, no enrollment — checkRemote reads none of that.
+func remoteCheckFixture(t *testing.T, bareURL string) doctor.Deps {
+	t.Helper()
+	base := t.TempDir()
+	paths := config.Paths{ConfigDir: filepath.Join(base, "cfg"), DataDir: filepath.Join(base, "data")}
+	ctx := context.Background()
+	if err := os.MkdirAll(paths.MemoriesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "init", "--quiet", "--initial-branch=main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, paths.MemoriesDir(), "remote", "add", "origin", bareURL); err != nil {
+		t.Fatal(err)
+	}
+	return doctor.Deps{
+		Paths:    paths,
+		Registry: testRegistry(t),
+		Home:     filepath.Join(base, "home"),
+	}
+}
+
+// TestRunRemoteReachableEmptyRemote pins the probe's reachability-only
+// semantics: a brand-new remote with zero refs advertises no HEAD, which is
+// not unreachability — the first push is simply still ahead. A --exit-code
+// probe would exit 2 here and misreport a healthy fresh install.
+func TestRunRemoteReachableEmptyRemote(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := gitx.Run(ctx, filepath.Dir(bare), "init", "--quiet", "--bare", bare); err != nil {
+		t.Fatal(err)
+	}
+	deps := remoteCheckFixture(t, bare)
+	got := result(t, doctor.Run(ctx, deps), "remote")
+	if got.Status != doctor.StatusOK {
+		t.Fatalf("remote row for a reachable empty origin = %+v, want ok", got)
+	}
+}
+
+// TestRunRemoteReachableWhenRemoteHEADDangles pins reachability against a
+// remote whose HEAD symref dangles: the bare was created with a different
+// default branch, then only `main` was pushed, so HEAD points at a branch
+// that does not exist while main does. ls-remote advertises no HEAD for it;
+// a --exit-code HEAD probe exits 2 and misreports "unreachable" even though
+// every push and fetch works fine. The row must stay OK.
+func TestRunRemoteReachableWhenRemoteHEADDangles(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := gitx.Run(ctx, filepath.Dir(bare), "init", "--quiet", "--bare", "--initial-branch=master", bare); err != nil {
+		t.Fatal(err)
+	}
+	deps := remoteCheckFixture(t, bare)
+	memories := deps.Paths.MemoriesDir()
+	if err := os.WriteFile(filepath.Join(memories, "seed.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, memories, "add", "seed.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, memories, "commit", "-m", "test: seed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitx.Run(ctx, memories, "push", "--quiet", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	// Premise check: the scenario only exists while the remote's HEAD still
+	// dangles at master after the main push. If a future git starts
+	// retargeting unborn HEADs on receive, this fails loudly so the test
+	// gets redesigned rather than passing vacuously.
+	head, err := gitx.Run(ctx, bare, "symbolic-ref", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(head.Stdout); got != "refs/heads/master" {
+		t.Fatalf("premise broken: remote HEAD = %q, want a dangling refs/heads/master", got)
+	}
+
+	got := result(t, doctor.Run(ctx, deps), "remote")
+	if got.Status != doctor.StatusOK {
+		t.Fatalf("remote row for a reachable origin with dangling HEAD = %+v, want ok", got)
+	}
+}

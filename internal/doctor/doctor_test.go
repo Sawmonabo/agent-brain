@@ -311,6 +311,14 @@ func TestRunRemoteUnreachable(t *testing.T) {
 	if got.Status != doctor.StatusFail {
 		t.Fatalf("remote check = %+v, want fail", got)
 	}
+	if !strings.Contains(got.Detail, "unreachable") {
+		t.Fatalf("remote Detail = %q, want it to say unreachable", got.Detail)
+	}
+	// The row must carry git's own first stderr line, not just the label —
+	// the operator needs to see WHY the probe failed.
+	if got.Detail == "origin is unreachable — commits will queue locally" {
+		t.Fatalf("remote Detail carries no git diagnostic beyond the label: %q", got.Detail)
+	}
 }
 
 func TestRunRemoteSkippedWhenOffline(t *testing.T) {

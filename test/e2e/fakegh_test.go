@@ -56,7 +56,12 @@ repo)
 		;;
 	create)
 		# gh repo create NAME --private --description DESC
-		git init --bare "$GH_FAKE_REMOTE" >/dev/null
+		# --initial-branch pinned: the real GitHub creates repos with HEAD at
+		# main, but a bare git init inherits the host git binary's compiled
+		# default (Apple git patches it to main; upstream git still says
+		# master), which would leave the remote HEAD dangling once init
+		# pushes main — an environment difference, not a product behavior.
+		git init --bare --initial-branch=main "$GH_FAKE_REMOTE" >/dev/null
 		echo "https://github.com/fakeuser/${3:-}"
 		;;
 	clone)
