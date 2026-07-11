@@ -329,15 +329,16 @@ Bare `agent-brain` prints help. Command tree:
   full-screen notice offers `s` to start the login service when the daemon is
   down. Requires an interactive terminal — `status --json` / `projects --json`
   are the scriptable equivalents.
-- **`track [path] | track --all`**, **`untrack <path|folder> [--purge]`** —
+- **`track [path] | track --all`**, **`untrack <path|folder> [--purge | --yes]`** —
   enrollment; `--purge` also removes the project folder from the repo (history
   retains it).
 - **`sync [--project X]`**, **`status [--json]`**, **`projects [--json]`**,
   **`conflicts [list | show <path>]`**, **`doctor [--fix | --json | --offline]`**,
   **`scan [--project X | --json | --reveal-secrets]`** (gitleaks plaintext-leak
-  scan — advisory, §5/§11), **`service install|uninstall|start|stop|status|logs`**,
-  **`key export`** / **`key import [--force]`** / **`key rotate`** (fail-closed
-  fleet re-encrypt, §5), **`migrate`** (§10), **`daemon run`** (foreground).
+  scan — advisory, §5/§11), **`service install|uninstall|start|stop|status|logs [-n]`**,
+  **`key export`** / **`key import [--force]`** / **`key rotate [--yes]`** (fail-closed
+  fleet re-encrypt, §5), **`migrate [--skip-preflight | --yes]`** (§10),
+  **`daemon run`** (foreground).
 - **`update [version] [--check | --prerelease | --list [--json] | --select |
   --no-restart]`** — gh-native self-update (ADR 18): resolve the target
   release — newest by default (semver max; stable channel, `--prerelease`
@@ -394,7 +395,9 @@ agent-brain/
 │   ├── repo/                  # memories-repo layout, projects registry, manifests
 │   ├── config/                # config.toml, platform paths (XDG / macOS)
 │   ├── service/               # kardianos install/uninstall, WSL2 spawn mode
-│   └── provision/             # gh detection, repo creation
+│   ├── ghx/                   # gh CLI exec wrapper: auth, provisioning, releases
+│   ├── doctor/                # check battery + the daemon's sync SafetyGate
+│   └── selfupdate/            # gh-native self-update pipeline (ADR 18)
 ├── test/e2e/                  # testscript txtar scripts + real-git harness
 ├── docs/                      # this spec + decisions/ (ADRs) + plans/
 ├── lefthook.yml               # pre-commit/pre-push hooks (ADR 12)
@@ -404,6 +407,9 @@ agent-brain/
 ```
 
 (`testdata/` directories sit inside each package as needed.)
+
+(The once-planned `internal/provision` package was folded into `internal/ghx`
+plus `internal/cli`'s init steps — ADR 08 records the provisioning design.)
 
 **Package boundary rule:** `engine` depends on `gitx`/`crypto`/`provider`/`repo`
 interfaces — never on `cli` or `daemon`; the `daemon/api` types are the only

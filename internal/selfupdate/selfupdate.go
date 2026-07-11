@@ -29,8 +29,11 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 )
 
-// Typed sentinels the CLI branches on with errors.Is — mirrors
-// internal/service's sentinel discipline (never string-match error text).
+// Typed sentinels, identity-assertable with errors.Is through every %w wrap
+// — mirrors internal/service's sentinel discipline (never string-match error
+// text). runUpdate surfaces their self-remediating text verbatim rather than
+// branching per sentinel; the test suite (and any scripted caller) asserts
+// on them with errors.Is.
 var (
 	// ErrDevBuild refuses to update a non-release build: "dev" carries no
 	// comparable version, and a from-source binary is the developer's own

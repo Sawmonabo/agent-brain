@@ -67,8 +67,10 @@ func NewClient() (*Client, error) {
 	return NewClientWithRunner(&execRunner{binaryPath: path}, path), nil
 }
 
-// NewClientWithRunner wires an explicit Runner and binary path — the seam
-// tests (ghxtest.Fake) and init/doctor (a path already resolved once) use.
+// NewClientWithRunner wires an explicit Runner and binary path. Production
+// code reaches it only through NewClient (which resolves gh and wires the
+// exec-backed Runner); tests call it directly to inject ghxtest.Fake without
+// a real gh on PATH.
 func NewClientWithRunner(runner Runner, binaryPath string) *Client {
 	return &Client{runner: runner, binaryPath: binaryPath}
 }
