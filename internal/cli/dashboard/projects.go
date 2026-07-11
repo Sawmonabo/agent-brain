@@ -7,6 +7,7 @@ import (
 
 	keybinding "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -39,6 +40,14 @@ type projectsView struct {
 	// the 2s poll can move onto a different unit while the confirm sits open.
 	confirmUnit api.UnitInfo
 
+	// Add flow (track.go): a modal state machine over discovery → picker →
+	// path confirm → identity → optional naming → Track.
+	adding        addStage
+	addCandidates []TrackCandidate
+	addCursor     int
+	addChoice     TrackCandidate
+	addInput      textinput.Model
+
 	notice  string // transient result of the last s/t action
 	loadErr error
 }
@@ -47,6 +56,7 @@ func newProjectsView() projectsView {
 	view := projectsView{}
 	view.table = table.New(table.WithFocused(true), table.WithHeight(10))
 	view.setColumns(false)
+	view.addInput = textinput.New()
 	return view
 }
 
@@ -117,7 +127,10 @@ func (v *projectsView) rebuild() {
 // returns any Cmd the action produced (all I/O stays in the returned Cmd —
 // never inline — so Update stays pure). The root routes keys here only when
 // Projects is the active view.
-func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData) tea.Cmd {
+func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData, actions trackActions) tea.Cmd {
+	if handled, cmd := v.updateAdd(msg, data, actions); handled {
+		return cmd
+	}
 	if v.confirming {
 		switch msg.String() {
 		case "y", "Y":
@@ -152,6 +165,14 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData) tea.Cmd {
 		v.confirmUnit = unit
 		v.notice = ""
 		return nil
+	case keybinding.Matches(msg, dashboardKeys.Add):
+		if actions.discover == nil {
+			v.notice = "add is unavailable in this build"
+			return nil
+		}
+		v.adding = addDiscovering
+		v.notice = ""
+		return discoverCmd(actions)
 	}
 
 	var cmd tea.Cmd
@@ -168,13 +189,17 @@ func (v projectsView) selectedUnit() (api.UnitInfo, bool) {
 }
 
 func (v *projectsView) onSyncResult(msg syncResultMsg) {
+	label := msg.folder
+	if label == "" {
+		label = "fleet"
+	}
 	switch {
 	case msg.err != nil:
-		v.notice = fmt.Sprintf("sync %s failed: %v", msg.folder, msg.err)
+		v.notice = fmt.Sprintf("sync %s failed: %v", label, msg.err)
 	case msg.resp.Status == "running":
-		v.notice = fmt.Sprintf("sync %s still running — check Activity", msg.folder)
+		v.notice = fmt.Sprintf("sync %s still running — check Activity", label)
 	default:
-		v.notice = fmt.Sprintf("synced %s", msg.folder)
+		v.notice = fmt.Sprintf("synced %s", label)
 	}
 }
 
@@ -189,25 +214,32 @@ func (v *projectsView) onUntrackResult(msg untrackResultMsg) {
 	}
 }
 
+// modalOpen reports whether a Projects-view modal (untrack confirm or the
+// add flow) owns the keyboard: while true, the root must route keys here
+// BEFORE its own tab/quit globals, so typing a path containing "1" or "q"
+// edits the input instead of switching tabs or quitting.
+func (v projectsView) modalOpen() bool {
+	return v.confirming || v.adding != addNone
+}
+
 func (v projectsView) view() string {
 	var b strings.Builder
 	b.WriteString(sectionTitle("Projects"))
 	b.WriteString("\n\n")
 
-	if v.loadErr != nil {
+	switch {
+	case v.adding != addNone:
+		b.WriteString(v.addView())
+		return strings.TrimRight(b.String(), "\n")
+	case v.loadErr != nil:
 		fmt.Fprintf(&b, "projects unavailable: %v", v.loadErr)
-		return b.String()
-	}
-	if !v.loaded {
+	case !v.loaded:
 		b.WriteString(dimStyle.Render("loading projects…"))
-		return b.String()
+	case len(v.units) == 0:
+		b.WriteString(dimStyle.Render("no projects enrolled — run `agent-brain track` or press a"))
+	default:
+		b.WriteString(v.table.View())
 	}
-	if len(v.units) == 0 {
-		b.WriteString(dimStyle.Render("no projects enrolled — run `agent-brain track`"))
-		return b.String()
-	}
-
-	b.WriteString(v.table.View())
 	b.WriteString("\n")
 
 	switch {

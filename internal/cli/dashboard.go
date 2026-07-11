@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
+	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/repo"
 	"github.com/Sawmonabo/agent-brain/internal/service"
 )
 
@@ -46,7 +49,9 @@ func newDashboardCmd() *cobra.Command {
 			}
 
 			model := dashboard.New(dashboard.Config{
-				Data: dashboard.NewData(client, offlineDoctorRunner()),
+				Data:     dashboard.NewData(client, offlineDoctorRunner()),
+				Discover: dashboardDiscover(),
+				Identify: dashboardIdentify(),
 				// The start offer only appears on the daemon-down screen. A
 				// service that probes as already running there means a daemon
 				// that is up-but-unresponsive or crash-looping — starting
@@ -110,4 +115,65 @@ func isInteractiveTTY(cmd *cobra.Command) bool {
 		return false
 	}
 	return true
+}
+
+// dashboardDiscover mirrors track's discovery flow (runTrackDiscover): the
+// same buildTrackDeps composition and buildEnrollCandidates filter, mapped to
+// the dashboard's provider-name candidate shape — the dashboard package
+// cannot import cli or compose providers itself (ADR 05 amendment). Deps are
+// rebuilt per call so every `a` press sees the current registry and
+// enrollment; a root tracked since the last press disappears from the offer.
+func dashboardDiscover() func(context.Context) ([]dashboard.TrackCandidate, error) {
+	return func(ctx context.Context) ([]dashboard.TrackCandidate, error) {
+		deps, err := buildTrackDeps()
+		if err != nil {
+			return nil, err
+		}
+		local, err := repo.LoadLocalRegistry(deps.paths.LocalRegistryFile())
+		if err != nil {
+			return nil, err
+		}
+		candidates, err := buildEnrollCandidates(ctx, deps.registry, enrolledSet(local.Units))
+		if err != nil {
+			return nil, err
+		}
+		out := make([]dashboard.TrackCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			roots := make([]dashboard.TrackRoot, len(candidate.discovered))
+			for i, discovered := range candidate.discovered {
+				roots[i] = dashboard.TrackRoot{LocalDir: discovered.LocalDir, RepoSubdir: discovered.RepoSubdir}
+			}
+			global := candidate.provider.Scope() == provider.ScopeGlobal
+			pathGuess := ""
+			if !global {
+				pathGuess = candidate.discovered[0].PathGuess
+			}
+			out = append(out, dashboard.TrackCandidate{
+				Provider:  candidate.provider.Name(),
+				Label:     candidate.label,
+				PathGuess: pathGuess,
+				Global:    global,
+				Roots:     roots,
+			})
+		}
+		return out, nil
+	}
+}
+
+// dashboardIdentify resolves one candidate root's cross-machine identity for
+// a human-confirmed project path — the enrollOne Identify step, reached
+// through the registry so the dashboard names providers by string only.
+func dashboardIdentify() func(context.Context, string, dashboard.TrackRoot, string) (provider.Identity, error) {
+	return func(ctx context.Context, providerName string, root dashboard.TrackRoot, projectPath string) (provider.Identity, error) {
+		deps, err := buildTrackDeps()
+		if err != nil {
+			return provider.Identity{}, err
+		}
+		registered, ok := deps.registry.Get(providerName)
+		if !ok {
+			return provider.Identity{}, fmt.Errorf("provider %q is not registered", providerName)
+		}
+		discovered := provider.Discovered{LocalDir: root.LocalDir, RepoSubdir: root.RepoSubdir}
+		return registered.Identify(ctx, discovered, projectPath)
+	}
 }

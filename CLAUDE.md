@@ -48,7 +48,7 @@ lefthook install                                # once per clone: git hooks
   `key rotate` re-encrypts the whole repo through that same single writer
   (`POST /v0/reencrypt`).
 - Product CLI beyond init/track/sync/status/doctor (spec §7): `dashboard`
-  (bubbletea v2 TUI over the daemon — `internal/cli/dashboard` is the only
+  (bubbletea v2 TUI over the daemon — in-TUI track/untrack/sync — `internal/cli/dashboard` is the only
   package outside `cli` root allowed direct bubbletea/lipgloss imports), `scan`
   (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`),
   `key rotate` (fail-closed fleet re-encrypt), and `update [version]`

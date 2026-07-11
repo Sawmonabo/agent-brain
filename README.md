@@ -82,7 +82,7 @@ Read commands offer `--json`; `NO_COLOR` and non-TTY output degrade to plain tex
 
 A live [bubbletea](https://charm.land) TUI over the running daemon, four tabs
 refreshed on a 2-second poll (`s` syncs the selected unit, `t` untracks it behind a
-`y/N` confirm, `tab`/`1`–`4` switch tabs, `q` quits). It needs an interactive
+`y/N` confirm, `a` adds (tracks) a discovered memory root, `tab`/`1`–`4` switch tabs, `q` quits). It needs an interactive
 terminal — `status --json` and `projects --json` are the scriptable equivalents. The
 Projects tab, rendered from the daemon's live telemetry:
 
@@ -97,7 +97,7 @@ PROVIDER   FOLDER                HEALTH     WATCH      LAST CYCLE
 claude     agent-brain           ok         watching   ok
 codex      _global               degraded   failed     degraded
 
-tab/1–4 switch · ↑/↓ select · s sync · t untrack · q quit
+tab/1–4 switch · ↑/↓ select · s sync · t untrack · a add · q quit
 ```
 
 `WATCH` reads `watching`/`failed`/`—`; `LAST CYCLE` reads `ok`/`degraded`/`error`/`—`

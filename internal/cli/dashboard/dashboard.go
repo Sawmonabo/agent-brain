@@ -14,6 +14,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
+	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
 
 // pollInterval is the shared refresh cadence. Tick-based polling is the
@@ -92,6 +93,14 @@ type Config struct {
 	// service.Controller.Start path the CLI uses — offered on the daemon-down
 	// screen (spec §7). nil disables the offer.
 	StartService func() error
+	// Discover lists discovered-but-unenrolled memory roots; Identify
+	// resolves a confirmed project path to its cross-machine identity. Both
+	// are injected by the cli root command (the same composition-at-the-edge
+	// pattern as the doctor runner) because provider/registry composition
+	// lives outside this package's import allowlist. nil disables the
+	// Projects tab's add action.
+	Discover func(context.Context) ([]TrackCandidate, error)
+	Identify func(ctx context.Context, providerName string, root TrackRoot, projectPath string) (provider.Identity, error)
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -99,6 +108,7 @@ type Config struct {
 type Model struct {
 	data         dashboardData
 	startService func() error
+	actions      trackActions
 
 	active tab
 	width  int
@@ -125,6 +135,7 @@ func New(cfg Config) Model {
 	return Model{
 		data:         cfg.Data,
 		startService: cfg.StartService,
+		actions:      trackActions{discover: cfg.Discover, identify: cfg.Identify},
 		now:          time.Now(),
 		projects:     newProjectsView(),
 	}
@@ -278,6 +289,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projects.onUntrackResult(msg)
 		return m, tea.Batch(m.projectsCmd(), m.statusCmd())
 
+	case discoverMsg:
+		m.projects.onDiscover(msg)
+		return m, nil
+
+	case identifyMsg:
+		return m, m.projects.onIdentify(msg, m.data)
+
+	case trackResultMsg:
+		failed := msg.err != nil
+		m.projects.onTrackResult(msg)
+		if failed {
+			return m, m.projectsCmd()
+		}
+		// Track's HTTP reply returns BEFORE the daemon's post-admin cycle
+		// (the same lesson track.go's syncAfterTrack records): an explicit
+		// whole-fleet sync is what makes the enrollment's first mirror-in
+		// visible here rather than landing silently later.
+		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), syncCmd(m.data, ""))
+
 	case serviceStartedMsg:
 		m.starting = false
 		m.serviceErr = msg.err
@@ -313,8 +343,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// A modal confirm on the Projects view consumes keys before the globals,
 	// so a `y`/`n` answer is never mistaken for a tab jump.
-	if m.active == tabProjects && m.projects.confirming {
-		return m, m.projects.update(msg, m.data)
+	if m.active == tabProjects && m.projects.modalOpen() {
+		return m, m.projects.update(msg, m.data, m.actions)
 	}
 
 	switch {
@@ -338,7 +368,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Everything else belongs to the active view (table nav, s/t on Projects).
 	if m.active == tabProjects {
-		return m, m.projects.update(msg, m.data)
+		return m, m.projects.update(msg, m.data, m.actions)
 	}
 	return m, nil
 }
@@ -390,7 +420,7 @@ func (m Model) tabBar() string {
 // footer advertises exactly the keys that dispatch on the active tab,
 // rendered from the same bindings handleKey matches (keymap.go).
 func (m Model) footer() string {
-	bindings := dashboardKeys.forTab(m.active)
+	bindings := dashboardKeys.forTab(m.active, m.actions.discover != nil)
 	parts := make([]string, len(bindings))
 	for i, binding := range bindings {
 		help := binding.Help()

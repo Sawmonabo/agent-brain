@@ -148,17 +148,11 @@ func enrollOne(ctx context.Context, target enrollTarget, client *api.Client, p p
 			if err != nil {
 				return err // includes errSkipRemoteless — caller checks errors.Is
 			}
-			// named/<folderName> can never collide with a canonical
-			// remote-derived id: joinRemoteID (provider/remote.go) requires
-			// a non-empty host AND a path containing "/", so every
-			// remote-derived id has at least 3 slash-separated segments
-			// (host/owner/repo, ...). named/<folderName> has exactly 2 —
-			// provided folderName itself is a single segment, which is
-			// exactly what repo.ValidateFolderName's charset (no "/")
-			// guarantees at the prompt (nameRemotelessFolderInteractive)
-			// and what the daemon re-checks fail-closed on Track.
-			projectID = "named/" + folderName
-			preferredFolder = folderName
+			// The named/ shape and its collision-safety argument live in
+			// provider.NamedIdentity — one contract for every enrollment
+			// surface (this flow and the dashboard's add flow).
+			named := provider.NamedIdentity(folderName)
+			projectID, preferredFolder = named.ProjectID, named.PreferredFolder
 		}
 	}
 

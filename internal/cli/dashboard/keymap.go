@@ -27,6 +27,7 @@ type dashboardKeymap struct {
 	Select  keybinding.Binding
 	Sync    keybinding.Binding // Projects tab only
 	Untrack keybinding.Binding // Projects tab only
+	Add     keybinding.Binding // Projects tab only
 	Quit    keybinding.Binding
 }
 
@@ -40,16 +41,22 @@ var dashboardKeys = dashboardKeymap{
 	Select:  keybinding.NewBinding(keybinding.WithKeys("up", "down", "k", "j"), keybinding.WithHelp("↑/↓", "select")),
 	Sync:    keybinding.NewBinding(keybinding.WithKeys("s"), keybinding.WithHelp("s", "sync")),
 	Untrack: keybinding.NewBinding(keybinding.WithKeys("t"), keybinding.WithHelp("t", "untrack")),
+	Add:     keybinding.NewBinding(keybinding.WithKeys("a"), keybinding.WithHelp("a", "add")),
 	Quit:    keybinding.NewBinding(keybinding.WithKeys("q"), keybinding.WithHelp("q", "quit")),
 }
 
 // forTab returns the bindings the footer advertises on t, in render order —
-// mirroring the availability rule handleKey enforces by routing view keys
-// to the Projects view only while it is active.
-func (k dashboardKeymap) forTab(t tab) []keybinding.Binding {
+// the SAME availability rule handleKey enforces. addAvailable gates the Add
+// binding: a build with no discovery closure must not advertise a key that
+// answers "unavailable". (dashboardKeys is shared package state — never toggle
+// availability by mutating a binding's Enabled flag; filter here instead.)
+func (k dashboardKeymap) forTab(t tab, addAvailable bool) []keybinding.Binding {
 	bindings := []keybinding.Binding{k.TabSwitch}
 	if t == tabProjects {
 		bindings = append(bindings, k.Select, k.Sync, k.Untrack)
+		if addAvailable {
+			bindings = append(bindings, k.Add)
+		}
 	}
 	return append(bindings, k.Quit)
 }

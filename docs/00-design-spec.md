@@ -320,7 +320,9 @@ Bare `agent-brain` prints help. Command tree:
   API, four tabs on a 2-second poll: **Projects** (per-unit table — provider ·
   folder · health · watch state · last-cycle result, with a LOCAL DIR column on
   terminals ≥120 cols; `s` syncs the selected unit, `t` untracks it behind a y/N
-  confirm), **Conflicts** (retained retain-both records via the `conflicts`
+  confirm, `a` discovers untracked memory roots and enrolls one — path confirm,
+  remoteless naming, and the `named/` contract shared with `track` via
+  `provider.NamedIdentity`), **Conflicts** (retained retain-both records via the `conflicts`
   loader), **Activity** (daemon uptime, quiesce deadline, the fleet watch-trigger
   count as the max over units, and the last cycle's mirror/push summary), and
   **Doctor** (the read-only `--offline` battery with per-check glyphs). A
