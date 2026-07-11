@@ -33,6 +33,8 @@ and syncs continuously. A pretty interactive CLI is the management surface.
 | 15 | Testing: stdlib + go-cmp, testscript e2e, native fuzzing, real-git integration | [15](decisions/15-adr-testing-stack.md) |
 | 16 | Distribution: GoReleaser v2, homebrew_casks tap, go install | [16](decisions/16-adr-distribution-release.md) |
 | 17 | Config format: TOML via pelletier/go-toml/v2 | [17](decisions/17-adr-config-format-toml.md) |
+| 18 | Self-update: gh-native, checksum-verified atomic swap + service restart | [18](decisions/18-adr-self-update.md) |
+| 19 | Checkout maintenance: auto maintenance on but foreground-pinned (`autoDetach=false`); engine re-pins every cycle | [19](decisions/19-adr-checkout-maintenance-posture.md) |
 
 ---
 
