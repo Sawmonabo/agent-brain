@@ -29,6 +29,7 @@ go test ./test/e2e/ -run TestScripts -v         # testscript CLI flows (six txta
 go test ./test/e2e/ -run TestAdversarialContainment -race -v  # standing adversarial corpus
 golangci-lint run                               # lint (config: .golangci.yml)
 gofumpt -l -w .                                 # format
+go tool deadcode -test ./...                    # dead-code gate (CI-enforced, zero baseline)
 lefthook install                                # once per clone: git hooks
 ```
 

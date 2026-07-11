@@ -38,6 +38,27 @@ jobs:
           go-version-file: go.mod
       # govulncheck pinned for reproducibility; dependabot can't bump tool refs in run-lines, so bump manually.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.5.0 ./...
+  deadcode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      # deadcode is version-pinned via go.mod's tool directive (dependabot
+      # bumps it there, unlike run-line @version pins). The tool exits 0
+      # even when it finds dead functions, so the gate fails on output.
+      # Baseline: zero unreachable functions across all packages.
+      # Scope: unreachable functions only — interface-dispatched methods stay
+      # live under RTA, and struct fields are invisible to it by construction.
+      - name: dead-code gate (zero baseline)
+        run: |
+          output=$(go tool deadcode -test ./...)
+          if [ -n "$output" ]; then
+            echo "$output"
+            echo "::error::dead code detected — the baseline is zero; delete it or wire it"
+            exit 1
+          fi
   gitleaks:
     runs-on: ubuntu-latest
     steps:
