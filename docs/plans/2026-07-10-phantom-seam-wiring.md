@@ -897,8 +897,17 @@ func (v *projectsView) onIdentify(msg identifyMsg, data dashboardData) tea.Cmd {
 	return v.addInput.Focus()
 }
 
+
+// onTrackResult records an enrollment's outcome. Only the reset is gated on
+// addTracking — a result landing after the user esc'd and reopened the flow
+// must not stomp the new flow's stage back to addNone — while the notice and
+// fleet sync always fire, because the enrollment already happened and a stale
+// result is still a real outcome whose notice stays truthful and whose sync is
+// legitimate.
 func (v *projectsView) onTrackResult(msg trackResultMsg) {
-	v.resetAdd()
+	if v.adding == addTracking {
+		v.resetAdd()
+	}
 	if msg.err != nil {
 		v.notice = fmt.Sprintf("track failed: %v", msg.err)
 		if len(msg.folders) > 0 {
@@ -2043,3 +2052,8 @@ An independent reviewer read the live tree against every claim in this plan (~40
 - **Task D (major):** header precedence corrected to `error > degraded > scrubbed > offline > ok` — the original order rested on a false premise (`prepareCheckout` scrubs BEFORE integrate, so an offline cycle CAN carry `Scrubbed`) and would have masked the loudest security signal behind "offline" for an entire offline stretch. A third table case pins it.
 - **Task C:** the engine-guard follow-up is recorded in a durable backlog stub (step C7) and the drift Detail names the cross-project contamination.
 - **Honesty fixes:** deadcode gate scope narrowed to the unreachable-function class it actually pins (verified empirically: it does NOT flag finding 6's interface-method shape); the "full parity" claim narrowed to single-root enrollment; the keymap comment softened to the direction that is structural vs. test-pinned; exact-text corrections (daemon internal test file is `server_test.go`, `client_commands_test.go` already exists, the README key line wraps, ADR 08 never names `internal/provision`).
+
+### Execution-round deltas (task reviews, 2026-07-11 — applied)
+
+- **Task A:** `dashKeymap`/`dashKeys` renamed to `dashboardKeymap`/`dashboardKeys` (naming standard: never abbreviate a domain entity; package precedent `dashboardData`), and the `forTab` comment's "expressed exactly once" overclaim dropped — the availability rule also lives in handleKey's routing. Identifiers updated throughout this plan.
+- **Task B:** `onTrackResult` gained the reviewer-flagged stale-result gate (reset only when `adding == addTracking`; the notice and fleet sync always run because the enrollment already happened), mutation-proven by `TestProjectsStaleTrackResultKeepsNewFlow`. Error-branch coverage added beyond the brief's literal tests: `TestProjectsAddIdentifyFailureAborts` (the brief's `identifyErr` seam was otherwise unexercised and tripped `unparam`), `TestProjectsAddDiscoverFailureAborts`, and `TestProjectsAddTrackFailureSurfacesAndSkipsSync`. The `onTrackResult` block above reflects the fixed shape.
