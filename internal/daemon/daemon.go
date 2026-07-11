@@ -692,6 +692,7 @@ func toSummary(report engine.Report) *api.SyncSummary {
 		MirrorIn:   api.Stats(report.MirrorIn),
 		MirrorOut:  api.Stats(report.MirrorOut),
 		Degraded:   report.Degraded,
+		Offline:    report.Offline,
 		Scrubbed:   report.Scrubbed,
 		Pushed:     report.Pushed,
 		PushQueued: report.PushQueued,

@@ -75,6 +75,9 @@ func writeSyncSummary(b *strings.Builder, summary *api.SyncSummary) {
 	if summary.Error != "" {
 		fmt.Fprintf(b, "  error: %s\n", summary.Error)
 	}
+	if summary.Offline {
+		b.WriteString("  offline: remote unreachable this cycle — local commits queued\n")
+	}
 	for _, subject := range summary.Commits {
 		fmt.Fprintf(b, "  commit: %s\n", subject)
 	}

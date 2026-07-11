@@ -300,6 +300,9 @@ func TestLastCycle(t *testing.T) {
 		{name: "error", status: api.StatusResponse{LastSync: &api.SyncSummary{Error: "boom"}}, want: "error"},
 		{name: "degraded", status: api.StatusResponse{LastSync: &api.SyncSummary{Degraded: []string{"x"}}}, want: "degraded"},
 		{name: "scrubbed", status: api.StatusResponse{LastSync: &api.SyncSummary{Scrubbed: []string{"y"}}}, want: "scrubbed"},
+		{name: "offline", status: api.StatusResponse{LastSync: &api.SyncSummary{Offline: true}}, want: "offline"},
+		{name: "error outranks offline", status: api.StatusResponse{LastSync: &api.SyncSummary{Offline: true, Error: "boom"}}, want: "error"},
+		{name: "scrubbed outranks offline", status: api.StatusResponse{LastSync: &api.SyncSummary{Offline: true, Scrubbed: []string{"x"}}}, want: "scrubbed"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

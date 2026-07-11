@@ -476,6 +476,8 @@ func lastCycle(status api.StatusResponse) string {
 		return "degraded"
 	case len(status.LastSync.Scrubbed) > 0:
 		return "scrubbed"
+	case status.LastSync.Offline:
+		return "offline"
 	default:
 		return "ok"
 	}

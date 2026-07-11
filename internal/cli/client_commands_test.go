@@ -282,3 +282,12 @@ func TestSyncRendersScrubbedPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintSummaryOffline(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	printSummary(&reportWriter{w: &buf}, &api.SyncSummary{Offline: true, PushQueued: true})
+	if !strings.Contains(buf.String(), "offline: remote unreachable") {
+		t.Fatalf("printSummary output %q missing the offline line", buf.String())
+	}
+}

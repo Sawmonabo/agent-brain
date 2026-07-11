@@ -78,6 +78,12 @@ type Report struct {
 	MirrorIn  MirrorStats
 	MirrorOut MirrorStats
 	Degraded  []string
+	// Offline reports a fetch failure this cycle: the remote was
+	// unreachable, integrate was skipped, and any local commits were queued
+	// (PushQueued) rather than pushed. Distinct from Degraded on purpose —
+	// offline is the benign off-network axis; degraded means a folder was
+	// withheld over a merge/conflict failure and needs a human look.
+	Offline bool
 	// Scrubbed lists git-meta paths removed (or the root .gitattributes
 	// healed) after integrate — nonzero means a remote pushed something
 	// hostile or corrupted.

@@ -141,3 +141,31 @@ func TestSyncBusyGuardSerializesConcurrentCalls(t *testing.T) {
 		t.Fatal("no Sync call won the guard and completed the cycle")
 	}
 }
+
+func TestSyncOfflineCycleReportsOffline(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	// The vanished-remote trick from TestIntegrateOfflineIsNotAnError, one
+	// level up: the whole cycle must classify the fetch failure as offline.
+	mustGit(t, checkout, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "vanished.git"))
+	u := unit(t, "alpha")
+	writeLocal(t, u, "memories/fact.md", "a fact\n")
+
+	report, err := engine.Sync(context.Background(), []repo.Unit{u})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Offline {
+		t.Fatalf("report = %+v, want Offline=true on a fetch failure", report)
+	}
+	if report.Pushed {
+		t.Fatal("an offline cycle cannot have pushed")
+	}
+	if !report.PushQueued {
+		t.Fatal("an offline cycle that committed local work must queue the push")
+	}
+	if len(report.Degraded) != 0 {
+		t.Fatalf("offline is not degraded: %v", report.Degraded)
+	}
+}

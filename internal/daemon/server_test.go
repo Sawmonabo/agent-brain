@@ -178,6 +178,14 @@ func TestToSummaryIncludesScrubbed(t *testing.T) {
 	}
 }
 
+func TestToSummaryCarriesOffline(t *testing.T) {
+	t.Parallel()
+	summary := toSummary(engine.Report{Offline: true, PushQueued: true})
+	if !summary.Offline || !summary.PushQueued {
+		t.Fatalf("summary = %+v, want Offline and PushQueued carried through", summary)
+	}
+}
+
 func TestSocketMode0600(t *testing.T) {
 	t.Parallel()
 	socketPath := startServer(t, &fakeController{}, defaultPeerUID)

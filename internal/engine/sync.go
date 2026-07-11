@@ -63,6 +63,7 @@ func (e *Engine) Sync(ctx context.Context, units []repo.Unit) (Report, error) {
 	if err != nil {
 		return report, err
 	}
+	report.Offline = integ.Offline
 	// The in-memory manifest stays authoritative across integrate:
 	// manifests/<host>.json is written only by this host, so a rebase
 	// cannot change it underneath us.

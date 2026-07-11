@@ -108,6 +108,9 @@ func printSummary(report *reportWriter, summary *api.SyncSummary) {
 	if summary.Error != "" {
 		report.printf("  error: %s\n", summary.Error)
 	}
+	if summary.Offline {
+		report.println("  offline: remote unreachable this cycle — local commits queued")
+	}
 	for _, subject := range summary.Commits {
 		report.printf("  commit: %s\n", subject)
 	}

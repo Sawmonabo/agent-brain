@@ -109,3 +109,15 @@ func TestActivityShowsFleetTriggerMax(t *testing.T) {
 		t.Errorf("activity view showed a trigger line for an empty fleet; got:\n%s", empty)
 	}
 }
+
+func TestActivityShowsOfflineCycle(t *testing.T) {
+	t.Parallel()
+	status := api.StatusResponse{
+		State: "ready", Version: "test", PID: 1,
+		LastSync: &api.SyncSummary{Offline: true, PushQueued: true},
+	}
+	got := plain(activityView{}.view(status, nil, nil, time.Now()))
+	if !strings.Contains(got, "offline: remote unreachable") {
+		t.Fatalf("Activity view %q missing the offline line", got)
+	}
+}
