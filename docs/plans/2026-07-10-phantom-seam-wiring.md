@@ -1961,7 +1961,7 @@ go get -tool golang.org/x/tools/cmd/deadcode@v0.48.0
 go mod tidy
 ```
 
-Expected: `go.mod` gains a `tool golang.org/x/tools/cmd/deadcode` directive and `golang.org/x/tools v0.48.0` moves from the indirect block to the direct `require` block; `go mod tidy` changes nothing further.
+Expected: `go.mod` gains a `tool golang.org/x/tools/cmd/deadcode` directive; `golang.org/x/tools v0.48.0` KEEPS its `// indirect` annotation (verified against the Go 1.26.5 toolchain source: tool directives do not flip it, and the pin + dependabot bumpability are unaffected); `go mod tidy` changes nothing further.
 
 - [ ] **Step F2: Verify the zero baseline locally**
 
@@ -1996,7 +1996,7 @@ In `.github/workflows/ci.yml`, append after the `govulncheck` job (same SHA-pinn
       # deadcode is version-pinned via go.mod's tool directive (dependabot
       # bumps it there, unlike run-line @version pins). The tool exits 0
       # even when it finds dead functions, so the gate fails on output.
-      # Baseline: zero unreachable functions across all packages (2026-07-10).
+      # Baseline: zero unreachable functions across all packages.
       # Scope: unreachable functions only — interface-dispatched methods stay
       # live under RTA, and struct fields are invisible to it by construction.
       - name: dead-code gate (zero baseline)
@@ -2059,3 +2059,4 @@ An independent reviewer read the live tree against every claim in this plan (~40
 - **Task B:** `onTrackResult` gained the reviewer-flagged stale-result gate (reset only when `adding == addTracking`; the notice and fleet sync always run because the enrollment already happened), mutation-proven by `TestProjectsStaleTrackResultKeepsNewFlow`. Error-branch coverage added beyond the brief's literal tests: `TestProjectsAddIdentifyFailureAborts` (the brief's `identifyErr` seam was otherwise unexercised and tripped `unparam`), `TestProjectsAddDiscoverFailureAborts`, and `TestProjectsAddTrackFailureSurfacesAndSkipsSync`. The `onTrackResult` block above reflects the fixed shape.
 - **Task C:** review flagged the required sort determinism as untested — every brief test enrolled a single drifted unit, so deleting `slices.Sort(drifted)` passed the whole suite. A two-unit test now binds the sorted order (mutation-proven: the test fails without the sort), and `TestProjectIdentityUnreadableRegistryWarns` gained the Detail/Fix substring assertions its sibling tests already had. The C1 test block above is left as-authored; the shipped tests supersede it.
 - **Task D:** review surfaced that the Offline signal false-positived on non-network fetch failures (auth expiry, vanished remote, repo-not-found all rendered as benign "offline — local commits queued") — the exact trigger the original fetch-classification deferral recorded. Built now, fail-closed: `fetchFailureIsOffline` admits only positively-identified transport-unreachable stderr signatures (curl/getaddrinfo/OpenSSH corpora, positive + negative table tests); everything else surfaces as a cycle error. The offline fixtures migrated from vanished-local-path (now correctly an error, pinned by `TestSyncNonNetworkFetchFailureIsError`) to a connection-refused loopback endpoint. `api.SyncSummary.Offline` gained JSON round-trip + omit-empty tests per the package's telemetry-test precedent. Landed as a separate engine commit on top of the Task D telemetry commit.
+- **Task F:** two plan-text defects surfaced by the implementer's flags, both fixed: the F1 expectation wrongly predicted `golang.org/x/tools` would move to the direct require block (tool directives do not flip the `// indirect` annotation — verified against the Go 1.26.5 toolchain source), and the verbatim CI comment baked in a review date, which belongs in commit messages, not code — the committed workflow and this plan now carry the timeless claim only.
