@@ -52,7 +52,7 @@ Replace the hardcoded footer string with a per-tab keymap: bubbles `key.Binding`
 
 **Interfaces:**
 - Consumes: `charm.land/bubbles/v2/key` — verified against the resolved module `bubbles/v2@v2.1.1`: `key.NewBinding(key.WithKeys(...), key.WithHelp(key, desc))`, `key.Matches[Key fmt.Stringer](k, b...) bool`, `binding.Help().Key` / `.Desc`.
-- Produces: package-level `var dashKeys dashKeymap` with fields `TabSwitch, Select, Sync, Untrack, Quit key.Binding` and method `forTab(t tab) []key.Binding`. Task B adds an `Add key.Binding` field to this exact struct and widens the method to `forTab(t tab, addAvailable bool)` (updating `footer()`, its sole caller, in the same step).
+- Produces: package-level `var dashboardKeys dashboardKeymap` with fields `TabSwitch, Select, Sync, Untrack, Quit key.Binding` and method `forTab(t tab) []key.Binding`. Task B adds an `Add key.Binding` field to this exact struct and widens the method to `forTab(t tab, addAvailable bool)` (updating `footer()`, its sole caller, in the same step).
 
 - [ ] **Step A1: Write the failing footer test**
 
@@ -122,13 +122,13 @@ package dashboard
 
 import "charm.land/bubbles/v2/key"
 
-// dashKeymap is the dashboard's single keymap: every key the root reducer and
+// dashboardKeymap is the dashboard's single keymap: every key the root reducer and
 // the views dispatch, with the help text the footer advertises. handleKey and
 // projectsView.update MATCH against these bindings and footer() RENDERS them
 // through forTab — so an advertised key the active tab ignores is structurally
 // impossible, and the inverse (a working key left unadvertised) is pinned by
 // TestProjectsKeysStayDeadOffProjectsTab.
-type dashKeymap struct {
+type dashboardKeymap struct {
 	// TabSwitch bundles every tab-navigation key under one advertised hint.
 	// handleKey matches the binding for membership, then picks the direction
 	// from the concrete key — the binding stays the single gate for whether
@@ -143,9 +143,9 @@ type dashKeymap struct {
 	Quit    key.Binding
 }
 
-// dashKeys is package-level because the keymap is static configuration —
+// dashboardKeys is package-level because the keymap is static configuration —
 // bindings never change at runtime; per-tab availability is forTab's job.
-var dashKeys = dashKeymap{
+var dashboardKeys = dashboardKeymap{
 	TabSwitch: key.NewBinding(
 		key.WithKeys("tab", "shift+tab", "right", "left", "l", "h", "1", "2", "3", "4"),
 		key.WithHelp("tab/1–4", "switch"),
@@ -157,9 +157,9 @@ var dashKeys = dashKeymap{
 }
 
 // forTab returns the bindings the footer advertises on t, in render order —
-// the SAME availability rule handleKey enforces by routing view keys to the
-// Projects view only while it is active, expressed exactly once.
-func (k dashKeymap) forTab(t tab) []key.Binding {
+// mirroring the availability rule handleKey enforces by routing view keys
+// to the Projects view only while it is active.
+func (k dashboardKeymap) forTab(t tab) []key.Binding {
 	bindings := []key.Binding{k.TabSwitch}
 	if t == tabProjects {
 		bindings = append(bindings, k.Select, k.Sync, k.Untrack)
@@ -184,7 +184,7 @@ with:
 // footer advertises exactly the keys that dispatch on the active tab,
 // rendered from the same bindings handleKey matches (keymap.go).
 func (m Model) footer() string {
-	bindings := dashKeys.forTab(m.active)
+	bindings := dashboardKeys.forTab(m.active)
 	parts := make([]string, len(bindings))
 	for i, binding := range bindings {
 		help := binding.Help()
@@ -219,10 +219,10 @@ with:
 
 ```go
 	switch {
-	case key.Matches(msg, dashKeys.Quit):
+	case key.Matches(msg, dashboardKeys.Quit):
 		m.quitting = true
 		return m, tea.Quit
-	case key.Matches(msg, dashKeys.TabSwitch):
+	case key.Matches(msg, dashboardKeys.TabSwitch):
 		// The binding is the membership gate; the concrete key picks the
 		// direction. "1"–"4" are the only single-rune members left after the
 		// named cases, so the default is exact, not a catch-all.
@@ -242,14 +242,14 @@ In `internal/cli/dashboard/projects.go`, add `"charm.land/bubbles/v2/key"` to th
 
 ```go
 	switch {
-	case key.Matches(msg, dashKeys.Sync):
+	case key.Matches(msg, dashboardKeys.Sync):
 		unit, ok := v.selectedUnit()
 		if !ok {
 			return nil
 		}
 		v.notice = fmt.Sprintf("syncing %s…", unit.Folder)
 		return syncCmd(data, unit.Folder)
-	case key.Matches(msg, dashKeys.Untrack):
+	case key.Matches(msg, dashboardKeys.Untrack):
 		unit, ok := v.selectedUnit()
 		if !ok {
 			return nil
@@ -317,7 +317,7 @@ Give `dashboardData.Track` its consumer: `a` (add) on the Projects tab discovers
 - Modify: `docs/00-design-spec.md` (§7 dashboard bullet), `README.md` (dashboard section + footer example)
 
 **Interfaces:**
-- Consumes: `dashKeys`/`dashKeymap` from Task A; `dashboardData.Track(ctx, api.TrackRequest) (api.TrackResponse, error)` (already on the seam); `provider.Identity{ProjectID, PreferredFolder string}`; `provider.Discovered{LocalDir, RepoSubdir, Label, PathGuess string}`; `p.Identify(ctx, d provider.Discovered, projectPath string) (provider.Identity, error)`; cli's `buildTrackDeps()`, `buildEnrollCandidates(ctx, registry, enrolled)`, `enrolledSet(units)`; `repo.ValidateFolderName(name string) error`; `charm.land/bubbles/v2/textinput` — verified against `bubbles/v2@v2.1.1`: `textinput.New() Model`, `(*Model).SetValue(string)`, `(Model).Value() string`, `(*Model).Focus() tea.Cmd`, `(Model).Update(tea.Msg) (Model, tea.Cmd)`, `(Model).View() string`.
+- Consumes: `dashboardKeys`/`dashboardKeymap` from Task A; `dashboardData.Track(ctx, api.TrackRequest) (api.TrackResponse, error)` (already on the seam); `provider.Identity{ProjectID, PreferredFolder string}`; `provider.Discovered{LocalDir, RepoSubdir, Label, PathGuess string}`; `p.Identify(ctx, d provider.Discovered, projectPath string) (provider.Identity, error)`; cli's `buildTrackDeps()`, `buildEnrollCandidates(ctx, registry, enrolled)`, `enrolledSet(units)`; `repo.ValidateFolderName(name string) error`; `charm.land/bubbles/v2/textinput` — verified against `bubbles/v2@v2.1.1`: `textinput.New() Model`, `(*Model).SetValue(string)`, `(Model).Value() string`, `(*Model).Focus() tea.Cmd`, `(Model).Update(tea.Msg) (Model, tea.Cmd)`, `(Model).View() string`.
 - Produces:
   - `provider.NamedIdentity(folderName string) Identity` — the shared `named/` contract.
   - Exported dashboard types the cli root constructs: `dashboard.TrackRoot{LocalDir, RepoSubdir string}`, `dashboard.TrackCandidate{Provider, Label, PathGuess string, Global bool, Roots []TrackRoot}`.
@@ -953,13 +953,13 @@ Note: `Focus()`'s Cmd emits cursor-blink messages that no `Update` case routes b
 
 - [ ] **Step B8: Wire the flow into the existing models**
 
-In `internal/cli/dashboard/keymap.go`: add to `dashKeymap`:
+In `internal/cli/dashboard/keymap.go`: add to `dashboardKeymap`:
 
 ```go
 	Add     key.Binding // Projects tab only
 ```
 
-add to `dashKeys`:
+add to `dashboardKeys`:
 
 ```go
 	Add:     key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
@@ -971,9 +971,9 @@ and replace `forTab` wholesale (signature change: whether `a` answers depends on
 // forTab returns the bindings the footer advertises on t, in render order —
 // the SAME availability rule handleKey enforces. addAvailable gates the Add
 // binding: a build with no discovery closure must not advertise a key that
-// answers "unavailable". (dashKeys is shared package state — never toggle
+// answers "unavailable". (dashboardKeys is shared package state — never toggle
 // availability by mutating a binding's Enabled flag; filter here instead.)
-func (k dashKeymap) forTab(t tab, addAvailable bool) []key.Binding {
+func (k dashboardKeymap) forTab(t tab, addAvailable bool) []key.Binding {
 	bindings := []key.Binding{k.TabSwitch}
 	if t == tabProjects {
 		bindings = append(bindings, k.Select, k.Sync, k.Untrack)
@@ -985,10 +985,10 @@ func (k dashKeymap) forTab(t tab, addAvailable bool) []key.Binding {
 }
 ```
 
-and update `footer()`'s first line (Task A wrote it as `dashKeys.forTab(m.active)`) to:
+and update `footer()`'s first line (Task A wrote it as `dashboardKeys.forTab(m.active)`) to:
 
 ```go
-	bindings := dashKeys.forTab(m.active, m.actions.discover != nil)
+	bindings := dashboardKeys.forTab(m.active, m.actions.discover != nil)
 ```
 
 In `internal/cli/dashboard/projects.go`:
@@ -1024,7 +1024,7 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData, actions t
 4. Add the `a` case to the action switch (after the `Untrack` case):
 
 ```go
-	case key.Matches(msg, dashKeys.Add):
+	case key.Matches(msg, dashboardKeys.Add):
 		if actions.discover == nil {
 			v.notice = "add is unavailable in this build"
 			return nil
@@ -2033,7 +2033,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - **Spec coverage:** finding 1 → E1; 2 → A; 3 → E3; 4 → E4; 5 → C; 6 → B; 7 → D; 8 → E6; 9 → E2; 10-13 were verified non-issues (no task, per the findings report's dispositions); recurrence → F. Every actionable disposition in the findings report maps to a task.
 - **Placeholders:** none — every step carries exact code, exact old→new text, exact commands with expected outcomes. The two deliberately conditional steps (C6 scan.go comment, E6 pre-grep) specify the exact decision rule and both outcomes.
-- **Type consistency:** `dashKeys`/`dashKeymap`/`forTab` (A) are extended, not redefined, by B (B changes `forTab`'s signature and updates its sole caller, `footer()`, in the same step); `TrackCandidate`/`TrackRoot`/`trackActions` names match across track.go, projects.go, dashboard.go, and the cli closures; `provider.NamedIdentity` signature matches its uses in enroll.go and track.go; `Report.Offline`/`SyncSummary.Offline` names match across engine/daemon/api/cli/dashboard.
+- **Type consistency:** `dashboardKeys`/`dashboardKeymap`/`forTab` (A) are extended, not redefined, by B (B changes `forTab`'s signature and updates its sole caller, `footer()`, in the same step); `TrackCandidate`/`TrackRoot`/`trackActions` names match across track.go, projects.go, dashboard.go, and the cli closures; `provider.NamedIdentity` signature matches its uses in enroll.go and track.go; `Report.Offline`/`SyncSummary.Offline` names match across engine/daemon/api/cli/dashboard.
 
 ## Review deltas (independent staff review, 2026-07-10 — applied)
 
