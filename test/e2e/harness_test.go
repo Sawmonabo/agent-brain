@@ -92,8 +92,8 @@ func testMain(m *testing.M) int {
 	// "directory not empty". gitxtest.HermeticGitConfig turns off gc.auto,
 	// gc.autoDetach, and maintenance.auto so no git invocation in this suite
 	// ever forks a background process that survives the test that started it.
-	for _, kv := range hermeticGitConfigEnv() {
-		key, value, _ := strings.Cut(kv, "=")
+	for _, envPair := range hermeticGitConfigEnv() {
+		key, value, _ := strings.Cut(envPair, "=")
 		if err := os.Setenv(key, value); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

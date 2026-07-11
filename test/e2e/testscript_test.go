@@ -110,8 +110,8 @@ func scriptSetup(env *testscript.Env) error {
 // this call is the sole source of these two vars for everything a script
 // runs, transitively; it must never reconstruct the pair independently.
 func setHermeticGitConfig(env *testscript.Env) {
-	for _, kv := range hermeticGitConfigEnv() {
-		key, value, _ := strings.Cut(kv, "=")
+	for _, envPair := range hermeticGitConfigEnv() {
+		key, value, _ := strings.Cut(envPair, "=")
 		env.Setenv(key, value)
 	}
 }
