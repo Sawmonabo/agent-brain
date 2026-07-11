@@ -146,9 +146,10 @@ func TestSyncOfflineCycleReportsOffline(t *testing.T) {
 	t.Parallel()
 	checkout, _ := newTestCheckout(t)
 	engine := newTestEngine(t, checkout)
-	// The vanished-remote trick from TestIntegrateOfflineIsNotAnError, one
-	// level up: the whole cycle must classify the fetch failure as offline.
-	mustGit(t, checkout, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "vanished.git"))
+	// Point origin at an unbindable loopback port (see
+	// TestIntegrateOfflineIsNotAnError): the whole cycle must classify this
+	// genuinely network-unreachable fetch failure as offline.
+	mustGit(t, checkout, "remote", "set-url", "origin", "http://127.0.0.1:1/agent-brain-memories.git")
 	u := unit(t, "alpha")
 	writeLocal(t, u, "memories/fact.md", "a fact\n")
 
@@ -167,5 +168,35 @@ func TestSyncOfflineCycleReportsOffline(t *testing.T) {
 	}
 	if len(report.Degraded) != 0 {
 		t.Fatalf("offline is not degraded: %v", report.Degraded)
+	}
+}
+
+// TestSyncNonNetworkFetchFailureIsError pins the fail-closed direction at the
+// cycle level: a fetch that fails for a NON-network reason — here the bare
+// remote is deleted, so fetch reports "does not appear to be a git repository"
+// — must surface as a cycle error, never be laundered into a benign Offline
+// report. Local capture (mirror-in + commit) already ran before integrate, so
+// nothing is lost; the machine is made loud instead of silently non-converging.
+func TestSyncNonNetworkFetchFailureIsError(t *testing.T) {
+	t.Parallel()
+	checkout, bare := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	// Delete the real bare remote: fetch now fails with a non-network signature
+	// the classifier rejects, so the whole cycle must error out.
+	if err := os.RemoveAll(bare); err != nil {
+		t.Fatal(err)
+	}
+	u := unit(t, "alpha")
+	writeLocal(t, u, "memories/fact.md", "a fact\n")
+
+	report, err := engine.Sync(context.Background(), []repo.Unit{u})
+	if err == nil {
+		t.Fatalf("Sync returned nil error on a non-network fetch failure; report = %+v", report)
+	}
+	if !strings.Contains(err.Error(), "fetch failed") {
+		t.Fatalf("error = %v, want it to contain \"fetch failed\"", err)
+	}
+	if report.Offline {
+		t.Fatalf("report.Offline = true on a non-network fetch failure; a broken remote must be a cycle error, not offline: %+v", report)
 	}
 }

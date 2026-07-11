@@ -86,7 +86,12 @@ func TestIntegrateOfflineIsNotAnError(t *testing.T) {
 	t.Parallel()
 	checkout, _ := newTestCheckout(t)
 	engine := newTestEngine(t, checkout)
-	mustGit(t, checkout, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "vanished.git"))
+	// Point origin at an unbindable loopback port (port 1 needs root, so
+	// nothing ever listens): fetch fails instantly with a curl "failed to
+	// connect"/"connection refused" spelling — a genuine network-unreachable
+	// signature, robust across curl versions and sandboxes. A vanished local
+	// path would now (correctly) be a cycle error, not offline.
+	mustGit(t, checkout, "remote", "set-url", "origin", "http://127.0.0.1:1/agent-brain-memories.git")
 
 	outcome, err := engine.integrate(context.Background())
 	if err != nil {
@@ -94,6 +99,54 @@ func TestIntegrateOfflineIsNotAnError(t *testing.T) {
 	}
 	if !outcome.Offline || outcome.Integrated {
 		t.Fatalf("outcome = %+v, want Offline", outcome)
+	}
+}
+
+// TestFetchFailureIsOffline pins fetchFailureIsOffline's fail-closed contract:
+// every known transport-unreachable stderr signature classifies as offline
+// (one realistic full stderr line per signature), and every other fetch
+// failure — auth, permission, a 403, a missing repo, a vanished local path,
+// disabled terminal prompts, an empty capture — classifies as a cycle error.
+// The negative corpus is the load-bearing half: mislabeling any of these
+// "offline" hides a silently-broken machine behind a benign banner.
+func TestFetchFailureIsOffline(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		stderr  string
+		offline bool
+	}{
+		// Positive corpus: one realistic full stderr line per offline signature.
+		{"https could-not-resolve-host", "fatal: unable to access 'https://github.com/octo/repo.git/': Could not resolve host: github.com", true},
+		{"ssh temporary-failure-in-name-resolution", "ssh: Could not resolve hostname github.com: Temporary failure in name resolution", true},
+		{"ssh name-or-service-not-known", "ssh: Could not resolve hostname vault.internal: Name or service not known", true},
+		{"macos nodename-nor-servname", "ssh: Could not resolve hostname git.example.com: nodename nor servname provided, or not known", true},
+		{"curl failed-to-connect-umbrella", "fatal: unable to access 'http://127.0.0.1:1/agent-brain-memories.git/': Failed to connect to 127.0.0.1 port 1 after 0 ms: Couldn't connect to server", true},
+		{"curl connection-refused", "fatal: unable to access 'https://git.example.com/x/y.git/': Failed to connect to git.example.com port 443 after 2 ms: Connection refused", true},
+		{"curl connection-timed-out", "fatal: unable to access 'https://github.com/octo/repo.git/': Failed to connect to github.com port 443 after 21000 ms: Connection timed out", true},
+		{"macos operation-timed-out", "fatal: unable to access 'https://github.com/octo/repo.git/': Failed to connect to github.com port 443 after 75012 ms: Operation timed out", true},
+		{"curl timeout-was-reached", "fatal: unable to access 'https://github.com/octo/repo.git/': Timeout was reached", true},
+		{"tls connection-reset-by-peer", "fatal: unable to access 'https://github.com/octo/repo.git/': OpenSSL SSL_read: Connection reset by peer, errno 54", true},
+		{"curl network-is-unreachable", "fatal: unable to access 'https://github.com/octo/repo.git/': Failed to connect to github.com port 443 after 5 ms: Network is unreachable", true},
+		{"curl no-route-to-host", "fatal: unable to access 'https://192.0.2.1/x/y.git/': Failed to connect to 192.0.2.1 port 443 after 3 ms: No route to host", true},
+		{"ssh connect-to-host-umbrella", "ssh: connect to host github.com port 22: Host is down", true},
+
+		// Negative corpus: every non-network fetch failure is a cycle error.
+		{"ssh auth publickey", "Permission denied (publickey).\nfatal: Could not read from remote repository.", false},
+		{"https 403 forbidden", "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 403", false},
+		{"https authentication failed", "fatal: Authentication failed for 'https://github.com/x/y.git/'", false},
+		{"repository not found", "fatal: repository 'https://github.com/x/y.git/' not found", false},
+		{"vanished local path", "fatal: '/tmp/gone.git' does not appear to be a git repository", false},
+		{"terminal prompts disabled", "fatal: could not read Username for 'https://github.com': terminal prompts disabled", false},
+		{"empty stderr", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := fetchFailureIsOffline(tc.stderr); got != tc.offline {
+				t.Fatalf("fetchFailureIsOffline(%q) = %v, want %v", tc.stderr, got, tc.offline)
+			}
+		})
 	}
 }
 

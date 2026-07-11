@@ -18,9 +18,10 @@ type SyncSummary struct {
 	MirrorIn  Stats     `json:"mirror_in"`
 	MirrorOut Stats     `json:"mirror_out"`
 	Degraded  []string  `json:"degraded,omitempty"`
-	// Offline means this cycle could not reach the remote (fetch failed):
-	// integrate was skipped and any local commits were queued. Additive
-	// field — absent/false from older daemons.
+	// Offline means this cycle found the remote network-unreachable: the fetch
+	// failed with a transport-unreachable signature, integrate was skipped, and
+	// any local commits were queued. Every other fetch failure is reported as
+	// an error, not offline. Additive field — absent/false from older daemons.
 	Offline bool `json:"offline,omitempty"`
 	// Scrubbed lists git-meta paths the post-integrate scrub removed or
 	// healed — nonzero means a remote pushed something hostile or

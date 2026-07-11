@@ -30,16 +30,63 @@ const worktreeHealTimeout = 30 * time.Second
 // is back at its pre-integrate state and Degraded names the project
 // folders whose paths conflicted (mirror-out withheld for them, §11).
 type integrateOutcome struct {
+	// Offline means the fetch failed with a network-unreachable signature
+	// (fetchFailureIsOffline): the remote was genuinely unreachable this cycle,
+	// a benign outcome — integrate is skipped and local commits queue. Every
+	// other fetch failure is a cycle error, never an Offline outcome.
 	Offline     bool
 	Integrated  bool
 	DegradedAll bool
 	Degraded    []string
 }
 
+// fetchFailureIsOffline reports whether a failed fetch's stderr positively
+// identifies a transport-unreachable condition — the machine (or the remote's
+// network path) is offline. The contract is fail-closed: only known
+// network-unreachable signatures qualify, and every other fetch failure —
+// auth expiry, permission denied, repository not found, a vanished local
+// path, disk full, anything unrecognized — surfaces as a cycle error instead,
+// because labeling a broken remote "offline" hides it behind a benign banner
+// while the machine silently stops converging.
+func fetchFailureIsOffline(stderr string) bool {
+	lowered := strings.ToLower(stderr)
+	for _, signature := range offlineFetchSignatures {
+		if strings.Contains(lowered, signature) {
+			return true
+		}
+	}
+	return false
+}
+
+// offlineFetchSignatures are lowercase substrings of git/curl/ssh stderr that
+// positively identify network unreachability. Sources: curl connect errors
+// (https transport), getaddrinfo failures (glibc and macOS spellings), kernel
+// socket errno text, and OpenSSH connect diagnostics. Auth (401/403,
+// publickey), not-found, and local-path failures never match — by design.
+var offlineFetchSignatures = []string{
+	"could not resolve host",               // https DNS (also covers ssh "could not resolve hostname")
+	"temporary failure in name resolution", // glibc EAI_AGAIN
+	"name or service not known",            // glibc EAI_NONAME
+	"nodename nor servname provided",       // macOS getaddrinfo
+	"failed to connect to",                 // curl connect umbrella (refused/timeout/EPERM spellings)
+	"connection refused",
+	"connection timed out",
+	"operation timed out", // macOS ETIMEDOUT
+	"timeout was reached", // curl CURLE_OPERATION_TIMEDOUT
+	"connection reset by peer",
+	"network is unreachable",
+	"no route to host",
+	"ssh: connect to host", // OpenSSH connect diagnostics umbrella
+}
+
 // integrate fetches and rebases onto origin/main, falling back per the
 // spec §4 ladder: rebase → abort → merge commit → abort → degraded.
-// Offline (fetch failure) is a normal outcome, not an error; errors are
-// infrastructure failures only.
+// A network-unreachable fetch failure (fetchFailureIsOffline) is the normal
+// Offline outcome, not an error; every other fetch failure — auth expiry, a
+// missing/renamed remote, a vanished checkout, disk full — is an
+// infrastructure error, surfaced loudly so a silently-broken machine cannot
+// hide behind the offline banner. Non-fetch errors are infrastructure
+// failures only.
 //
 // Invariant: integrate never returns a non-Integrated outcome with a worktree
 // diverged from HEAD. The deferred heal below upholds it — see
@@ -48,7 +95,10 @@ func (e *Engine) integrate(ctx context.Context) (outcome integrateOutcome, err e
 	if fetch, fetchErr := gitx.RunStatus(ctx, e.checkout, "fetch", "--quiet", remoteName); fetchErr != nil {
 		return integrateOutcome{}, fmt.Errorf("integrate: fetch: %w", fetchErr)
 	} else if fetch.ExitCode != 0 {
-		return integrateOutcome{Offline: true}, nil
+		if fetchFailureIsOffline(fetch.Stderr) {
+			return integrateOutcome{Offline: true}, nil
+		}
+		return integrateOutcome{}, fmt.Errorf("integrate: fetch failed (exit %d): %s", fetch.ExitCode, strings.TrimSpace(fetch.Stderr))
 	}
 
 	behind, behindErr := gitx.Run(ctx, e.checkout, "rev-list", "--count", "HEAD.."+upstreamRef)

@@ -92,3 +92,44 @@ func TestUnitCycleResultOutcomes(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncSummaryOfflineRoundTrips proves the offline wire field survives a
+// JSON round-trip under the exact key "offline" — a tag typo (misspelled key,
+// or a dropped json tag exporting it as "Offline") would pass a Go-level
+// struct round-trip silently, so this asserts the serialized key by name AND
+// the decoded value together.
+func TestSyncSummaryOfflineRoundTrips(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 7, 10, 9, 30, 0, 0, time.UTC)
+	want := SyncSummary{At: at, Offline: true, PushQueued: true}
+
+	blob, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(blob), `"offline":true`) {
+		t.Fatalf("marshaled summary missing exact key \"offline\":true:\n%s", blob)
+	}
+	var got SyncSummary
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("SyncSummary offline round-trip (-want +got):\n%s", diff)
+	}
+}
+
+// TestSyncSummaryOmitsOfflineWhenFalse pins the omitempty contract: a cycle
+// that was NOT offline — the common case — must serialize WITHOUT the "offline"
+// key, so the field stays inert for older clients and the absent-key wire
+// default is unambiguously "online".
+func TestSyncSummaryOmitsOfflineWhenFalse(t *testing.T) {
+	t.Parallel()
+	blob, err := json.Marshal(SyncSummary{At: time.Date(2026, 7, 10, 9, 30, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "offline") {
+		t.Errorf("zero-value SyncSummary serialized the offline key; it must omitempty:\n%s", blob)
+	}
+}
