@@ -68,6 +68,13 @@ type Options struct {
 	// releases still win when they compare higher — semver precedence
 	// puts v2.0.0 above v2.0.0-rc.9.
 	Prerelease bool
+	// RequestedVersion pins the update to one exact release ("2.0.0-rc.1"
+	// or "v2.0.0-rc.1") instead of resolving the newest. Naming a version
+	// is a stronger opt-in than the channel flag, so Prerelease does not
+	// apply — and unlike implicit resolution, an explicitly requested
+	// OLDER release is honored (deliberate rollback), reported through
+	// Decision.Downgrade so the CLI can warn.
+	RequestedVersion string
 	// GOOS and GOARCH select the release asset (runtime values in
 	// production; fixed values in tests).
 	GOOS, GOARCH string
@@ -75,13 +82,20 @@ type Options struct {
 
 // Decision is Check's verdict.
 type Decision struct {
-	// Latest is the highest release tag on the requested channel
-	// ("v2.0.0-rc.2").
+	// Latest is the resolved target release tag ("v2.0.0-rc.2"): the
+	// highest tag on the requested channel, or the pinned tag when
+	// Options.RequestedVersion is set.
 	Latest string
-	// UpdateNeeded reports whether Latest is strictly newer than the
-	// running version. Equal or older never updates — this command does
-	// not downgrade.
+	// UpdateNeeded reports whether installing Latest would change the
+	// running binary. Implicit resolution sets it only for a strictly
+	// newer release (never downgrade); an explicitly requested version
+	// sets it for any version other than the running one.
 	UpdateNeeded bool
+	// Downgrade reports that Latest is OLDER than the running version —
+	// possible only for an explicitly requested version. The CLI warns:
+	// state written by the newer version may not load under the older
+	// binary (config parsing is strict, ADR 17).
+	Downgrade bool
 }
 
 // Updater wires the seams. Getenv feeds the Homebrew-Cellar guard —
@@ -91,10 +105,11 @@ type Updater struct {
 	Getenv func(string) string
 }
 
-// releaseListLimit bounds the release-list fetch. Far above any realistic
+// ReleaseListLimit bounds the release-list fetch — Check's resolution
+// window and the CLI picker's list share it. Far above any realistic
 // distance between the running version and the newest release; the semver
 // max over the window still picks correctly even if old rows fall off.
-const releaseListLimit = 50
+const ReleaseListLimit = 50
 
 // maxBinaryBytes caps extraction as a decompression-bomb guard — the real
 // binary is ~16 MB, so an archive claiming orders of magnitude more is
@@ -110,10 +125,11 @@ const (
 	sanityKillWaitDelay = 2 * time.Second
 )
 
-// Check resolves the newest release on the requested channel and reports
-// whether it is strictly newer than the running version. The dev-build and
-// Homebrew guards run here so `update --check` refuses exactly where
-// `update` would.
+// Check resolves the target release — the newest on the requested channel,
+// or exactly Options.RequestedVersion when set — and reports whether
+// installing it would change the running binary. The dev-build and
+// Homebrew guards run here, before any network call, so `update --check`
+// refuses exactly where `update` would.
 func (u *Updater) Check(ctx context.Context, opts Options) (Decision, error) {
 	if opts.CurrentVersion == "dev" {
 		return Decision{}, ErrDevBuild
@@ -126,9 +142,12 @@ func (u *Updater) Check(ctx context.Context, opts Options) (Decision, error) {
 		return Decision{}, ErrBrewManaged
 	}
 
-	releases, err := u.Source.ListReleases(ctx, opts.Repo, releaseListLimit)
+	releases, err := u.Source.ListReleases(ctx, opts.Repo, ReleaseListLimit)
 	if err != nil {
 		return Decision{}, err
+	}
+	if opts.RequestedVersion != "" {
+		return resolveRequested(current, opts, releases)
 	}
 	latest := ""
 	for _, release := range releases {
@@ -153,6 +172,36 @@ func (u *Updater) Check(ctx context.Context, opts Options) (Decision, error) {
 		return Decision{}, fmt.Errorf("%w%s in %s", ErrNoRelease, hint, opts.Repo)
 	}
 	return Decision{Latest: latest, UpdateNeeded: semver.Compare(latest, current) > 0}, nil
+}
+
+// resolveRequested pins the decision to an explicitly named release. The
+// channel filter deliberately does not apply — naming a version is a
+// stronger opt-in than --prerelease — and an older release is honored
+// with Downgrade set, because deliberate rollback is exactly why an
+// operator names a version. Drafts stay invisible: they are unpublished
+// by definition. Matching is by semver equality, so "2.1.0" and "v2.1.0"
+// both resolve to the real tag.
+func resolveRequested(current string, opts Options, releases []ghx.ReleaseInfo) (Decision, error) {
+	requested := "v" + strings.TrimPrefix(opts.RequestedVersion, "v")
+	if !semver.IsValid(requested) {
+		return Decision{}, fmt.Errorf("requested version %q is not valid semver", opts.RequestedVersion)
+	}
+	for _, release := range releases {
+		if release.IsDraft || !semver.IsValid(release.TagName) {
+			continue
+		}
+		if semver.Compare(release.TagName, requested) != 0 {
+			continue
+		}
+		comparison := semver.Compare(release.TagName, current)
+		return Decision{
+			Latest:       release.TagName,
+			UpdateNeeded: comparison != 0,
+			Downgrade:    comparison < 0,
+		}, nil
+	}
+	return Decision{}, fmt.Errorf("%w: release %s does not exist in %s (`gh release list -R %s` shows what does)",
+		ErrNoRelease, requested, opts.Repo, opts.Repo)
 }
 
 // Apply downloads targetTag's archive for this platform, verifies it

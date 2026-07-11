@@ -204,6 +204,134 @@ func TestCheckChannelAndOrdering(t *testing.T) {
 	}
 }
 
+// TestCheckRequestedVersion proves explicit-version pinning in one table:
+// the channel filter does not apply (an rc pins without --prerelease), an
+// older release is honored with Downgrade set (deliberate rollback), equal
+// is a no-op, drafts stay invisible, and both "X" and "vX" spellings
+// resolve to the real tag.
+func TestCheckRequestedVersion(t *testing.T) {
+	t.Parallel()
+	releases := []ghx.ReleaseInfo{
+		{TagName: "v2.1.0"},
+		{TagName: "v2.0.0"},
+		{TagName: "v2.0.0-rc.2", IsPrerelease: true},
+		{TagName: "v3.0.0", IsDraft: true},
+	}
+	tests := []struct {
+		name      string
+		current   string
+		requested string
+		want      Decision
+		wantErr   string
+	}{
+		{
+			name:      "pins a newer stable",
+			current:   "2.0.0",
+			requested: "2.1.0",
+			want:      Decision{Latest: "v2.1.0", UpdateNeeded: true},
+		},
+		{
+			name:      "prerelease pin needs no channel flag",
+			current:   "1.9.0",
+			requested: "v2.0.0-rc.2",
+			want:      Decision{Latest: "v2.0.0-rc.2", UpdateNeeded: true},
+		},
+		{
+			name:      "explicit older release downgrades",
+			current:   "2.1.0",
+			requested: "2.0.0",
+			want:      Decision{Latest: "v2.0.0", UpdateNeeded: true, Downgrade: true},
+		},
+		{
+			name:      "explicit equal is a no-op",
+			current:   "2.1.0",
+			requested: "v2.1.0",
+			want:      Decision{Latest: "v2.1.0"},
+		},
+		{
+			name:      "nonexistent release is refused with the tag named",
+			current:   "2.0.0",
+			requested: "9.9.9",
+			wantErr:   "v9.9.9 does not exist",
+		},
+		{
+			name:      "draft releases are invisible",
+			current:   "2.0.0",
+			requested: "3.0.0",
+			wantErr:   "v3.0.0 does not exist",
+		},
+		{
+			name:      "invalid semver is refused before any matching",
+			current:   "2.0.0",
+			requested: "not-a-version",
+			wantErr:   "not valid semver",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			updater := &Updater{Source: &fakeSource{releases: releases}, Getenv: noEnv}
+			decision, err := updater.Check(t.Context(), Options{
+				CurrentVersion:   test.current,
+				TargetPath:       "/home/user/.local/bin/agent-brain",
+				RequestedVersion: test.requested,
+			})
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("Check error = %v, want it to contain %q", err, test.wantErr)
+				}
+				if test.wantErr != "not valid semver" && !errors.Is(err, ErrNoRelease) {
+					t.Fatalf("Check error = %v, want errors.Is(_, ErrNoRelease)", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if decision != test.want {
+				t.Fatalf("Check = %+v, want %+v", decision, test.want)
+			}
+		})
+	}
+}
+
+// TestCheckRequestedVersionGuardsStillFirst proves pinning a version does
+// not sidestep the dev-build and Homebrew refusals — and that both still
+// answer before any network call.
+func TestCheckRequestedVersionGuardsStillFirst(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		opts    Options
+		wantErr error
+	}{
+		{
+			name:    "dev build",
+			opts:    Options{CurrentVersion: "dev", TargetPath: "/home/user/.local/bin/agent-brain", RequestedVersion: "2.1.0"},
+			wantErr: ErrDevBuild,
+		},
+		{
+			name:    "brew managed",
+			opts:    Options{CurrentVersion: "2.0.0", TargetPath: "/opt/homebrew/Cellar/agent-brain/2.0.0/bin/agent-brain", RequestedVersion: "2.1.0"},
+			wantErr: ErrBrewManaged,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			source := &fakeSource{}
+			updater := &Updater{Source: source, Getenv: noEnv}
+			_, err := updater.Check(t.Context(), test.opts)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Check error = %v, want errors.Is(_, %v)", err, test.wantErr)
+			}
+			if source.listCalls != 0 {
+				t.Fatalf("ListReleases called %d times, want 0 — guards must answer before any network call", source.listCalls)
+			}
+		})
+	}
+}
+
 // TestCheckStableChannelErrorNamesPrereleaseHint proves the rc-phase UX:
 // when only prereleases exist, the stable-channel refusal tells the user
 // about --prerelease instead of a bare "nothing found".

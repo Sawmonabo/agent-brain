@@ -1,5 +1,10 @@
 # ADR 18: Self-update — gh-native release pipeline, checksum verify, atomic swap
 
+*Amended 2026-07-10 (same day, on review): decision 2 gained explicit-version
+pinning and a deliberate-rollback posture, and decision 8 (interactive picker,
+TTY-only) was added — the original "rollback is manual by design" consequence
+contradicted the command's own reason to exist.*
+
 - **Status:** Accepted
 - **Date:** 2026-07-10
 - **Deciders:** Sawmon (requested the command during the 9.7 soak; design approved in-session)
@@ -41,14 +46,27 @@ are expected to detect and refuse that case.
    the same authenticated gh that installed the machine serves its updates,
    private repo included.
 
-2. **Resolution is semver-max, channel-gated, never-downgrade.** The newest
-   release is the `golang.org/x/mod/semver` maximum over non-draft tags — not
-   GitHub's publication order, which lies after re-tags and backports. Stable
-   channel by default; `--prerelease` admits release candidates (the only
-   channel that exists until v2.0.0 tags at T12 — the stable-channel error
-   message names the flag). An update happens only when the resolved release
-   is strictly newer than the running version; equal or older is "already up
-   to date", so a stale machine can never be walked backward.
+2. **Resolution: implicit semver-max, or an explicit pin.** With no version
+   argument the target is the `golang.org/x/mod/semver` maximum over
+   non-draft tags — not GitHub's publication order, which lies after re-tags
+   and backports. Stable channel by default; `--prerelease` admits release
+   candidates (the only channel that exists until v2.0.0 tags at T12 — the
+   stable-channel error message names the flag). Implicit resolution never
+   downgrades: equal or older is "already up to date", so a stale machine
+   can never be walked backward by accident.
+   **Amended 2026-07-10:** `update <version>` (both `2.1.0` and `v2.1.0`
+   spellings) pins that exact release instead — the modern norm
+   (`uv self update [TARGET_VERSION]`, `deno upgrade --version X`), and what
+   staged rollouts, machine pinning, and bug reproduction need. The channel
+   flag deliberately does not apply to a pin (naming a version is the
+   stronger opt-in); drafts stay invisible. An explicitly named OLDER
+   release IS installed — deliberate rollback is exactly why an operator
+   names a version, and the explicit argument is the acknowledgment — but
+   only after a loud DOWNGRADE warning: config parsing is strict
+   (`DisallowUnknownFields`, ADR 17), so state written by a newer version
+   may refuse to load under the older binary; the warning names
+   `agent-brain doctor` and the post-restart readiness poll surfaces a
+   daemon that fails to come back.
 
 3. **Fail-closed verification pipeline, in order.** Download the platform
    archive plus the GoReleaser checksums asset into a temp dir; verify sha256
@@ -83,7 +101,18 @@ are expected to detect and refuse that case.
    binary update itself already succeeded. `--check` reports availability and
    changes nothing.
 
-7. **Integrity model, stated honestly.** GitHub's immutable-releases policy
+7. **Interactive picker, TTY-only (added 2026-07-10).** `update --select`
+   lists the non-draft releases (both channels, badged, semver-descending,
+   running version marked) as a huh select on an interactive terminal —
+   init's form idiom. It is deliberately REFUSED headless (piped stdin, CI,
+   `ACCESSIBLE`) with the scriptable equivalent named: huh v2.0.3's
+   accessible Select backend auto-accepts the FIRST option on stdin EOF —
+   a headless `--select` would silently install the newest release — and
+   panics (`index out of range [-1]`, field_select.go:770) on an invalid
+   line followed by EOF. Both behaviors were proven by a live probe before
+   wiring; `update <version>` is the headless- and screen-reader-safe path.
+
+8. **Integrity model, stated honestly.** GitHub's immutable-releases policy
    (ADR 16) means a published tag's assets can never be silently replaced,
    and gh's authenticated TLS channel plus the repo's access control provide
    source authenticity while the repo is private. The sha256 gate defends the
@@ -101,9 +130,11 @@ are expected to detect and refuse that case.
   runbook gains `agent-brain update` instead of repeat download one-liners.
 - Only new dependency is `golang.org/x/mod` (semver comparison) — everything
   else rides gh and the stdlib.
-- Rollback is manual by design (`gh release download` an older tag): the
-  command refuses to downgrade, so a bad release is backed out deliberately,
-  not by racing machines in both directions.
+- Rollback is explicit but first-class (amended 2026-07-10): implicit
+  resolution refuses to downgrade, so machines never race backward — but
+  `agent-brain update <older-version>` backs out a bad release deliberately,
+  with the downgrade warning and doctor as the follow-up. No raw
+  `gh release download` toil remains for any update-shaped operation.
 - Brew-installed machines get a refusal naming `brew upgrade` — the two
   update paths cannot fight over the same binary.
 - gh remains a hard runtime dependency for updates; that is already the
@@ -127,3 +158,15 @@ convention Cellar refuse`
   `sha256  name` lines, version-prefixed archive names)
 - https://cli.github.com/manual/gh_release_list, …/gh_release_download
   (JSON fields, `--pattern` asset selection)
+
+Amendment trail (WebSearch, 2026-07-10), queries: `uv self update specific
+version deno upgrade command syntax target version 2026`, `uv CLI reference
+"self update" TARGET_VERSION positional`
+
+- https://docs.astral.sh/uv/reference/cli/ (`uv self update [TARGET_VERSION]`
+  — optional positional pin, latest by default)
+- https://github.com/astral-sh/uv/issues/6642 (the pin/rollback motivation)
+- https://docs.deno.com/runtime/reference/cli/upgrade/ (channel args +
+  `--version` pin + `--dry-run` coexist)
+- huh v2.0.3 accessible-Select EOF/panic behavior: no public issue found;
+  proven by local probe (see decision 7) — the TTY gate is the mitigation.
