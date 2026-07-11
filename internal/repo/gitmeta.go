@@ -5,10 +5,12 @@ import (
 	"strings"
 )
 
-// GitMetaNames are the path segments that carry git's own semantics and so
+// gitMetaNames are the path segments that carry git's own semantics and so
 // must never originate from provider content or survive in the checkout
-// below its root: `.gitattributes`, `.gitignore`, `.git`.
-var GitMetaNames = []string{".gitattributes", ".gitignore", ".git"}
+// below its root: `.gitattributes`, `.gitignore`, `.git`. Unexported: the
+// list is IsGitMetaPath's implementation detail, and exporting a mutable
+// package-level slice would let any importer edit a security predicate.
+var gitMetaNames = []string{".gitattributes", ".gitignore", ".git"}
 
 // IsGitMetaPath reports whether any slash-separated segment of the
 // slash-separated rel is a git metadata name, compared case-insensitively.
@@ -41,7 +43,7 @@ var GitMetaNames = []string{".gitattributes", ".gitignore", ".git"}
 // legitimate files syncing — its own spec violation.
 func IsGitMetaPath(rel string) bool {
 	for segment := range strings.SplitSeq(rel, "/") {
-		if slices.ContainsFunc(GitMetaNames, func(meta string) bool {
+		if slices.ContainsFunc(gitMetaNames, func(meta string) bool {
 			return strings.EqualFold(segment, meta)
 		}) {
 			return true
