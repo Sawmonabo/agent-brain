@@ -146,6 +146,18 @@ func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
 //
 // Returns the scrubbed paths so the caller's report/log can name them.
 func (e *Engine) prepareCheckout(ctx context.Context) ([]string, error) {
+	// Pin git's auto maintenance to the foreground BEFORE any command this
+	// cycle runs that could trigger it (ADR 19): git's default detaches
+	// `git gc --auto` / `git maintenance run --auto` into the background,
+	// where it outlives this cycle's git children and races the single
+	// writer (ADR 03) — a later cycle, a quiesced init/doctor mutation, or
+	// teardown. Stateless and unconditional (no once-flag): two cheap
+	// `git config` writes per cycle converge every pre-ADR-19 fleet member
+	// on its first post-upgrade cycle and re-heal any later drift, with no
+	// engine state to reason about.
+	if err := gitx.InstallMaintenancePosture(ctx, e.checkout); err != nil {
+		return nil, err
+	}
 	if err := e.recoverState(ctx); err != nil {
 		return nil, err
 	}

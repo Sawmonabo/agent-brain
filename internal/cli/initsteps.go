@@ -294,8 +294,9 @@ func verifyExistingCheckoutOrigin(ctx context.Context, state *initState, memorie
 }
 
 // stepWiring installs the git filter/merge/textconv chain, the repo-local
-// gh credential helper, and a repo-local git identity — all idempotent,
-// re-run-safe writes to memories/.git/config (spec §5; ADR 08).
+// gh credential helper, the foreground auto-maintenance posture (ADR 19),
+// and a repo-local git identity — all idempotent, re-run-safe writes to
+// memories/.git/config (spec §5; ADR 08).
 func stepWiring(ctx context.Context, state *initState) error {
 	memories := state.paths.MemoriesDir()
 	if err := gitx.InstallFilters(ctx, memories, state.binaryPath); err != nil {
@@ -304,10 +305,13 @@ func stepWiring(ctx context.Context, state *initState) error {
 	if err := gitx.InstallCredentialHelper(ctx, memories, state.gh.BinaryPath()); err != nil {
 		return err
 	}
+	if err := gitx.InstallMaintenancePosture(ctx, memories); err != nil {
+		return err
+	}
 	if err := ensureRepoIdentity(ctx, memories); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintln(state.out, "wiring: filters, credential helper, and repo-local identity installed")
+	_, err := fmt.Fprintln(state.out, "wiring: filters, credential helper, maintenance posture, and repo-local identity installed")
 	return err
 }
 

@@ -44,6 +44,52 @@ func TestInstallCredentialHelper(t *testing.T) {
 	}
 }
 
+// TestInstallMaintenancePosture pins ADR 19's foreground-maintenance wiring:
+// both gc.autoDetach and maintenance.autoDetach are written "false" into the
+// repo's local config, and re-running converges on the same values rather
+// than drifting or erroring. Foreground maintenance keeps git's detached
+// `gc --auto` / `maintenance run --auto` from racing the single-writer engine.
+func TestInstallMaintenancePosture(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, err := Run(ctx, dir, "init", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{
+		"gc.autoDetach":          "false",
+		"maintenance.autoDetach": "false",
+	}
+	for i := range 2 {
+		if err := InstallMaintenancePosture(ctx, dir); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		got := make(map[string]string, len(want))
+		for key := range want {
+			result, err := Run(ctx, dir, "config", "--local", "--get", key)
+			if err != nil {
+				t.Fatalf("run %d: get %s: %v", i, key, err)
+			}
+			got[key] = strings.TrimSpace(result.Stdout)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("run %d: local maintenance config (-want +got):\n%s", i, diff)
+		}
+	}
+}
+
+// TestInstallMaintenancePostureNonRepoErrors pins the --local fail-closed
+// contract: outside a git repository there is no local config to write, so
+// the installer must surface git's error rather than silently falling back to
+// the user's global config.
+func TestInstallMaintenancePostureNonRepoErrors(t *testing.T) {
+	t.Parallel()
+	if err := InstallMaintenancePosture(context.Background(), t.TempDir()); err == nil {
+		t.Error("InstallMaintenancePosture in a non-repo dir succeeded; want error")
+	}
+}
+
 // TestInstallCredentialHelperEmptyGhPath pins the fail-closed guard: wiring
 // an empty command as gh's credential helper would silently make every HTTPS
 // credential lookup fail, so InstallCredentialHelper must reject it up front

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,22 @@ func unit(t *testing.T, folder string) repo.Unit {
 		t.Fatal(err)
 	}
 	return repo.Unit{Provider: "claude", ProjectID: "id-" + folder, Folder: folder, LocalDir: localDir}
+}
+
+// localConfigValue reads one --local git-config key, reporting ok=false when
+// the key is unset (git exits non-zero for a missing key). The engine tests'
+// tolerant reader: a "key absent" precondition can be asserted without
+// mustGit failing on that expected non-zero exit.
+func localConfigValue(t *testing.T, dir, key string) (value string, ok bool) {
+	t.Helper()
+	result, err := gitx.RunStatus(context.Background(), dir, "config", "--local", "--get", key)
+	if err != nil {
+		t.Fatalf("git config --local --get %s: %v", key, err)
+	}
+	if result.ExitCode != 0 {
+		return "", false
+	}
+	return strings.TrimSpace(result.Stdout), true
 }
 
 func writeLocal(t *testing.T, u repo.Unit, rel, content string) {

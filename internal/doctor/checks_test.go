@@ -45,6 +45,57 @@ func minimalDeps(t *testing.T) doctor.Deps {
 	}
 }
 
+// TestRunMaintenancePostureHealthy pins ADR 19's foreground posture: a
+// checkout wired by init/doctor (both gc.autoDetach and maintenance.autoDetach
+// pinned to "false") passes the maintenance-posture check cleanly.
+func TestRunMaintenancePostureHealthy(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	got := result(t, doctor.Run(context.Background(), fx.deps), "maintenance-posture")
+	if got.Status != doctor.StatusOK {
+		t.Fatalf("maintenance-posture = %+v, want ok on a fully wired checkout", got)
+	}
+}
+
+// TestRunMaintenancePostureOneKeyDrifted warns and names ONLY the drifted key
+// when a single posture key is unset — the detail must not implicate the key
+// that is still correctly pinned.
+func TestRunMaintenancePostureOneKeyDrifted(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	mustGit(t, fx.dir, "config", "--local", "--unset", "gc.autoDetach")
+
+	got := result(t, doctor.Run(context.Background(), fx.deps), "maintenance-posture")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("maintenance-posture = %+v, want warn when a key drifted", got)
+	}
+	if !strings.Contains(got.Detail, "gc.autoDetach") {
+		t.Errorf("Detail %q must name the drifted key gc.autoDetach", got.Detail)
+	}
+	if strings.Contains(got.Detail, "maintenance.autoDetach") {
+		t.Errorf("Detail %q wrongly names maintenance.autoDetach, which is still pinned", got.Detail)
+	}
+	if got.Fix == "" {
+		t.Errorf("a drifted posture must carry a fix hint, got %+v", got)
+	}
+}
+
+// TestRunMaintenancePostureBothMissingSorted warns and names BOTH keys in
+// sorted order when neither is pinned — here a Deps whose checkout has no
+// local config at all. Asserting the exact rendered Detail binds that the
+// check sorts the drifted keys before joining them.
+func TestRunMaintenancePostureBothMissingSorted(t *testing.T) {
+	t.Parallel()
+	got := result(t, doctor.Run(context.Background(), minimalDeps(t)), "maintenance-posture")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("maintenance-posture = %+v, want warn when both keys are missing", got)
+	}
+	want := "git auto-maintenance is not pinned to the foreground — a detached maintenance process could race the sync engine: gc.autoDetach, maintenance.autoDetach"
+	if diff := cmp.Diff(want, got.Detail); diff != "" {
+		t.Errorf("maintenance-posture Detail (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunSecretsScanNotInstalled(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty dir: no gitleaks anywhere on PATH
 	got := result(t, doctor.Run(context.Background(), minimalDeps(t)), "secrets-scan")

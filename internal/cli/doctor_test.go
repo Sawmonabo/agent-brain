@@ -117,6 +117,9 @@ func provisionHealthyDoctorMachine(t *testing.T) config.Paths {
 	if err := gitx.InstallFilters(context.Background(), checkout, testBinaryPath); err != nil {
 		t.Fatal(err)
 	}
+	if err := gitx.InstallMaintenancePosture(context.Background(), checkout); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.WriteAttributes(repo.NewLayout(checkout), registry); err != nil {
 		t.Fatal(err)
 	}

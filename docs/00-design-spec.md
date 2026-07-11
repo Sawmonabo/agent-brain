@@ -227,8 +227,11 @@ after every clone, since `.git/config` is not versioned): the versioned
 clean/smudge/textconv/driver entries with **`filter.agentbrain.required = true`** —
 fail-closed. Git refuses to commit plaintext when the named filter is SELECTED and
 missing or broken, and a clone without the binary shows ciphertext with an erroring
-smudge instead of silently degrading. `merge.renormalize = true`. The daemon refuses
-to sync until `doctor` passes.
+smudge instead of silently degrading. `merge.renormalize = true`. Local `.git/config`
+also pins git's auto maintenance to the foreground (`gc.autoDetach = false`,
+`maintenance.autoDetach = false`) so a detached `gc`/`maintenance` run never races the
+single-writer engine — installed by `init`, re-pinned by the engine every cycle, and
+checked by `doctor` (ADR 19). The daemon refuses to sync until `doctor` passes.
 
 **git-meta scrub contract (binding).** `required = true` does NOT save a path whose
 filter is *unselected*: a `.gitattributes` below the checkout root overrides the root

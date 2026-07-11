@@ -135,8 +135,8 @@ type checkFunc func(context.Context, Deps) (CheckResult, bool)
 
 // battery is the full check list, in the deterministic order the CLI/
 // dashboard renders it (spec: settings · keyset · checkout · filters ·
-// attributes · git-meta · credential-helper · remote · gh · daemon ·
-// service · registry-local · project-identity · conflict-log ·
+// maintenance-posture · attributes · git-meta · credential-helper · remote ·
+// gh · daemon · service · registry-local · project-identity · conflict-log ·
 // claude-prereqs · codex-prereqs · legacy-leftovers · secrets-scan ·
 // keyset-decrypt).
 // SafetyGate (gate.go) reuses these same functions in its own narrower,
@@ -154,6 +154,7 @@ var battery = []checkFunc{
 	checkKeyset,
 	checkCheckout,
 	checkFilters,
+	checkMaintenancePosture,
 	checkAttributes,
 	checkGitMeta,
 	checkCredentialHelper,
@@ -183,15 +184,18 @@ func Run(ctx context.Context, deps Deps) Report {
 	return report
 }
 
-// Fix applies the three sanctioned, idempotent repairs — filter/merge
-// wiring, canonical .gitattributes, and (when gh is available) the
-// repo-local credential helper — then re-runs the full battery and marks
-// the repaired checks Fixed. Nothing else is auto-fixed: a wrong keyset
-// or a dead gh login is a human decision, never a repair doctor applies
-// on its own.
+// Fix applies the sanctioned, idempotent repairs — filter/merge wiring, the
+// foreground auto-maintenance posture (ADR 19), canonical .gitattributes,
+// and (when gh is available) the repo-local credential helper — then re-runs
+// the full battery and marks the repaired checks Fixed. Nothing else is
+// auto-fixed: a wrong keyset or a dead gh login is a human decision, never a
+// repair doctor applies on its own.
 func Fix(ctx context.Context, deps Deps) (Report, error) {
 	if err := gitx.InstallFilters(ctx, deps.Paths.MemoriesDir(), deps.BinaryPath); err != nil {
 		return Report{}, fmt.Errorf("doctor fix filters: %w", err)
+	}
+	if err := gitx.InstallMaintenancePosture(ctx, deps.Paths.MemoriesDir()); err != nil {
+		return Report{}, fmt.Errorf("doctor fix maintenance posture: %w", err)
 	}
 	if deps.Registry != nil {
 		if err := repo.WriteAttributes(repo.NewLayout(deps.Paths.MemoriesDir()), deps.Registry); err != nil {
@@ -208,6 +212,10 @@ func Fix(ctx context.Context, deps Deps) (Report, error) {
 	for i := range report.Results {
 		switch report.Results[i].Name {
 		case "filters":
+			report.Results[i].Fixed = true
+		case "maintenance-posture":
+			// InstallMaintenancePosture runs unconditionally above, exactly
+			// like InstallFilters — so this repair is always applied.
 			report.Results[i].Fixed = true
 		case "attributes":
 			// WriteAttributes only ran above when deps.Registry != nil —

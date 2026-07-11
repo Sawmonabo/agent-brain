@@ -80,6 +80,9 @@ func newFixture(t *testing.T) fixture {
 	if err := gitx.InstallFilters(context.Background(), checkout, binaryPath); err != nil {
 		t.Fatal(err)
 	}
+	if err := gitx.InstallMaintenancePosture(context.Background(), checkout); err != nil {
+		t.Fatal(err)
+	}
 	mustGit(t, checkout, "add", "-A")
 	mustGit(t, checkout, "commit", "-m", "init: repo skeleton")
 	mustGit(t, checkout, "push", "-u", "origin", "main")
@@ -151,8 +154,8 @@ func TestRunHealthyMachineAllApplicableChecksPass(t *testing.T) {
 		t.Fatalf("healthy machine reported failures: %+v", report.Results)
 	}
 	for _, name := range []string{
-		"settings", "keyset", "checkout", "filters", "attributes",
-		"remote", "gh", "registry-local", "conflict-log",
+		"settings", "keyset", "checkout", "filters", "maintenance-posture",
+		"attributes", "remote", "gh", "registry-local", "conflict-log",
 		"claude-prereqs", "legacy-leftovers",
 	} {
 		if got := result(t, report, name).Status; got != doctor.StatusOK {

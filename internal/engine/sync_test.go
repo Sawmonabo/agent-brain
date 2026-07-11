@@ -87,6 +87,52 @@ func TestSyncTwoCheckoutsConverge(t *testing.T) {
 	}
 }
 
+// TestSyncPinsForegroundMaintenancePosture proves the engine's per-cycle
+// self-heal (ADR 19): a checkout created WITHOUT the auto-maintenance keys —
+// a fleet member that init'd before this posture existed — has both
+// gc.autoDetach and maintenance.autoDetach pinned to "false" after one Sync,
+// and a later drift of either key is re-pinned by the next cycle. The second
+// leg pins the STATELESS contract: prepareCheckout re-installs every cycle
+// (no once-flag caches the first install), so even an idle cycle converges.
+func TestSyncPinsForegroundMaintenancePosture(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+	postureKeys := []string{"gc.autoDetach", "maintenance.autoDetach"}
+
+	// newTestCheckout never wires the posture, so both keys start absent —
+	// exactly the pre-ADR-19 machine this heal exists for. Asserting that
+	// makes the post-Sync "false" a real state transition, not a fixture that
+	// was already converged.
+	for _, key := range postureKeys {
+		if value, ok := localConfigValue(t, checkout, key); ok {
+			t.Fatalf("precondition: %s already set to %q on a fresh checkout", key, value)
+		}
+	}
+
+	u := unit(t, "alpha")
+	writeLocal(t, u, "memories/fact.md", "a fact\n")
+	if _, err := engine.Sync(ctx, []repo.Unit{u}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range postureKeys {
+		if value, ok := localConfigValue(t, checkout, key); !ok || value != "false" {
+			t.Fatalf("after first Sync, %s = (%q, ok=%v), want (\"false\", true)", key, value, ok)
+		}
+	}
+
+	// Drift one key away, then prove the NEXT (idle) cycle re-pins it — the
+	// stateless per-cycle install, not a cached once-flag.
+	mustGit(t, checkout, "config", "--local", "--unset", "maintenance.autoDetach")
+	if _, err := engine.Sync(ctx, []repo.Unit{u}); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := localConfigValue(t, checkout, "maintenance.autoDetach"); !ok || value != "false" {
+		t.Fatalf("second Sync did not re-pin maintenance.autoDetach: (%q, ok=%v)", value, ok)
+	}
+}
+
 func TestSyncRefusesReentry(t *testing.T) {
 	t.Parallel()
 	checkout, _ := newTestCheckout(t)

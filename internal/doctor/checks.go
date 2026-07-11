@@ -244,6 +244,56 @@ func checkFilters(ctx context.Context, deps Deps) (CheckResult, bool) {
 	return CheckResult{Name: name, Status: StatusOK, Detail: "filter/merge/textconv wiring intact"}, true
 }
 
+// maintenancePostureKeys are exactly the local git-config keys
+// gitx.InstallMaintenancePosture (internal/gitx/install.go) pins to "false"
+// so git's auto maintenance runs in the FOREGROUND (ADR 19). Held in the
+// canonical git-docs spelling (matching the ADR and the operator-facing
+// detail below) as this hand-matched literal — not an exported symbol — so an
+// edit to either site forces a look at the other. The check folds case before
+// lookup: git config --list (what localConfig reads) lowercases variable
+// names, so the stored key is `gc.autodetach`, not the camelCase written here.
+var maintenancePostureKeys = []string{
+	"gc.autoDetach",
+	"maintenance.autoDetach",
+}
+
+// checkMaintenancePosture verifies the checkout pins git's automatic
+// maintenance to the FOREGROUND (ADR 19): both gc.autoDetach and
+// maintenance.autoDetach must read "false" in local config. Left at their
+// detaching default, `git gc --auto` / `git maintenance run --auto` spawn a
+// background process that outlives the engine child that triggered it and
+// races the single writer (ADR 03) — a later cycle, a quiesced init/doctor
+// mutation, or teardown.
+//
+// ADVISORY (StatusWarn), and deliberately NOT in SafetyGate: wrong posture is
+// operational hygiene, not a data-safety refusal — a cycle still runs
+// correctly, it merely risks a concurrent maintenance process — and the
+// engine's own prepareCheckout re-pins the posture at the top of every cycle,
+// so gating on it would refuse the very sync that heals it (the checkGitMeta
+// pattern). Warn, name the drifted/missing keys in sorted order, point at
+// doctor --fix.
+func checkMaintenancePosture(ctx context.Context, deps Deps) (CheckResult, bool) {
+	const name = "maintenance-posture"
+	config, ok := localConfig(ctx, deps.Paths.MemoriesDir())
+	var drifted []string
+	for _, key := range maintenancePostureKeys {
+		// localConfig keys come from `git config --list`, which lowercases
+		// variable names; fold the canonical key to match.
+		if !ok || config[strings.ToLower(key)] != "false" {
+			drifted = append(drifted, key)
+		}
+	}
+	if len(drifted) > 0 {
+		slices.Sort(drifted)
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: "git auto-maintenance is not pinned to the foreground — a detached maintenance process could race the sync engine: " + strings.Join(drifted, ", "),
+			Fix:    fixDoctorFix,
+		}, true
+	}
+	return CheckResult{Name: name, Status: StatusOK, Detail: "auto-maintenance pinned to the foreground"}, true
+}
+
 func checkAttributes(_ context.Context, deps Deps) (CheckResult, bool) {
 	const name = "attributes"
 	if deps.Registry == nil {
