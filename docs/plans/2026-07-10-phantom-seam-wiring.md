@@ -2062,3 +2062,31 @@ An independent reviewer read the live tree against every claim in this plan (~40
 - **Task F:** two plan-text defects surfaced by the implementer's flags, both fixed: the F1 expectation wrongly predicted `golang.org/x/tools` would move to the direct require block (tool directives do not flip the `// indirect` annotation — verified against the Go 1.26.5 toolchain source), and the verbatim CI comment baked in a review date, which belongs in commit messages, not code — the committed workflow and this plan now carry the timeless claim only.
 - **Task A/B (compile-forced alias, documented late):** the plan's literal `import "charm.land/bubbles/v2/key"` cannot compile in `internal/cli/dashboard` — the package's test suite declares a package-level `key()` helper, and Go forbids an import's file-block name from colliding with a package-block identifier. All non-test files import the package as `keybinding` (the alias comment atop keymap.go documents the collision); the plan's `key.`-qualified code blocks are transcribed accordingly.
 - **Final whole-branch review (fable) + polish commit:** verdict "ready to merge", zero Critical/Important; all four recorded per-task Minors triaged accept (connection-reset keep-decision validated). Four new polish-grade Minors fixed in one commit: modal-state footer honesty (new `Cancel`/`Accept`/`ConfirmDecision` bindings + `forModal`, modal handlers rewired through bindings via the TabSwitch membership idiom, per-stage footer tests mutation-proven), add availability gated on BOTH discover+identify closures (`addAvailable()` choke point — a Discover-without-Identify Config previously panicked on candidate pick), the daemon success-path cycle log gained the `offline` attr (headless `service logs` surface), and the engine offline test's failure message now names the network-unreachable axis.
+
+## Follow-up pass (applied)
+
+The wave's three ledgered follow-ups were subsequently built rather than left
+on record, as a directed hardening pass with the same per-task two-verdict
+review gate:
+
+- **Checkout maintenance posture (ADR 19):** git's auto maintenance defaults
+  to detaching, so a background `gc`/`maintenance` child could race the
+  single-writer engine, quiesced init/doctor mutations, and teardown — the
+  same mechanism behind the harness flake fixed above, now closed at the
+  production seam. `gitx.InstallMaintenancePosture` pins `gc.autoDetach=false`
+  + `maintenance.autoDetach=false` (auto maintenance stays ON, inline);
+  installed by init, re-pinned statelessly every engine cycle in
+  `prepareCheckout`, verified by a new doctor battery check (20th) and healed
+  by `doctor --fix`. The ADR records the verified upstream fallback semantics
+  and the deliberate production-vs-test posture split. The spec's decision
+  index also gained its missing 18 and 19 rows.
+- **Hermetic-fixture unification (`internal/gitx/gitxtest`):** the five
+  hand-rolled git-config isolation setups (gitx/engine/cli/daemon TestMains +
+  e2e harness) and two weaker testscript sites found mid-task now share one
+  stdlib-only test-support package (`HermeticGitConfig` bytes, `Setenv`,
+  `Env`); cli and daemon TestMains previously had NO isolation. The e2e
+  self-test now guards the shared bytes for every consumer (mutation-proven).
+- **Add-flow hint unification:** the modal's inline hints render through a
+  shared `helpLine` over the same `forModal` bindings as the footer, so the
+  two surfaces cannot diverge (mutation-proven non-divergence test); the
+  picker's wording drift was the one user-visible fix.
