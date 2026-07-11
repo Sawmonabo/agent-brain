@@ -158,7 +158,7 @@ func TestSyncOfflineCycleReportsOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !report.Offline {
-		t.Fatalf("report = %+v, want Offline=true on a fetch failure", report)
+		t.Fatalf("report = %+v, want Offline=true on a network-unreachable fetch failure", report)
 	}
 	if report.Pushed {
 		t.Fatal("an offline cycle cannot have pushed")

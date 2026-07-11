@@ -493,7 +493,9 @@ func TestProjectsAddIdentifyFailureAborts(t *testing.T) {
 // the injected discover closure fails (e.g. a provider scan cannot read a
 // memory root), pressing a resets the flow to no add, surfaces the reason, and
 // never reaches the daemon. addConfig hardwires a nil discover error, so this
-// one builds the Config inline to inject the failure.
+// one builds the Config inline to inject the failure — and wires Identify too,
+// since add availability now gates on BOTH closures (a build with only discover
+// keeps the a key dead, covered by TestFooterAndDispatchGateAddOnBothClosures).
 func TestProjectsAddDiscoverFailureAborts(t *testing.T) {
 	t.Parallel()
 	fake := &fakeData{}
@@ -501,6 +503,9 @@ func TestProjectsAddDiscoverFailureAborts(t *testing.T) {
 		Data: fake,
 		Discover: func(context.Context) ([]TrackCandidate, error) {
 			return nil, errors.New("scan providers: permission denied")
+		},
+		Identify: func(context.Context, string, TrackRoot, string) (provider.Identity, error) {
+			return provider.Identity{}, nil
 		},
 	})
 	m.active = tabProjects
@@ -656,5 +661,38 @@ func TestFooterAdvertisesAddOnlyWhenWired(t *testing.T) {
 	unwired.active = tabProjects
 	if got := plain(unwired.footer()); strings.Contains(got, "a add") {
 		t.Fatalf("footer %q advertises add with no discovery closure wired", got)
+	}
+}
+
+// TestFooterAndDispatchGateAddOnBothClosures pins that add availability gates on
+// BOTH injected closures, not discovery alone. A build wiring Discover without
+// Identify would panic the moment a per-project candidate is picked (identifyCmd
+// calls identify on nil), so with Identify unwired the a key must be dead and
+// unadvertised — never a key the footer names but the dispatch cannot honor.
+func TestFooterAndDispatchGateAddOnBothClosures(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	m := New(Config{
+		Data: fake,
+		Discover: func(context.Context) ([]TrackCandidate, error) {
+			return nil, nil
+		},
+		// Identify deliberately unwired: discovery alone must not enable add.
+	})
+	m.active = tabProjects
+
+	if got := plain(m.footer()); strings.Contains(got, "a add") {
+		t.Errorf("footer %q advertises add with identify unwired", got)
+	}
+
+	m = drive(t, m, key("a"))
+	if m.projects.adding != addNone {
+		t.Errorf("adding = %v, want addNone: a must be dead with identify unwired", m.projects.adding)
+	}
+	if got := plain(m.projects.view()); !strings.Contains(got, "add is unavailable") {
+		t.Errorf("view = %q, want the 'add is unavailable' notice", got)
+	}
+	if len(fake.trackCalls) != 0 {
+		t.Errorf("a with identify unwired still reached the daemon: %v", fake.trackCalls)
 	}
 }

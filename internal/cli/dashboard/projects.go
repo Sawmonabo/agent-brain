@@ -132,15 +132,25 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData, actions t
 		return cmd
 	}
 	if v.confirming {
-		switch msg.String() {
-		case "y", "Y":
-			v.confirming = false
-			// Untrack the unit captured when the confirm opened, not whatever the
-			// cursor points at now — a poll may have rebuilt the rows underneath it.
-			unit := v.confirmUnit
-			v.notice = fmt.Sprintf("untracking %s…", unit.Folder)
-			return untrackCmd(data, unit)
-		case "n", "N", "esc":
+		switch {
+		case keybinding.Matches(msg, dashboardKeys.ConfirmDecision):
+			// Membership gate, then the concrete key decides — the TabSwitch
+			// idiom. y/Y confirms; n/N (the only other members) cancels, so the
+			// default arm is exact, not a catch-all.
+			switch msg.String() {
+			case "y", "Y":
+				v.confirming = false
+				// Untrack the unit captured when the confirm opened, not whatever the
+				// cursor points at now — a poll may have rebuilt the rows underneath it.
+				unit := v.confirmUnit
+				v.notice = fmt.Sprintf("untracking %s…", unit.Folder)
+				return untrackCmd(data, unit)
+			default:
+				v.confirming = false
+				v.notice = "untrack cancelled"
+				return nil
+			}
+		case keybinding.Matches(msg, dashboardKeys.Cancel):
 			v.confirming = false
 			v.notice = "untrack cancelled"
 			return nil
@@ -166,7 +176,7 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData, actions t
 		v.notice = ""
 		return nil
 	case keybinding.Matches(msg, dashboardKeys.Add):
-		if actions.discover == nil {
+		if !actions.addAvailable() {
 			v.notice = "add is unavailable in this build"
 			return nil
 		}

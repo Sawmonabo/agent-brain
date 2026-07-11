@@ -462,3 +462,50 @@ func TestProjectsKeysStayDeadOffProjectsTab(t *testing.T) {
 			fake.syncCalls, fake.untrackCalls)
 	}
 }
+
+// TestFooterInModalStatesAdvertisesOnlyLiveKeys extends the modal-state footer
+// honesty to a modal owning the keyboard. While an untrack confirm or any
+// add-flow stage is open, the footer must advertise EXACTLY that state's live
+// keys in render order and none of the tab-level hints — a footer that named
+// s/t/a/tab while the modal swallowed them (or routed them into a text input,
+// so `q` typed a "q") is precisely the dead-key class the keymap contract
+// exists to make impossible. The exact-equality check pins both the live set
+// (render order included) and the absence of every other binding; the explicit
+// tab-hint sweep documents the second half of the contract.
+func TestFooterInModalStatesAdvertisesOnlyLiveKeys(t *testing.T) {
+	t.Parallel()
+	tabHints := []string{"s sync", "t untrack", "a add", "tab/1–4"}
+	tests := []struct {
+		name       string
+		confirming bool
+		stage      addStage
+		want       string
+	}{
+		{name: "untrack confirm", confirming: true, stage: addNone, want: "y/n decide · esc cancel"},
+		{name: "add discovering", stage: addDiscovering, want: "esc cancel"},
+		{name: "add picking", stage: addPicking, want: "↑/↓ select · enter confirm · esc cancel"},
+		{name: "add confirm path", stage: addConfirmPath, want: "enter confirm · esc cancel"},
+		{name: "add identifying", stage: addIdentifying, want: "esc cancel"},
+		{name: "add naming folder", stage: addNamingFolder, want: "enter confirm · esc cancel"},
+		{name: "add tracking", stage: addTracking, want: "esc cancel"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m.active = tabProjects
+			m.projects.confirming = testCase.confirming
+			m.projects.adding = testCase.stage
+
+			got := plain(m.footer())
+			if got != testCase.want {
+				t.Errorf("modal footer = %q, want %q", got, testCase.want)
+			}
+			for _, hint := range tabHints {
+				if strings.Contains(got, hint) {
+					t.Errorf("modal footer %q leaks tab-level hint %q", got, hint)
+				}
+			}
+		})
+	}
+}

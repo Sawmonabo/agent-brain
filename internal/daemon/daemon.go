@@ -563,7 +563,7 @@ func (d *Daemon) runCycle(ctx context.Context, syncEngine *engine.Engine, logger
 		logger.Error("sync cycle failed", "reason", reason, "error", err)
 	} else {
 		logger.Info("sync cycle", "reason", reason,
-			"commits", len(report.Commits), "pushed", report.Pushed, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
+			"commits", len(report.Commits), "pushed", report.Pushed, "offline", report.Offline, "degraded", report.Degraded, "scrubbed", report.Scrubbed)
 	}
 	d.record(ctx, summary, syncUnits)
 	return summary, registry.Units, true

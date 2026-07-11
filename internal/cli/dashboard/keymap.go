@@ -6,15 +6,16 @@ package dashboard
 // import's file-block name from colliding with a top-level identifier
 // declared anywhere else in the package. Aliasing here — rather than
 // renaming the widely-used test helper — keeps the collision fix local to
-// the three files this task touches.
+// the files that reference the key package.
 import keybinding "charm.land/bubbles/v2/key"
 
 // dashboardKeymap is the dashboard's single keymap: every key the root reducer and
-// the views dispatch, with the help text the footer advertises. handleKey and
-// projectsView.update MATCH against these bindings and footer() RENDERS them
-// through forTab — so an advertised key the active tab ignores is structurally
-// impossible, and the inverse (a working key left unadvertised) is pinned by
-// TestProjectsKeysStayDeadOffProjectsTab.
+// the views dispatch, with the help text the footer advertises. handleKey,
+// projectsView.update, and updateAdd MATCH against these bindings and footer()
+// RENDERS them through forTab (tab-level) or forModal (while a Projects modal
+// owns the keyboard) — so an advertised key the active surface ignores is
+// structurally impossible, and the inverse (a working key left unadvertised) is
+// pinned by TestProjectsKeysStayDeadOffProjectsTab.
 type dashboardKeymap struct {
 	// TabSwitch bundles every tab-navigation key under one advertised hint.
 	// handleKey matches the binding for membership, then picks the direction
@@ -23,12 +24,22 @@ type dashboardKeymap struct {
 	TabSwitch keybinding.Binding
 	// Select advertises the bubbles table's own ↑/↓/k/j navigation on the
 	// Projects tab; the table consumes the keys itself in update's
-	// passthrough.
+	// passthrough. The add picker reuses it (same keys) to move its cursor.
 	Select  keybinding.Binding
 	Sync    keybinding.Binding // Projects tab only
 	Untrack keybinding.Binding // Projects tab only
 	Add     keybinding.Binding // Projects tab only
 	Quit    keybinding.Binding
+	// Modal bindings own the keyboard while a Projects modal (the untrack
+	// confirm or the add flow) is open; forModal advertises exactly the subset
+	// each modal state honors, and the tab-level set above never renders there.
+	Cancel keybinding.Binding // every modal state: esc backs out
+	Accept keybinding.Binding // add picker/input stages: enter advances
+	// ConfirmDecision bundles the untrack confirm's y/Y/n/N under one hint; the
+	// confirm handler matches it for membership, then branches on the concrete
+	// key (the TabSwitch idiom) — the binding is the single gate for whether a
+	// keystroke decides the confirm at all.
+	ConfirmDecision keybinding.Binding
 }
 
 // dashboardKeys is package-level because the keymap is static configuration —
@@ -43,13 +54,20 @@ var dashboardKeys = dashboardKeymap{
 	Untrack: keybinding.NewBinding(keybinding.WithKeys("t"), keybinding.WithHelp("t", "untrack")),
 	Add:     keybinding.NewBinding(keybinding.WithKeys("a"), keybinding.WithHelp("a", "add")),
 	Quit:    keybinding.NewBinding(keybinding.WithKeys("q"), keybinding.WithHelp("q", "quit")),
+	Cancel:  keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:  keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	ConfirmDecision: keybinding.NewBinding(
+		keybinding.WithKeys("y", "Y", "n", "N"),
+		keybinding.WithHelp("y/n", "decide"),
+	),
 }
 
 // forTab returns the bindings the footer advertises on t, in render order —
 // the SAME availability rule handleKey enforces. addAvailable gates the Add
-// binding: a build with no discovery closure must not advertise a key that
-// answers "unavailable". (dashboardKeys is shared package state — never toggle
-// availability by mutating a binding's Enabled flag; filter here instead.)
+// binding: a build missing either add closure (discovery or identity) must not
+// advertise a key that answers "unavailable". (dashboardKeys is shared package
+// state — never toggle availability by mutating a binding's Enabled flag;
+// filter here instead.)
 func (k dashboardKeymap) forTab(t tab, addAvailable bool) []keybinding.Binding {
 	bindings := []keybinding.Binding{k.TabSwitch}
 	if t == tabProjects {
@@ -59,4 +77,25 @@ func (k dashboardKeymap) forTab(t tab, addAvailable bool) []keybinding.Binding {
 		}
 	}
 	return append(bindings, k.Quit)
+}
+
+// forModal returns the bindings the footer advertises while a Projects modal
+// owns the keyboard, in render order — the SAME subset the confirm handler and
+// updateAdd honor at each stage, so the modal footer can never name a key its
+// state ignores. It is the modal-state analogue of forTab: footer() calls one
+// or the other, never both, so the tab-level set never leaks into a modal.
+// Text-input runes (a typed path or folder name) are the input's, not advertised
+// keys, so the input stages surface only their control keys (Accept, Cancel).
+func (k dashboardKeymap) forModal(confirming bool, stage addStage) []keybinding.Binding {
+	if confirming {
+		return []keybinding.Binding{k.ConfirmDecision, k.Cancel}
+	}
+	switch stage {
+	case addPicking:
+		return []keybinding.Binding{k.Select, k.Accept, k.Cancel}
+	case addConfirmPath, addNamingFolder:
+		return []keybinding.Binding{k.Accept, k.Cancel}
+	default: // addDiscovering, addIdentifying, addTracking: waiting on a Cmd
+		return []keybinding.Binding{k.Cancel}
+	}
 }

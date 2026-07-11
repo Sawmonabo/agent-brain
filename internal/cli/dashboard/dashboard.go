@@ -417,10 +417,18 @@ func (m Model) tabBar() string {
 	return strings.Join(parts, " ")
 }
 
-// footer advertises exactly the keys that dispatch on the active tab,
-// rendered from the same bindings handleKey matches (keymap.go).
+// footer advertises exactly the keys that dispatch on the active surface,
+// rendered from the same bindings handleKey and the Projects modals match
+// (keymap.go): the tab-level set on a bare tab, or the active modal's subset
+// while an untrack confirm or the add flow owns the keyboard — never the
+// tab-level keys the modal would swallow or type into its input.
 func (m Model) footer() string {
-	bindings := dashboardKeys.forTab(m.active, m.actions.discover != nil)
+	var bindings []keybinding.Binding
+	if m.projects.modalOpen() {
+		bindings = dashboardKeys.forModal(m.projects.confirming, m.projects.adding)
+	} else {
+		bindings = dashboardKeys.forTab(m.active, m.actions.addAvailable())
+	}
 	parts := make([]string, len(bindings))
 	for i, binding := range bindings {
 		help := binding.Help()

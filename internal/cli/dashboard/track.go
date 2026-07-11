@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	keybinding "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -40,6 +41,17 @@ type TrackCandidate struct {
 type trackActions struct {
 	discover func(context.Context) ([]TrackCandidate, error)
 	identify func(ctx context.Context, providerName string, root TrackRoot, projectPath string) (provider.Identity, error)
+}
+
+// addAvailable reports whether the add flow can run end to end: discovery finds
+// candidates AND identity resolution can name a picked per-project candidate.
+// Both closures must be wired — a build with discover but not identify would
+// panic the instant a per-project candidate is picked (identifyCmd calls
+// identify on nil), so availability is the single choke point footer() and the
+// dispatch both gate on, and the a key stays dead and unadvertised unless both
+// are present.
+func (a trackActions) addAvailable() bool {
+	return a.discover != nil && a.identify != nil
 }
 
 // addStage is the add flow's modal state machine, owned by projectsView.
@@ -121,23 +133,29 @@ func (v *projectsView) updateAdd(msg tea.KeyPressMsg, data dashboardData, action
 	if v.adding == addNone {
 		return false, nil
 	}
-	if msg.String() == "esc" {
+	if keybinding.Matches(msg, dashboardKeys.Cancel) {
 		v.resetAdd()
 		v.notice = "add cancelled"
 		return true, nil
 	}
 	switch v.adding {
 	case addPicking:
-		switch msg.String() {
-		case "up", "k":
-			if v.addCursor > 0 {
-				v.addCursor--
+		switch {
+		case keybinding.Matches(msg, dashboardKeys.Select):
+			// Membership gate, then the concrete key picks the direction — the
+			// TabSwitch idiom (Select bundles up/down/k/j); the default arm is
+			// exactly down/j, never a catch-all.
+			switch msg.String() {
+			case "up", "k":
+				if v.addCursor > 0 {
+					v.addCursor--
+				}
+			default:
+				if v.addCursor < len(v.addCandidates)-1 {
+					v.addCursor++
+				}
 			}
-		case "down", "j":
-			if v.addCursor < len(v.addCandidates)-1 {
-				v.addCursor++
-			}
-		case "enter":
+		case keybinding.Matches(msg, dashboardKeys.Accept):
 			choice := v.addCandidates[v.addCursor]
 			v.addChoice = choice
 			if choice.Global {
@@ -151,7 +169,7 @@ func (v *projectsView) updateAdd(msg tea.KeyPressMsg, data dashboardData, action
 		return true, nil
 
 	case addConfirmPath:
-		if msg.String() == "enter" {
+		if keybinding.Matches(msg, dashboardKeys.Accept) {
 			projectPath := strings.TrimSpace(v.addInput.Value())
 			if projectPath == "" {
 				v.notice = "project path cannot be empty"
@@ -165,7 +183,7 @@ func (v *projectsView) updateAdd(msg tea.KeyPressMsg, data dashboardData, action
 		return true, cmd
 
 	case addNamingFolder:
-		if msg.String() == "enter" {
+		if keybinding.Matches(msg, dashboardKeys.Accept) {
 			folderName := strings.TrimSpace(v.addInput.Value())
 			// The daemon re-validates fail-closed on Track; validating here
 			// too keeps a bad name a local correction, not a wire error.
