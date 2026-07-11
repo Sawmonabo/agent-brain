@@ -696,3 +696,50 @@ func TestFooterAndDispatchGateAddOnBothClosures(t *testing.T) {
 		t.Errorf("a with identify unwired still reached the daemon: %v", fake.trackCalls)
 	}
 }
+
+// TestAddViewHintsRenderFromModalBindings pins the add flow's inline hints to
+// the same forModal bindings the global footer renders (dashboard.go's
+// footer()), so the two surfaces cannot hand-drift the way they already had:
+// the inline hint used to read "↑/↓ move · enter select · esc cancel" while
+// the footer read "↑/↓ select · enter confirm · esc cancel" for the identical
+// addPicking stage. The assertion is expressed through helpLine + forModal,
+// not a re-hardcoded string, so a future wording change cannot split the
+// surfaces again.
+func TestAddViewHintsRenderFromModalBindings(t *testing.T) {
+	t.Parallel()
+	candidates := []TrackCandidate{{
+		Provider:  "claude",
+		Label:     "claude  myrepo  → /g/myrepo",
+		PathGuess: "/g/myrepo",
+		Roots:     []TrackRoot{{LocalDir: "/x/memory"}},
+	}}
+	identity := provider.Identity{PreferredFolder: "myrepo"} // empty ProjectID reaches addNamingFolder
+
+	tests := []struct {
+		name  string
+		stage addStage
+		keys  []string
+	}{
+		{name: "add picking", stage: addPicking, keys: []string{"a"}},
+		{name: "add confirm path", stage: addConfirmPath, keys: []string{"a", "enter"}},
+		{name: "add naming folder", stage: addNamingFolder, keys: []string{"a", "enter", "enter"}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := New(addConfig(&fakeData{}, candidates, identity, nil))
+			m.active = tabProjects
+			for _, k := range testCase.keys {
+				m = drive(t, m, key(k))
+			}
+			if m.projects.adding != testCase.stage {
+				t.Fatalf("setup: adding = %v, want %v", m.projects.adding, testCase.stage)
+			}
+
+			want := helpLine(dashboardKeys.forModal(false, testCase.stage))
+			if got := plain(m.projects.view()); !strings.Contains(got, want) {
+				t.Errorf("addView = %q, want it to contain the shared hint %q", got, want)
+			}
+		})
+	}
+}

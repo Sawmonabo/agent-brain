@@ -288,19 +288,19 @@ func (v projectsView) addView() string {
 			b.WriteString(cursor + candidate.Label + "\n")
 		}
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("↑/↓ move · enter select · esc cancel"))
+		b.WriteString(dimStyle.Render(helpLine(dashboardKeys.forModal(false, addPicking))))
 	case addConfirmPath:
 		b.WriteString("Confirm this project's path\n\n")
 		b.WriteString(v.addInput.View())
 		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("enter confirm · esc cancel"))
+		b.WriteString(dimStyle.Render(helpLine(dashboardKeys.forModal(false, addConfirmPath))))
 	case addIdentifying:
 		b.WriteString(dimStyle.Render("resolving project identity…"))
 	case addNamingFolder:
 		b.WriteString("This project has no git remote — choose a folder name\n\n")
 		b.WriteString(v.addInput.View())
 		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("enter confirm · esc cancel"))
+		b.WriteString(dimStyle.Render(helpLine(dashboardKeys.forModal(false, addNamingFolder))))
 	case addTracking:
 		b.WriteString(dimStyle.Render("enrolling…"))
 	}

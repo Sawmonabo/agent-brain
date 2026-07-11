@@ -1,13 +1,17 @@
 package dashboard
 
-// Imported as keybinding, not the package's own default name "key": this
-// package's test suite already has a package-level key(name string) helper
-// (dashboard_test.go) that builds a tea.KeyPressMsg, and Go forbids an
-// import's file-block name from colliding with a top-level identifier
-// declared anywhere else in the package. Aliasing here — rather than
-// renaming the widely-used test helper — keeps the collision fix local to
-// the files that reference the key package.
-import keybinding "charm.land/bubbles/v2/key"
+import (
+	"strings"
+
+	// Imported as keybinding, not the package's own default name "key": this
+	// package's test suite already has a package-level key(name string) helper
+	// (dashboard_test.go) that builds a tea.KeyPressMsg, and Go forbids an
+	// import's file-block name from colliding with a top-level identifier
+	// declared anywhere else in the package. Aliasing here — rather than
+	// renaming the widely-used test helper — keeps the collision fix local to
+	// the files that reference the key package.
+	keybinding "charm.land/bubbles/v2/key"
+)
 
 // dashboardKeymap is the dashboard's single keymap: every key the root reducer and
 // the views dispatch, with the help text the footer advertises. handleKey,
@@ -98,4 +102,17 @@ func (k dashboardKeymap) forModal(confirming bool, stage addStage) []keybinding.
 	default: // addDiscovering, addIdentifying, addTracking: waiting on a Cmd
 		return []keybinding.Binding{k.Cancel}
 	}
+}
+
+// helpLine renders bindings as the footer/help string ("↑/↓ select · enter
+// confirm · esc cancel"). Both the global footer and the add flow's inline
+// hints render through it from the same forModal bindings, so the two
+// surfaces cannot drift apart. Styling stays with the caller.
+func helpLine(bindings []keybinding.Binding) string {
+	parts := make([]string, len(bindings))
+	for i, binding := range bindings {
+		help := binding.Help()
+		parts[i] = help.Key + " " + help.Desc
+	}
+	return strings.Join(parts, " · ")
 }

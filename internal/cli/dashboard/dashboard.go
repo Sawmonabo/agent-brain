@@ -429,12 +429,7 @@ func (m Model) footer() string {
 	} else {
 		bindings = dashboardKeys.forTab(m.active, m.actions.addAvailable())
 	}
-	parts := make([]string, len(bindings))
-	for i, binding := range bindings {
-		help := binding.Help()
-		parts[i] = help.Key + " " + help.Desc
-	}
-	return dimStyle.Render(strings.Join(parts, " · "))
+	return dimStyle.Render(helpLine(bindings))
 }
 
 // statusHeader renders the fleet-level facts once, persistently above the tab
