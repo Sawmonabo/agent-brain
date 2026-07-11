@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ type updateEngine interface {
 }
 
 func newUpdateCmd() *cobra.Command {
-	var check, prerelease, noRestart, selectRelease bool
+	var check, prerelease, noRestart, selectRelease, list, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "update [version]",
 		Short: "Update agent-brain to a newer release and restart the service",
@@ -54,14 +55,33 @@ func newUpdateCmd() *cobra.Command {
 			"v2.1.0` or `2.1.0`) pins that exact release instead — the channel flag does " +
 			"not apply, and an explicitly named OLDER release is installed after a " +
 			"downgrade warning (state written by the newer version may not load; run " +
-			"`agent-brain doctor` afterwards). --select offers the same choice as an " +
-			"interactive list on a terminal.\n\n" +
+			"`agent-brain doctor` afterwards).\n\n" +
+			"--list prints exactly the releases a version argument accepts (--json for " +
+			"scripts); --select offers the same rows as an interactive picker on a " +
+			"terminal.\n\n" +
 			"Homebrew-installed binaries are refused — use `brew upgrade agent-brain` " +
 			"there instead.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if list && len(args) > 0 {
+				return errors.New("update: --list takes no version argument")
+			}
+			if jsonOut && !list {
+				return errors.New("update: --json requires --list")
+			}
 			if selectRelease && len(args) > 0 {
 				return errors.New("update: pass a version argument or --select, not both")
+			}
+			if list {
+				ghClient, err := ghx.NewClient()
+				if err != nil {
+					return err
+				}
+				releases, err := ghClient.ListReleases(cmd.Context(), productRepo, selfupdate.ReleaseListLimit)
+				if err != nil {
+					return fmt.Errorf("update: %w", err)
+				}
+				return writeReleaseList(cmd.OutOrStdout(), releasePickerCandidates(releases, Version), jsonOut)
 			}
 			binaryPath, err := resolveBinary()
 			if err != nil {
@@ -118,7 +138,48 @@ func newUpdateCmd() *cobra.Command {
 		"replace the binary but leave the running daemon service alone (it keeps the old version until restarted)")
 	cmd.Flags().BoolVar(&selectRelease, "select", false,
 		"pick the release from an interactive list (terminal only; both channels shown)")
+	cmd.Flags().BoolVar(&list, "list", false,
+		"list the installable releases (both channels, newest first) and exit")
+	cmd.Flags().BoolVar(&jsonOut, "json", false,
+		"with --list, emit the releases as JSON")
+	cmd.MarkFlagsMutuallyExclusive("list", "select")
+	cmd.MarkFlagsMutuallyExclusive("list", "check")
+	cmd.MarkFlagsMutuallyExclusive("list", "prerelease")
+	cmd.MarkFlagsMutuallyExclusive("list", "no-restart")
 	return cmd
+}
+
+// releaseListRow is `update --list --json`'s wire shape.
+type releaseListRow struct {
+	Tag        string `json:"tag"`
+	Prerelease bool   `json:"prerelease"`
+	Running    bool   `json:"running"`
+}
+
+// writeReleaseList prints the same rows the picker offers — one source of
+// truth for what `update <version>` accepts, unlike raw `gh release list`
+// output, which also shows drafts (to maintainers) and non-semver tags the
+// pin would refuse. Plain output reuses the picker labels; --json emits
+// the structured form for scripts.
+func writeReleaseList(out io.Writer, choices []releaseChoice, asJSON bool) error {
+	if len(choices) == 0 {
+		return fmt.Errorf("update: %w in %s", selfupdate.ErrNoRelease, productRepo)
+	}
+	if asJSON {
+		rows := make([]releaseListRow, len(choices))
+		for i, choice := range choices {
+			rows[i] = releaseListRow{Tag: choice.tag, Prerelease: choice.prerelease, Running: choice.running}
+		}
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(rows)
+	}
+	for _, choice := range choices {
+		if _, err := fmt.Fprintln(out, choice.label); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // selectReleaseTag runs the interactive release picker and returns the
@@ -131,7 +192,7 @@ func newUpdateCmd() *cobra.Command {
 func selectReleaseTag(cmd *cobra.Command, source selfupdate.ReleaseSource) (string, error) {
 	if isAccessible() {
 		return "", errors.New("update: --select needs an interactive terminal — run `agent-brain update <version>` instead " +
-			"(`gh release list -R " + productRepo + "` shows what exists)")
+			"(`agent-brain update --list` shows what exists)")
 	}
 	releases, err := source.ListReleases(cmd.Context(), productRepo, selfupdate.ReleaseListLimit)
 	if err != nil {
@@ -152,10 +213,13 @@ func selectReleaseTag(cmd *cobra.Command, source selfupdate.ReleaseSource) (stri
 	return tag, nil
 }
 
-// releaseChoice is one picker row: the release tag plus its display label.
+// releaseChoice is one picker/list row: the release tag, its display
+// label, and the structured facts the label encodes (for --list --json).
 type releaseChoice struct {
-	tag   string
-	label string
+	tag        string
+	label      string
+	prerelease bool
+	running    bool
 }
 
 // releasePickerCandidates orders the picker: non-draft semver releases,
@@ -169,14 +233,20 @@ func releasePickerCandidates(releases []ghx.ReleaseInfo, currentVersion string) 
 		if release.IsDraft || !semver.IsValid(release.TagName) {
 			continue
 		}
+		running := semver.Compare(release.TagName, current) == 0
 		label := release.TagName
 		if release.IsPrerelease {
 			label += "  (prerelease)"
 		}
-		if semver.Compare(release.TagName, current) == 0 {
+		if running {
 			label += "  ← running"
 		}
-		choices = append(choices, releaseChoice{tag: release.TagName, label: label})
+		choices = append(choices, releaseChoice{
+			tag:        release.TagName,
+			label:      label,
+			prerelease: release.IsPrerelease,
+			running:    running,
+		})
 	}
 	slices.SortFunc(choices, func(a, b releaseChoice) int {
 		return semver.Compare(b.tag, a.tag)

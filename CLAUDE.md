@@ -53,8 +53,8 @@ lefthook install                                # once per clone: git hooks
   (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`),
   `key rotate` (fail-closed fleet re-encrypt), and `update [version]`
   (gh-native self-update, ADR 18 — checksum-verified atomic swap + service
-  restart; explicit-version pin/rollback, TTY-only `--select` picker;
-  refuses dev builds and brew-managed installs).
+  restart; explicit-version pin/rollback, `--list [--json]` enumeration,
+  TTY-only `--select` picker; refuses dev builds and brew-managed installs).
 - Tests: stdlib `testing` + `go-cmp` ONLY (no assertion frameworks, ADR 15);
   table-driven; `t.Parallel()`; `t.TempDir()`; integration tests use real
   system git with a `git init --bare` fake remote.

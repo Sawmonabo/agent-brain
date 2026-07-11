@@ -336,14 +336,16 @@ Bare `agent-brain` prints help. Command tree:
   scan — advisory, §5/§11), **`service install|uninstall|start|stop|status|logs`**,
   **`key export`** / **`key import [--force]`** / **`key rotate`** (fail-closed
   fleet re-encrypt, §5), **`migrate`** (§10), **`daemon run`** (foreground).
-- **`update [version] [--check | --prerelease | --select | --no-restart]`** —
-  gh-native self-update (ADR 18): resolve the target release — newest by
-  default (semver max; stable channel, `--prerelease` admits release
-  candidates), an exact pin when a version is named (`update v2.1.0` — the
-  channel flag doesn't apply), or an interactive pick via `--select` (TTY
-  only) — download archive + checksums through authenticated `gh`, verify
-  sha256, sanity-run the new binary, atomically swap it over the current
-  executable, then bounce the service and confirm daemon readiness. Implicit
+- **`update [version] [--check | --prerelease | --list [--json] | --select |
+  --no-restart]`** — gh-native self-update (ADR 18): resolve the target
+  release — newest by default (semver max; stable channel, `--prerelease`
+  admits release candidates), an exact pin when a version is named
+  (`update v2.1.0` — the channel flag doesn't apply), or an interactive pick
+  via `--select` (TTY only) — download archive + checksums through
+  authenticated `gh`, verify sha256, sanity-run the new binary, atomically
+  swap it over the current executable, then bounce the service and confirm
+  daemon readiness. `--list` prints exactly the releases a version argument
+  accepts (`--json` for scripts) — the same rows the picker offers. Implicit
   resolution never downgrades; an explicitly named OLDER release installs
   after a downgrade warning (strict config parsing, ADR 17, may refuse
   newer-version state — doctor is the follow-up). Refuses unstamped dev

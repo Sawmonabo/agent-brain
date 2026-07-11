@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -245,11 +246,93 @@ func TestReleasePickerCandidates(t *testing.T) {
 	got := releasePickerCandidates(releases, "2.0.0")
 	want := []releaseChoice{
 		{tag: "v2.1.0", label: "v2.1.0"},
-		{tag: "v2.0.0", label: "v2.0.0  ← running"},
-		{tag: "v2.0.0-rc.1", label: "v2.0.0-rc.1  (prerelease)"},
+		{tag: "v2.0.0", label: "v2.0.0  ← running", running: true},
+		{tag: "v2.0.0-rc.1", label: "v2.0.0-rc.1  (prerelease)", prerelease: true},
 	}
 	if diff := cmp.Diff(want, got, cmp.AllowUnexported(releaseChoice{})); diff != "" {
 		t.Fatalf("releasePickerCandidates mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestWriteReleaseList proves --list's two forms carry the same rows the
+// picker offers: plain output is the picker labels verbatim, and --json is
+// the structured equivalent.
+func TestWriteReleaseList(t *testing.T) {
+	t.Parallel()
+	choices := []releaseChoice{
+		{tag: "v2.1.0", label: "v2.1.0"},
+		{tag: "v2.0.0", label: "v2.0.0  ← running", running: true},
+		{tag: "v2.0.0-rc.1", label: "v2.0.0-rc.1  (prerelease)", prerelease: true},
+	}
+	t.Run("plain rows are the picker labels", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := writeReleaseList(&out, choices, false); err != nil {
+			t.Fatalf("writeReleaseList: %v", err)
+		}
+		want := "v2.1.0\nv2.0.0  ← running\nv2.0.0-rc.1  (prerelease)\n"
+		if out.String() != want {
+			t.Fatalf("output = %q, want %q", out.String(), want)
+		}
+	})
+	t.Run("json is the structured equivalent", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := writeReleaseList(&out, choices, true); err != nil {
+			t.Fatalf("writeReleaseList: %v", err)
+		}
+		var got []releaseListRow
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		want := []releaseListRow{
+			{Tag: "v2.1.0"},
+			{Tag: "v2.0.0", Running: true},
+			{Tag: "v2.0.0-rc.1", Prerelease: true},
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("json rows mismatch (-want +got):\n%s", diff)
+		}
+	})
+	t.Run("empty list is ErrNoRelease", func(t *testing.T) {
+		t.Parallel()
+		err := writeReleaseList(io.Discard, nil, false)
+		if !errors.Is(err, selfupdate.ErrNoRelease) {
+			t.Fatalf("writeReleaseList error = %v, want errors.Is(_, ErrNoRelease)", err)
+		}
+	})
+}
+
+// TestUpdateFlagConflicts proves the surface stays unambiguous: every
+// conflicting combination is refused at the command layer, before any
+// binary resolution or network call.
+func TestUpdateFlagConflicts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "list with a version argument", args: []string{"--list", "v2.0.0"}, wantErr: "--list takes no version argument"},
+		{name: "json without list", args: []string{"--json"}, wantErr: "--json requires --list"},
+		{name: "select with a version argument", args: []string{"--select", "v2.0.0"}, wantErr: "not both"},
+		{name: "list with select", args: []string{"--list", "--select"}, wantErr: "list"},
+		{name: "list with check", args: []string{"--list", "--check"}, wantErr: "list"},
+		{name: "list with prerelease", args: []string{"--list", "--prerelease"}, wantErr: "list"},
+		{name: "list with no-restart", args: []string{"--list", "--no-restart"}, wantErr: "list"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newUpdateCmd()
+			cmd.SetArgs(test.args)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Execute(%v) error = %v, want it to contain %q", test.args, err, test.wantErr)
+			}
+		})
 	}
 }
 

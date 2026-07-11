@@ -200,8 +200,8 @@ func resolveRequested(current string, opts Options, releases []ghx.ReleaseInfo) 
 			Downgrade:    comparison < 0,
 		}, nil
 	}
-	return Decision{}, fmt.Errorf("%w: release %s does not exist in %s (`gh release list -R %s` shows what does)",
-		ErrNoRelease, requested, opts.Repo, opts.Repo)
+	return Decision{}, fmt.Errorf("%w: release %s does not exist in %s (`agent-brain update --list` shows what does)",
+		ErrNoRelease, requested, opts.Repo)
 }
 
 // Apply downloads targetTag's archive for this platform, verifies it

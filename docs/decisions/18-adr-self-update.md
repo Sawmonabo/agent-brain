@@ -101,16 +101,26 @@ are expected to detect and refuse that case.
    binary update itself already succeeded. `--check` reports availability and
    changes nothing.
 
-7. **Interactive picker, TTY-only (added 2026-07-10).** `update --select`
-   lists the non-draft releases (both channels, badged, semver-descending,
-   running version marked) as a huh select on an interactive terminal —
-   init's form idiom. It is deliberately REFUSED headless (piped stdin, CI,
-   `ACCESSIBLE`) with the scriptable equivalent named: huh v2.0.3's
+7. **Release discovery: `--list [--json]` for scripts, `--select` for a
+   terminal (added 2026-07-10).** Both surfaces print/offer the SAME rows
+   from one candidate builder — non-draft semver releases, both channels
+   badged, semver-descending, running version marked — which is exactly the
+   set a version argument accepts. This is the enumeration companion every
+   version-taking installer grows (mise `ls-remote --json`; rustup's missing
+   list is a long-open feature request), and it replaces pointing users at
+   raw `gh release list`, whose output also shows drafts (to maintainers)
+   and non-semver tags the pin would refuse. `--list` is a guard-free read
+   (a dev build may enumerate; it still may not install) and is mutually
+   exclusive with every acting flag — no silent no-op combinations.
+   `--select` presents the rows as a huh select on an interactive terminal —
+   init's form idiom — and is deliberately REFUSED headless (piped stdin,
+   CI, `ACCESSIBLE`) with the scriptable path named: huh v2.0.3's
    accessible Select backend auto-accepts the FIRST option on stdin EOF —
    a headless `--select` would silently install the newest release — and
    panics (`index out of range [-1]`, field_select.go:770) on an invalid
    line followed by EOF. Both behaviors were proven by a live probe before
-   wiring; `update <version>` is the headless- and screen-reader-safe path.
+   wiring; `update <version>` + `--list` is the headless- and
+   screen-reader-safe pairing.
 
 8. **Integrity model, stated honestly.** GitHub's immutable-releases policy
    (ADR 16) means a published tag's assets can never be silently replaced,
@@ -170,3 +180,9 @@ version deno upgrade command syntax target version 2026`, `uv CLI reference
   `--version` pin + `--dry-run` coexist)
 - huh v2.0.3 accessible-Select EOF/panic behavior: no public issue found;
   proven by local probe (see decision 7) — the TTY gate is the mitigation.
+- https://rclone.org/commands/rclone_selfupdate/ (`--check`/`--version`/
+  channel flags — the closest self-updater analog to this surface)
+- https://mise.jdx.dev/cli/ls-remote.html (the enumeration companion norm,
+  with `--json`)
+- https://github.com/rust-lang/rustup/issues/1651 (a missing release list
+  is a recognized gap users file)

@@ -72,7 +72,7 @@ flags):
 | `dashboard` | Live TUI over the running daemon (projects, conflicts, activity, doctor) |
 | `key export` / `key import [--force]` / `key rotate` | Manage the shared Tink keyset (back up, restore, fleet-rotate) |
 | `service install\|uninstall\|start\|stop\|status\|logs` | Install or control the login-started daemon service |
-| `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--prerelease`, `--select`, `--no-restart`) |
+| `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--prerelease`, `--list [--json]`, `--select`, `--no-restart`) |
 | `migrate` | One-time import of the bash-era `~/.agent-brain` memory tree (spec §10) |
 | `daemon run` | Run the sync daemon in the foreground (the service manager invokes this) |
 
