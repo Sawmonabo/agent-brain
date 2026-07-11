@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
+	"github.com/Sawmonabo/agent-brain/internal/gitx/gitxtest"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
@@ -62,18 +63,17 @@ func testMain(m *testing.M) int {
 		return 1
 	}
 
-	// Hermetic git (matches the gitx/e2e TestMains): the developer's
-	// global/system config must not leak into the real-filter fixtures, whose
-	// commits and pushes run through gitx's inherited environment.
-	for env, value := range map[string]string{
-		"GIT_CONFIG_GLOBAL": os.DevNull,
-		"GIT_CONFIG_SYSTEM": os.DevNull,
-	} {
-		if err := os.Setenv(env, value); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
+	// Hermetic git, maintenance disabled entirely (gitxtest.HermeticGitConfig,
+	// matching every other package's TestMain): the developer's global/system
+	// config must not leak into the real-filter fixtures, whose commits and
+	// pushes run through gitx's inherited environment, and no git child can
+	// fork a detached gc/maintenance process that outlives the test.
+	_, cleanup, err := gitxtest.Setenv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
+	defer cleanup()
 
 	return m.Run()
 }

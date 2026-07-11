@@ -25,7 +25,8 @@ import (
 // local `git init --bare` standing in for the remote (spec §12). Each script
 // runs in its own hermetic environment (scriptSetup): a fresh HOME, all
 // agent-brain paths under the script's WORK, ACCESSIBLE/NO_COLOR pinned, and
-// git's global/system config neutralized.
+// the same hermetic git posture (setHermeticGitConfig) as every other seam in
+// this suite — auto-maintenance disabled, not merely neutralized.
 //
 // FORK-BOMB SAFETY (CLAUDE.md): `agent-brain` on the script PATH is a real-file
 // COPY of binPath — the REAL compiled binary — never this test binary. The
@@ -87,11 +88,10 @@ func scriptSetup(env *testscript.Env) error {
 	env.Setenv("GH_FAKE_REMOTE", filepath.Join(work, "remote.git"))
 	env.Setenv("ACCESSIBLE", "1")
 	env.Setenv("NO_COLOR", "1")
-	env.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	env.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	setHermeticGitConfig(env)
 	// A synthetic committer identity so any raw `git commit` a script issues
 	// (and the daemon's own commits, whose repo-local identity init also sets)
-	// never falls through to a missing global user.name under the neutralized
+	// never falls through to a missing global user.name under the hermetic
 	// git config above.
 	env.Setenv("GIT_AUTHOR_NAME", "agent-brain e2e")
 	env.Setenv("GIT_AUTHOR_EMAIL", "e2e@test.invalid")
@@ -99,6 +99,21 @@ func scriptSetup(env *testscript.Env) error {
 	env.Setenv("GIT_COMMITTER_EMAIL", "e2e@test.invalid")
 	env.Setenv("PATH", strings.Join(scriptPATH(shimDir), string(os.PathListSeparator)))
 	return nil
+}
+
+// setHermeticGitConfig applies hermeticGitConfigEnv's GIT_CONFIG_GLOBAL/SYSTEM
+// pair to a script's environment, so every txtar script — and the real
+// agent-brain subprocess (daemon included) it execs, and any git that
+// subprocess spawns in turn — runs under the identical posture as every other
+// seam in this suite. testscript.Env does not inherit the test process's
+// os.Environ() (by design, for isolation from the developer's own shell), so
+// this call is the sole source of these two vars for everything a script
+// runs, transitively; it must never reconstruct the pair independently.
+func setHermeticGitConfig(env *testscript.Env) {
+	for _, kv := range hermeticGitConfigEnv() {
+		key, value, _ := strings.Cut(kv, "=")
+		env.Setenv(key, value)
+	}
 }
 
 // shim state is built once for the whole TestScripts run and lives beside
@@ -163,11 +178,15 @@ func scriptPATH(shimDir string) []string {
 
 // scriptGit runs one git command in dir and returns its combined output. The
 // custom commands use it (not the harness's testing.T-bound gitRun) because
-// they receive a *testscript.TestScript, not a *testing.T.
+// they receive a *testscript.TestScript, not a *testing.T. cmd.Env starts
+// from os.Environ() (this test process's own environment, already hermetic
+// per testMain) and reasserts hermeticGitConfigEnv last, exactly like
+// gitRunEnv, rather than overriding it with an independently-reconstructed
+// pair.
 func scriptGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
+	cmd.Env = append(os.Environ(), hermeticGitConfigEnv()...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

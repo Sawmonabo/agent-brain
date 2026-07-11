@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/Sawmonabo/agent-brain/internal/gitx/gitxtest"
 )
 
 // testBinaryPath is a REAL, freshly built agent-brain binary (see TestMain).
@@ -42,10 +44,11 @@ func TestMain(m *testing.M) {
 	os.Exit(testMain(m))
 }
 
-// testMain builds the real binary testBinaryPath points at, then runs the
-// suite. Building once per package-test-run (not per fixture) keeps every
-// cli test's filter wiring pointed at the same real binary at near-zero
-// added cost.
+// testMain builds the real binary testBinaryPath points at, isolates the
+// suite's git config (gitxtest.Setenv — this package previously had none),
+// then runs the suite. Building once per package-test-run (not per fixture)
+// keeps every cli test's filter wiring pointed at the same real binary at
+// near-zero added cost.
 func testMain(m *testing.M) int {
 	root, err := os.MkdirTemp("", "agent-brain-cli-test-*")
 	if err != nil {
@@ -60,6 +63,17 @@ func testMain(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "build: %v\n%s", err, out)
 		return 1
 	}
+
+	// This package previously ran with no git-config isolation at all: every
+	// fixture inherited the developer's real ~/.gitconfig, with auto-gc/
+	// auto-maintenance live. gitxtest.Setenv neutralizes both and disables
+	// maintenance entirely, matching every other package's test posture.
+	_, cleanup, err := gitxtest.Setenv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer cleanup()
 
 	return m.Run()
 }

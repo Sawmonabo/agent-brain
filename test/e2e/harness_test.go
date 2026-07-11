@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
+	"github.com/Sawmonabo/agent-brain/internal/gitx/gitxtest"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
 )
 
@@ -22,21 +23,12 @@ var (
 
 	// hermeticGitConfigPath is the harness's own --global gitconfig, written
 	// once by testMain. Every seam that neutralizes the developer's real git
-	// config (testMain's process-wide os.Setenv and gitRunEnv's per-command
-	// cmd.Env, via hermeticGitConfigEnv) points GIT_CONFIG_GLOBAL at this same
-	// path, so the two can never silently drift apart.
+	// config — testMain's process-wide os.Setenv loop and gitRunEnv's
+	// per-command cmd.Env — reads the same GIT_CONFIG_GLOBAL/SYSTEM pair from
+	// hermeticGitConfigEnv, keyed on this one path, so the two can never
+	// silently drift apart.
 	hermeticGitConfigPath string
 )
-
-// hermeticGitConfigContents disables git's background maintenance for every
-// git invocation in this suite. See testMain's comment for why a config that
-// merely neutralizes (points GIT_CONFIG_GLOBAL at /dev/null) is not enough.
-const hermeticGitConfigContents = `[gc]
-	auto = 0
-	autoDetach = false
-[maintenance]
-	auto = false
-`
 
 // TestMain builds the binary once and creates the suite-wide shared keyset —
 // one keyset across all "machines" is the shared-identity model (spec §5).
@@ -68,39 +60,41 @@ func testMain(m *testing.M) int {
 	}
 
 	hermeticGitConfigPath = filepath.Join(root, "hermetic-gitconfig")
-	if err := os.WriteFile(hermeticGitConfigPath, []byte(hermeticGitConfigContents), 0o644); err != nil {
+	if err := os.WriteFile(hermeticGitConfigPath, []byte(gitxtest.HermeticGitConfig), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
-	// Process-wide environment every git-spawned subprocess inherits:
-	//   - AGENT_BRAIN_CONFIG_DIR points the clean/smudge/merge filters at the
-	//     suite keyset, never ~/.config/agent-brain.
-	//   - GIT_CONFIG_GLOBAL/SYSTEM neutralize the developer's real git config
-	//     for git invoked through gitx (InstallFilters) as well, not only the
-	//     harness's own gitRunEnv calls — hermetic isolation is absolute
-	//     (ADR 15; matches internal/gitx TestMain). gitRunEnv re-asserts the
-	//     two GIT_CONFIG_* vars (via hermeticGitConfigEnv) so it is
-	//     self-evidently hermetic in isolation.
+	// Process-wide environment every git-spawned subprocess inherits.
+	// AGENT_BRAIN_CONFIG_DIR points the clean/smudge/merge filters at the
+	// suite keyset, never ~/.config/agent-brain.
+	if err := os.Setenv("AGENT_BRAIN_CONFIG_DIR", keysetDir); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	// GIT_CONFIG_GLOBAL/SYSTEM (hermeticGitConfigEnv) neutralize the
+	// developer's real git config for git invoked through gitx
+	// (InstallFilters) as well, not only the harness's own gitRunEnv calls —
+	// hermetic isolation is absolute (ADR 15; matches internal/gitx TestMain).
+	// gitRunEnv re-asserts the identical pair from the same function, so this
+	// seam and every per-command child read from a single source instead of
+	// independently-maintained literals.
 	//
-	//     GIT_CONFIG_GLOBAL points at hermeticGitConfigPath rather than
-	//     /dev/null: neutralizing the config is not the same as disabling
-	//     maintenance, and with no config at all, gc.auto's built-in default
-	//     stays ON. A test that crosses the loose-object threshold in one
-	//     cycle can make a git child spawn `gc --auto`; autoDetach also
-	//     defaults on, so that child detaches from its parent and outlives
-	//     the test. Its closing step, update_server_info, writes
-	//     .git/info/refs — racing that test's t.TempDir() RemoveAll on a
-	//     slow filesystem and failing the cleanup with "directory not empty".
-	//     hermeticGitConfigContents turns off gc.auto, gc.autoDetach, and
-	//     maintenance.auto so no git invocation in this suite ever forks a
-	//     background process that survives the test that started it.
-	for env, value := range map[string]string{
-		"AGENT_BRAIN_CONFIG_DIR": keysetDir,
-		"GIT_CONFIG_GLOBAL":      hermeticGitConfigPath,
-		"GIT_CONFIG_SYSTEM":      "/dev/null",
-	} {
-		if err := os.Setenv(env, value); err != nil {
+	// GIT_CONFIG_GLOBAL points at hermeticGitConfigPath rather than
+	// /dev/null: neutralizing the config is not the same as disabling
+	// maintenance, and with no config at all, gc.auto's built-in default
+	// stays ON. A test that crosses the loose-object threshold in one cycle
+	// can make a git child spawn `gc --auto`; autoDetach also defaults on, so
+	// that child detaches from its parent and outlives the test. Its closing
+	// step, update_server_info, writes .git/info/refs — racing that test's
+	// t.TempDir() RemoveAll on a slow filesystem and failing the cleanup with
+	// "directory not empty". gitxtest.HermeticGitConfig turns off gc.auto,
+	// gc.autoDetach, and maintenance.auto so no git invocation in this suite
+	// ever forks a background process that survives the test that started it.
+	for _, kv := range hermeticGitConfigEnv() {
+		key, value, _ := strings.Cut(kv, "=")
+		if err := os.Setenv(key, value); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
@@ -133,16 +127,14 @@ func gitRunEnv(t *testing.T, dir string, extraEnv []string, args ...string) (str
 }
 
 // hermeticGitConfigEnv is the GIT_CONFIG_GLOBAL/SYSTEM pair gitRunEnv appends
-// to every git child it spawns. Extracted to its own function (rather than
-// inlined in gitRunEnv) so TestHermeticGitConfigEnv can assert on the exact
-// entries without spawning a process, and so this seam and testMain's
-// os.Setenv loop read from the single hermeticGitConfigPath var instead of
-// two independently-maintained literals.
+// to every git child it spawns — gitxtest.Env keyed on this harness's own
+// hermeticGitConfigPath, so this seam and testMain's os.Setenv loop read from
+// the single path var instead of two independently-maintained literals.
+// Extracted to its own function (rather than inlined in gitRunEnv) so
+// TestHermeticGitConfigEnv can assert on the exact entries without spawning a
+// process.
 func hermeticGitConfigEnv() []string {
-	return []string{
-		"GIT_CONFIG_GLOBAL=" + hermeticGitConfigPath,
-		"GIT_CONFIG_SYSTEM=/dev/null",
-	}
+	return gitxtest.Env(hermeticGitConfigPath)
 }
 
 // TestHermeticGitConfigEnv pins the two isolation seams described in

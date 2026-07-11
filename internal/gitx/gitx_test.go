@@ -10,29 +10,24 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/Sawmonabo/agent-brain/internal/gitx/gitxtest"
 )
 
 // TestMain isolates every git invocation in this package from the developer's
-// real configuration. Pointing GIT_CONFIG_GLOBAL/SYSTEM at throwaway files
-// guarantees no test can read or write ~/.gitconfig or /etc/gitconfig (the
-// safety rule: never touch real git config) and makes results hermetic — a
-// host filter/init.defaultBranch/user setting can neither leak in nor break a
-// run. Set once before parallel tests start, so it is safe with t.Parallel().
+// real configuration and disables git's auto-maintenance entirely (see
+// gitxtest.HermeticGitConfig): no test can read or write ~/.gitconfig or
+// /etc/gitconfig (the safety rule: never touch real git config), and no git
+// child this package spawns can fork a detached gc/maintenance process that
+// outlives the test that started it. Set once before parallel tests start, so
+// it is safe with t.Parallel().
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "gitx-config")
+	_, cleanup, err := gitxtest.Setenv()
 	if err != nil {
-		log.Fatalf("gitx test: temp config dir: %v", err)
-	}
-	for env, path := range map[string]string{
-		"GIT_CONFIG_GLOBAL": filepath.Join(dir, "gitconfig"),
-		"GIT_CONFIG_SYSTEM": filepath.Join(dir, "system"),
-	} {
-		if err := os.Setenv(env, path); err != nil {
-			log.Fatalf("gitx test: setenv %s: %v", env, err)
-		}
+		log.Fatalf("gitx test: %v", err)
 	}
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	cleanup()
 	os.Exit(code)
 }
 
