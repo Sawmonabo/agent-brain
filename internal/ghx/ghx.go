@@ -18,9 +18,11 @@ package ghx
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -150,6 +152,55 @@ func (c *Client) Clone(ctx context.Context, ownerRepo, dir string, gitArgs ...st
 	}
 	if result.ExitCode != 0 {
 		return fmt.Errorf("gh repo clone %s: %s", ownerRepo, strings.TrimSpace(result.Stderr))
+	}
+	return nil
+}
+
+// ReleaseInfo is one release row from `gh release list` (spec §7 `update`).
+// Drafts are included as gh reports them — callers filter; this package
+// only translates.
+type ReleaseInfo struct {
+	TagName      string `json:"tagName"`
+	IsPrerelease bool   `json:"isPrerelease"`
+	IsDraft      bool   `json:"isDraft"`
+}
+
+// ListReleases returns up to limit of ownerRepo's releases, in gh's own
+// (publication-date) order. Callers wanting "the latest version" must pick
+// by semver themselves — publication order and version order can disagree
+// (a patch release for an older minor publishes later).
+func (c *Client) ListReleases(ctx context.Context, ownerRepo string, limit int) ([]ReleaseInfo, error) {
+	result, err := c.runner.Run(ctx, "release", "list", "--repo", ownerRepo,
+		"--limit", strconv.Itoa(limit), "--json", "tagName,isPrerelease,isDraft")
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("gh release list --repo %s: %s", ownerRepo, strings.TrimSpace(result.Stderr))
+	}
+	var releases []ReleaseInfo
+	if err := json.Unmarshal([]byte(result.Stdout), &releases); err != nil {
+		return nil, fmt.Errorf("gh release list --repo %s: parse json: %w", ownerRepo, err)
+	}
+	return releases, nil
+}
+
+// DownloadReleaseAssets downloads tag's release assets matching the given
+// glob patterns into dir. gh performs the download with the user's existing
+// authentication, so this works against a private repo with no separate
+// token plumbing — the reason `update` shells gh instead of carrying its
+// own HTTP client (ADR 18).
+func (c *Client) DownloadReleaseAssets(ctx context.Context, ownerRepo, tag, dir string, patterns ...string) error {
+	args := []string{"release", "download", tag, "--repo", ownerRepo, "--dir", dir}
+	for _, pattern := range patterns {
+		args = append(args, "--pattern", pattern)
+	}
+	result, err := c.runner.Run(ctx, args...)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("gh release download %s --repo %s: %s", tag, ownerRepo, strings.TrimSpace(result.Stderr))
 	}
 	return nil
 }

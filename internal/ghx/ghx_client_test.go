@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 	"github.com/Sawmonabo/agent-brain/internal/ghx/ghxtest"
 )
@@ -274,6 +276,111 @@ func TestNewClient(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 		if _, err := ghx.NewClient(); !errors.Is(err, ghx.ErrMissing) {
 			t.Errorf("NewClient() error = %v, want ErrMissing", err)
+		}
+	})
+}
+
+// TestClientListReleases pins the exact gh invocation and the JSON
+// translation for `update`'s release resolution (spec §7).
+func TestClientListReleases(t *testing.T) {
+	t.Parallel()
+	fake := ghxtest.New(t, ghxtest.Call{
+		Args: []string{
+			"release", "list", "--repo", "owner/agent-brain",
+			"--limit", "50", "--json", "tagName,isPrerelease,isDraft",
+		},
+		Result: ghx.Result{Stdout: `[
+			{"tagName":"v2.0.0","isPrerelease":false,"isDraft":false},
+			{"tagName":"v2.0.0-rc.2","isPrerelease":true,"isDraft":false}
+		]`},
+	})
+	client := ghx.NewClientWithRunner(fake, "/usr/bin/gh")
+
+	releases, err := client.ListReleases(context.Background(), "owner/agent-brain", 50)
+	if err != nil {
+		t.Fatalf("ListReleases: %v", err)
+	}
+	want := []ghx.ReleaseInfo{
+		{TagName: "v2.0.0"},
+		{TagName: "v2.0.0-rc.2", IsPrerelease: true},
+	}
+	if diff := cmp.Diff(want, releases); diff != "" {
+		t.Fatalf("ListReleases mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestClientListReleasesErrors proves both failure shapes surface: a
+// non-zero gh exit carries gh's stderr, and unparseable stdout is an
+// explicit parse error rather than a silent empty slice.
+func TestClientListReleasesErrors(t *testing.T) {
+	t.Parallel()
+	t.Run("non-zero exit", func(t *testing.T) {
+		t.Parallel()
+		fake := ghxtest.New(t, ghxtest.Call{
+			Args: []string{
+				"release", "list", "--repo", "owner/agent-brain",
+				"--limit", "50", "--json", "tagName,isPrerelease,isDraft",
+			},
+			Result: ghx.Result{ExitCode: 1, Stderr: "HTTP 404: Not Found\n"},
+		})
+		client := ghx.NewClientWithRunner(fake, "/usr/bin/gh")
+		_, err := client.ListReleases(context.Background(), "owner/agent-brain", 50)
+		if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
+			t.Fatalf("ListReleases error = %v, want gh's stderr surfaced", err)
+		}
+	})
+	t.Run("unparseable json", func(t *testing.T) {
+		t.Parallel()
+		fake := ghxtest.New(t, ghxtest.Call{
+			Args: []string{
+				"release", "list", "--repo", "owner/agent-brain",
+				"--limit", "50", "--json", "tagName,isPrerelease,isDraft",
+			},
+			Result: ghx.Result{Stdout: "gh: unexpected banner text"},
+		})
+		client := ghx.NewClientWithRunner(fake, "/usr/bin/gh")
+		_, err := client.ListReleases(context.Background(), "owner/agent-brain", 50)
+		if err == nil || !strings.Contains(err.Error(), "parse json") {
+			t.Fatalf("ListReleases error = %v, want a parse error", err)
+		}
+	})
+}
+
+// TestClientDownloadReleaseAssets pins the exact gh invocation — one
+// --pattern flag per requested asset — and the stderr-carrying failure.
+func TestClientDownloadReleaseAssets(t *testing.T) {
+	t.Parallel()
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		fake := ghxtest.New(t, ghxtest.Call{
+			Args: []string{
+				"release", "download", "v2.1.0", "--repo", "owner/agent-brain", "--dir", "/tmp/dl",
+				"--pattern", "agent-brain_2.1.0_darwin_arm64.tar.gz",
+				"--pattern", "agent-brain_2.1.0_checksums.txt",
+			},
+			Result: ghx.Result{ExitCode: 0},
+		})
+		client := ghx.NewClientWithRunner(fake, "/usr/bin/gh")
+		err := client.DownloadReleaseAssets(context.Background(), "owner/agent-brain", "v2.1.0", "/tmp/dl",
+			"agent-brain_2.1.0_darwin_arm64.tar.gz", "agent-brain_2.1.0_checksums.txt")
+		if err != nil {
+			t.Fatalf("DownloadReleaseAssets: %v", err)
+		}
+	})
+	t.Run("failure carries stderr", func(t *testing.T) {
+		t.Parallel()
+		fake := ghxtest.New(t, ghxtest.Call{
+			Args: []string{
+				"release", "download", "v2.1.0", "--repo", "owner/agent-brain", "--dir", "/tmp/dl",
+				"--pattern", "agent-brain_2.1.0_darwin_arm64.tar.gz",
+			},
+			Result: ghx.Result{ExitCode: 1, Stderr: "no assets match the file pattern\n"},
+		})
+		client := ghx.NewClientWithRunner(fake, "/usr/bin/gh")
+		err := client.DownloadReleaseAssets(context.Background(), "owner/agent-brain", "v2.1.0", "/tmp/dl",
+			"agent-brain_2.1.0_darwin_arm64.tar.gz")
+		if err == nil || !strings.Contains(err.Error(), "no assets match") {
+			t.Fatalf("DownloadReleaseAssets error = %v, want gh's stderr surfaced", err)
 		}
 	})
 }

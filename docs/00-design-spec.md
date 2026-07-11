@@ -336,6 +336,13 @@ Bare `agent-brain` prints help. Command tree:
   scan — advisory, §5/§11), **`service install|uninstall|start|stop|status|logs`**,
   **`key export`** / **`key import [--force]`** / **`key rotate`** (fail-closed
   fleet re-encrypt, §5), **`migrate`** (§10), **`daemon run`** (foreground).
+- **`update [--check | --prerelease | --no-restart]`** — gh-native self-update
+  (ADR 18): resolve the newest matching release (semver max, stable channel by
+  default, `--prerelease` admits release candidates), download archive +
+  checksums through authenticated `gh`, verify sha256, sanity-run the new
+  binary, atomically swap it over the current executable, then bounce the
+  service and confirm daemon readiness. Never downgrades; refuses unstamped
+  dev builds and Homebrew-managed installs (`brew upgrade` owns those).
 - Hidden plumbing invoked by git: `git-clean`, `git-smudge`, `git-textconv`,
   `git-merge`.
 

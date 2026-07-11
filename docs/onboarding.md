@@ -152,6 +152,21 @@ Two-machine proof (the point of v2): write a memory in an enrolled project on on
 machine, then watch it arrive on another (dashboard **Activity** or `agent-brain
 service logs`), and vice versa.
 
+## Upgrading (all platforms)
+
+```bash
+agent-brain update --check              # report whether a newer release exists
+agent-brain update                      # download, verify, swap, restart the service
+agent-brain update --prerelease         # admit release candidates (needed until v2.0.0 tags)
+```
+
+The update runs through the same authenticated `gh` as the install, so it works
+while the repo is private. It verifies the release's sha256 checksums, sanity-runs
+the new binary, swaps atomically, and confirms the daemon came back on the new
+version (ADR 18). Homebrew-managed installs are refused by design — use
+`brew upgrade agent-brain` there. Dev builds (`go build`, version `dev`) are also
+refused so a working tree's binary never overwrites itself.
+
 ## Retiring bash-era state
 
 After a verified `migrate`, follow the spec §10 retirement checklist (remove the

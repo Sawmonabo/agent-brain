@@ -50,8 +50,10 @@ lefthook install                                # once per clone: git hooks
 - Product CLI beyond init/track/sync/status/doctor (spec §7): `dashboard`
   (bubbletea v2 TUI over the daemon — `internal/cli/dashboard` is the only
   package outside `cli` root allowed direct bubbletea/lipgloss imports), `scan`
-  (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`), and
-  `key rotate` (fail-closed fleet re-encrypt).
+  (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`),
+  `key rotate` (fail-closed fleet re-encrypt), and `update` (gh-native
+  self-update, ADR 18 — checksum-verified atomic swap + service restart;
+  refuses dev builds and brew-managed installs).
 - Tests: stdlib `testing` + `go-cmp` ONLY (no assertion frameworks, ADR 15);
   table-driven; `t.Parallel()`; `t.TempDir()`; integration tests use real
   system git with a `git init --bare` fake remote.

@@ -32,6 +32,11 @@ gh release download <tag> -R Sawmonabo/agent-brain -p '*darwin_arm64*' -O - \
 go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest
 ```
 
+Once installed, `agent-brain update` keeps the binary current through the same
+authenticated `gh` path — it works against the private repo, verifies the release
+checksums, swaps atomically, and restarts the service (`--prerelease` while only
+release candidates exist; Homebrew installs use `brew upgrade` instead).
+
 Per-OS runbooks (macOS, Linux, WSL2) live in [docs/onboarding.md](docs/onboarding.md).
 
 ## Quickstart
@@ -65,6 +70,7 @@ flags):
 | `dashboard` | Live TUI over the running daemon (projects, conflicts, activity, doctor) |
 | `key export` / `key import [--force]` / `key rotate` | Manage the shared Tink keyset (back up, restore, fleet-rotate) |
 | `service install\|uninstall\|start\|stop\|status\|logs` | Install or control the login-started daemon service |
+| `update` | Self-update to the newest GitHub release and restart the service (`--check`, `--prerelease`, `--no-restart`) |
 | `migrate` | One-time import of the bash-era `~/.agent-brain` memory tree (spec §10) |
 | `daemon run` | Run the sync daemon in the foreground (the service manager invokes this) |
 
