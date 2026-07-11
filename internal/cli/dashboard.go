@@ -46,8 +46,19 @@ func newDashboardCmd() *cobra.Command {
 			}
 
 			model := dashboard.New(dashboard.Config{
-				Data:         dashboard.NewData(client, offlineDoctorRunner()),
-				StartService: controller.Start,
+				Data: dashboard.NewData(client, offlineDoctorRunner()),
+				// The start offer only appears on the daemon-down screen. A
+				// service that probes as already running there means a daemon
+				// that is up-but-unresponsive or crash-looping — starting
+				// cannot help, so name the next move instead of relaying the
+				// sentinel as a bare "start failed: service already running".
+				StartService: func() error {
+					err := controller.Start()
+					if errors.Is(err, service.ErrAlreadyRunning) {
+						return errors.New("service already running but the daemon is not responding — check `agent-brain service logs`")
+					}
+					return err
+				},
 			})
 			program := tea.NewProgram(
 				model,

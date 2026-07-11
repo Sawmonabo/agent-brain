@@ -498,13 +498,16 @@ func stepConfigFile(_ context.Context, state *initState) error {
 }
 
 // stepService installs and starts the login service unless --skip-service
-// was given. Install/report and status/linger delegate to
-// installServiceAndReport and printServiceStatus (service.go) — the
-// same two helpers the standalone `service install`/`service status`
-// commands use, so the idempotency branch (service.ErrAlreadyInstalled,
-// errors.Is — Task 3b), the WSL2 linger warning, and the linger advisory
-// line (Task 3c) live in exactly one place rather than being duplicated
-// here (T3 review fix).
+// was given. Install/report, start/report, and status/linger delegate to
+// installServiceAndReport, startServiceAndReport, and printServiceStatus
+// (service.go) — the same helpers the standalone `service install`/
+// `service start`/`service status` commands use, so the idempotency
+// branches (service.ErrAlreadyInstalled — Task 3b — and
+// service.ErrAlreadyRunning, both errors.Is), the WSL2 linger warning,
+// and the linger advisory line (Task 3c) live in exactly one place
+// rather than being duplicated here (T3 review fix). The start branch is
+// what makes re-running init against a healthy daemon a no-op instead of
+// dying on launchd's already-loaded EIO.
 func stepService(_ context.Context, state *initState) error {
 	if state.skipService {
 		_, err := fmt.Fprintln(state.out, "service: skipped (--skip-service)")
@@ -518,7 +521,7 @@ func stepService(_ context.Context, state *initState) error {
 	if err := installServiceAndReport(controller, state.out); err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return err
 	}
-	if err := controller.Start(); err != nil {
+	if err := startServiceAndReport(controller, state.out); err != nil && !errors.Is(err, service.ErrAlreadyRunning) {
 		return err
 	}
 	return printServiceStatus(state.out, controller)

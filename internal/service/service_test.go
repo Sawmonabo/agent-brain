@@ -67,11 +67,21 @@ type fakeKardianosService struct {
 	uninstallErr error
 	startErr     error
 	stopErr      error
+
+	// statuses is consumed one entry per Status() call, the last entry
+	// repeating once exhausted, so goal-state tests can script "stopped
+	// before start, running after". Empty preserves the historical
+	// always-StatusUnknown behavior the pre-goal-state tests assume.
+	statuses  []kardianos.Status
+	statusErr error
+
+	startCalls int
+	stopCalls  int
 }
 
 func (f *fakeKardianosService) Run() error     { return nil }
-func (f *fakeKardianosService) Start() error   { return f.startErr }
-func (f *fakeKardianosService) Stop() error    { return f.stopErr }
+func (f *fakeKardianosService) Start() error   { f.startCalls++; return f.startErr }
+func (f *fakeKardianosService) Stop() error    { f.stopCalls++; return f.stopErr }
 func (f *fakeKardianosService) Restart() error { return nil }
 func (f *fakeKardianosService) Install() error { return f.installErr }
 func (f *fakeKardianosService) Uninstall() error {
@@ -85,7 +95,17 @@ func (f *fakeKardianosService) SystemLogger(chan<- error) (kardianos.Logger, err
 func (f *fakeKardianosService) String() string   { return "agent-brain" }
 func (f *fakeKardianosService) Platform() string { return "test" }
 func (f *fakeKardianosService) Status() (kardianos.Status, error) {
-	return kardianos.StatusUnknown, nil
+	if f.statusErr != nil {
+		return kardianos.StatusUnknown, f.statusErr
+	}
+	if len(f.statuses) == 0 {
+		return kardianos.StatusUnknown, nil
+	}
+	status := f.statuses[0]
+	if len(f.statuses) > 1 {
+		f.statuses = f.statuses[1:]
+	}
+	return status, nil
 }
 
 // --- 3b: typed sentinels ---
@@ -164,6 +184,150 @@ func TestControllerInstallSucceedsCleanly(t *testing.T) {
 	controller := &kardianosController{svc: &fakeKardianosService{}, isWSL2: func() bool { return false }}
 	if _, err := controller.Install(); err != nil {
 		t.Fatalf("Install() error = %v, want nil", err)
+	}
+}
+
+// --- goal-state idempotency: Start/Stop against an already-satisfied
+// state report a sentinel instead of a backend error. launchd is the
+// motivating backend: `launchctl load` on an already-loaded job exits
+// EIO ("Load failed: 5: Input/output error"), which took down a re-run
+// of `agent-brain init` against a healthy running daemon (2026-07-10).
+
+// TestControllerStartAlreadyRunningYieldsSentinel proves Start never
+// even shells the backend when the service is already running — the
+// pre-probe alone answers, so there is no backend error to mistranslate.
+func TestControllerStartAlreadyRunningYieldsSentinel(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{statuses: []kardianos.Status{kardianos.StatusRunning}}
+	controller := &kardianosController{svc: svc}
+	if err := controller.Start(); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("Start() error = %v, want errors.Is(_, ErrAlreadyRunning)", err)
+	}
+	if svc.startCalls != 0 {
+		t.Fatalf("backend Start called %d times, want 0 — the pre-probe must answer alone", svc.startCalls)
+	}
+}
+
+// TestControllerStartLostRaceYieldsSentinel proves the post-failure
+// probe converts a lost race (probe said stopped, the manager then
+// failed the start because the job was already loaded and running) into
+// the same sentinel — the goal state decides, never launchctl's text.
+func TestControllerStartLostRaceYieldsSentinel(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{
+		statuses: []kardianos.Status{kardianos.StatusStopped, kardianos.StatusRunning},
+		startErr: errors.New("Failed to start agent-brain: Load failed: 5: Input/output error"),
+	}
+	controller := &kardianosController{svc: svc}
+	if err := controller.Start(); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("Start() error = %v, want errors.Is(_, ErrAlreadyRunning)", err)
+	}
+	if svc.startCalls != 1 {
+		t.Fatalf("backend Start called %d times, want exactly 1", svc.startCalls)
+	}
+}
+
+// TestControllerStartRealFailureSurfaces proves the goal-state probes
+// never absorb a genuine start failure: service still not running after
+// the failed attempt (the crash-looping-daemon shape under KeepAlive)
+// means the caller gets the backend's own error.
+func TestControllerStartRealFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	want := errors.New("spawn failed: permission denied")
+	svc := &fakeKardianosService{
+		statuses: []kardianos.Status{kardianos.StatusStopped},
+		startErr: want,
+	}
+	controller := &kardianosController{svc: svc}
+	err := controller.Start()
+	if !errors.Is(err, want) {
+		t.Fatalf("Start() error = %v, want it to surface %v", err, want)
+	}
+	if errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("Start() error = %v, want it NOT to match ErrAlreadyRunning", err)
+	}
+}
+
+// TestControllerStartProbeFailureStillStarts proves a broken Status
+// probe degrades to the old unconditional behavior instead of blocking
+// the start: probe errors are advisory here, never load-bearing.
+func TestControllerStartProbeFailureStillStarts(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{statusErr: errors.New("status backend unavailable")}
+	controller := &kardianosController{svc: svc}
+	if err := controller.Start(); err != nil {
+		t.Fatalf("Start() error = %v, want nil", err)
+	}
+	if svc.startCalls != 1 {
+		t.Fatalf("backend Start called %d times, want exactly 1", svc.startCalls)
+	}
+}
+
+// TestControllerStopNotRunningYieldsSentinel proves the symmetric stop
+// case: already stopped (but installed) answers from the pre-probe with
+// ErrNotRunning, backend never shelled.
+func TestControllerStopNotRunningYieldsSentinel(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{statuses: []kardianos.Status{kardianos.StatusStopped}}
+	controller := &kardianosController{svc: svc}
+	if err := controller.Stop(); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Stop() error = %v, want errors.Is(_, ErrNotRunning)", err)
+	}
+	if svc.stopCalls != 0 {
+		t.Fatalf("backend Stop called %d times, want 0 — the pre-probe must answer alone", svc.stopCalls)
+	}
+}
+
+// TestControllerStopLostRaceYieldsSentinel proves the post-failure probe
+// converts a lost stop race into ErrNotRunning.
+func TestControllerStopLostRaceYieldsSentinel(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{
+		statuses: []kardianos.Status{kardianos.StatusRunning, kardianos.StatusStopped},
+		stopErr:  errors.New("Failed to stop agent-brain: Boot-out failed: 3: No such process"),
+	}
+	controller := &kardianosController{svc: svc}
+	if err := controller.Stop(); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Stop() error = %v, want errors.Is(_, ErrNotRunning)", err)
+	}
+}
+
+// TestControllerStopRealFailureSurfaces proves a stop failure with the
+// service still running reaches the caller untouched.
+func TestControllerStopRealFailureSurfaces(t *testing.T) {
+	t.Parallel()
+	want := errors.New("signal not delivered")
+	svc := &fakeKardianosService{
+		statuses: []kardianos.Status{kardianos.StatusRunning},
+		stopErr:  want,
+	}
+	controller := &kardianosController{svc: svc}
+	err := controller.Stop()
+	if !errors.Is(err, want) {
+		t.Fatalf("Stop() error = %v, want it to surface %v", err, want)
+	}
+	if errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Stop() error = %v, want it NOT to match ErrNotRunning", err)
+	}
+}
+
+// TestControllerStopOnNotInstalledKeepsNotInstalledSentinel proves the
+// deliberate asymmetry: a not-installed service surfaces
+// ErrNotInstalled, never ErrNotRunning — "you have no unit" is a
+// different, more actionable condition than "it wasn't running".
+func TestControllerStopOnNotInstalledKeepsNotInstalledSentinel(t *testing.T) {
+	t.Parallel()
+	svc := &fakeKardianosService{
+		statusErr: kardianos.ErrNotInstalled,
+		stopErr:   kardianos.ErrNotInstalled,
+	}
+	controller := &kardianosController{svc: svc}
+	err := controller.Stop()
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Fatalf("Stop() error = %v, want errors.Is(_, ErrNotInstalled)", err)
+	}
+	if errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Stop() error = %v, want it NOT to match ErrNotRunning", err)
 	}
 }
 

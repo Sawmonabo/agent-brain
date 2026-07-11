@@ -40,19 +40,6 @@ func newServiceCmd() *cobra.Command {
 		}
 		return service.NewController(binaryPath)
 	}
-	run := func(action string, act func(service.Controller) error) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, _ []string) error {
-			controller, err := controllerFor()
-			if err != nil {
-				return err
-			}
-			if err := act(controller); err != nil {
-				return fmt.Errorf("service %s: %w", action, err)
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "service %s: ok\n", action)
-			return err
-		}
-	}
 
 	serviceCmd.AddCommand(
 		&cobra.Command{
@@ -77,8 +64,28 @@ func newServiceCmd() *cobra.Command {
 				return runServiceUninstall(cmd.OutOrStdout(), controller)
 			},
 		},
-		&cobra.Command{Use: "start", Short: "Start the service", RunE: run("start", service.Controller.Start)},
-		&cobra.Command{Use: "stop", Short: "Stop the service", RunE: run("stop", service.Controller.Stop)},
+		&cobra.Command{
+			Use:   "start",
+			Short: "Start the service",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				controller, err := controllerFor()
+				if err != nil {
+					return err
+				}
+				return runServiceStart(cmd.OutOrStdout(), controller)
+			},
+		},
+		&cobra.Command{
+			Use:   "stop",
+			Short: "Stop the service",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				controller, err := controllerFor()
+				if err != nil {
+					return err
+				}
+				return runServiceStop(cmd.OutOrStdout(), controller)
+			},
+		},
 		&cobra.Command{
 			Use:   "status",
 			Short: "Report service state",
@@ -133,6 +140,71 @@ func runServiceInstall(out io.Writer, controller service.Controller) error {
 	err := installServiceAndReport(controller, out)
 	if err != nil && !errors.Is(err, service.ErrAlreadyInstalled) {
 		return fmt.Errorf("service install: %w", err)
+	}
+	return nil
+}
+
+// startServiceAndReport starts the service and prints the outcome — the
+// idempotency branch (starting an already-running service,
+// service.ErrAlreadyRunning matched with errors.Is, never a string
+// match) and the ok/nothing-to-do message live here ONCE, the same
+// shape installServiceAndReport gives Install: runServiceStart (the
+// standalone `service start` command) and stepService (init's own
+// service step, internal/cli/initsteps.go) both delegate to this.
+// Before this branch existed, re-running init against a healthy running
+// daemon died on launchd's EIO ("Load failed: 5: Input/output error").
+// A genuine start failure is returned unwrapped and prints nothing —
+// callers add their own context prefix.
+func startServiceAndReport(controller service.Controller, out io.Writer) error {
+	err := controller.Start()
+	if err != nil && !errors.Is(err, service.ErrAlreadyRunning) {
+		return err
+	}
+	message := "service start: ok"
+	if errors.Is(err, service.ErrAlreadyRunning) {
+		message = "service start: already running — nothing to do"
+	}
+	if _, printErr := fmt.Fprintln(out, message); printErr != nil {
+		return printErr
+	}
+	return err
+}
+
+// runServiceStart starts the service and reports the outcome, wrapping
+// a genuine (non-idempotent) failure with command-specific context; see
+// startServiceAndReport for the shared idempotency logic.
+func runServiceStart(out io.Writer, controller service.Controller) error {
+	err := startServiceAndReport(controller, out)
+	if err != nil && !errors.Is(err, service.ErrAlreadyRunning) {
+		return fmt.Errorf("service start: %w", err)
+	}
+	return nil
+}
+
+// stopServiceAndReport mirrors startServiceAndReport for the symmetric
+// "already stopped" case (service.ErrNotRunning).
+func stopServiceAndReport(controller service.Controller, out io.Writer) error {
+	err := controller.Stop()
+	if err != nil && !errors.Is(err, service.ErrNotRunning) {
+		return err
+	}
+	message := "service stop: ok"
+	if errors.Is(err, service.ErrNotRunning) {
+		message = "service stop: not running — nothing to do"
+	}
+	if _, printErr := fmt.Fprintln(out, message); printErr != nil {
+		return printErr
+	}
+	return err
+}
+
+// runServiceStop stops the service and reports the outcome, wrapping a
+// genuine (non-idempotent) failure with command-specific context; see
+// stopServiceAndReport for the shared idempotency logic.
+func runServiceStop(out io.Writer, controller service.Controller) error {
+	err := stopServiceAndReport(controller, out)
+	if err != nil && !errors.Is(err, service.ErrNotRunning) {
+		return fmt.Errorf("service stop: %w", err)
 	}
 	return nil
 }

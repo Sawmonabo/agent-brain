@@ -26,9 +26,18 @@ import (
 // upstream for it, unlike ErrNotInstalled). mapErr is the ONE place
 // either shape is inspected; every caller branches with errors.Is
 // against these instead of kardianos's own types or text.
+//
+// ErrAlreadyRunning and ErrNotRunning are the run-state counterparts.
+// The backends diverge even harder here: launchd's `launchctl load`
+// fails with EIO ("Load failed: 5: Input/output error") on an
+// already-loaded job while systemd's `systemctl start` quietly no-ops,
+// so Start/Stop derive these from a Status probe of the goal state,
+// never from any backend's error text.
 var (
 	ErrAlreadyInstalled = errors.New("service already installed")
 	ErrNotInstalled     = errors.New("service not installed")
+	ErrAlreadyRunning   = errors.New("service already running")
+	ErrNotRunning       = errors.New("service not running")
 )
 
 // Status is the coarse service state the CLI reports.
@@ -218,8 +227,48 @@ func (c *kardianosController) Install() (string, error) {
 }
 
 func (c *kardianosController) Uninstall() error { return mapErr(c.svc.Uninstall()) }
-func (c *kardianosController) Start() error     { return mapErr(c.svc.Start()) }
-func (c *kardianosController) Stop() error      { return mapErr(c.svc.Stop()) }
+
+// Start is idempotent on the goal state: starting an already-running
+// service reports ErrAlreadyRunning instead of whatever the OS backend
+// fails with (see the sentinel block — launchd exits EIO on an
+// already-loaded job, systemd no-ops). The state is derived from a
+// Status probe — before starting, and again after a failed start for
+// the lost-the-race case — never by matching backend error text, which
+// differs per OS and per macOS version. A service that is loaded but
+// not running (a crash-looping daemon under KeepAlive) does NOT probe
+// as running, so its real start failure still surfaces.
+func (c *kardianosController) Start() error {
+	if status, err := c.Status(); err == nil && status == StatusRunning {
+		return ErrAlreadyRunning
+	}
+	startErr := c.svc.Start()
+	if startErr == nil {
+		return nil
+	}
+	if status, err := c.Status(); err == nil && status == StatusRunning {
+		return ErrAlreadyRunning
+	}
+	return mapErr(startErr)
+}
+
+// Stop mirrors Start's goal-state idempotency: stopping an
+// already-stopped service reports ErrNotRunning. Only StatusStopped
+// maps to the sentinel — a not-installed service keeps surfacing
+// ErrNotInstalled, because "you have no unit" is a different, more
+// actionable condition than "it wasn't running".
+func (c *kardianosController) Stop() error {
+	if status, err := c.Status(); err == nil && status == StatusStopped {
+		return ErrNotRunning
+	}
+	stopErr := c.svc.Stop()
+	if stopErr == nil {
+		return nil
+	}
+	if status, err := c.Status(); err == nil && status == StatusStopped {
+		return ErrNotRunning
+	}
+	return mapErr(stopErr)
+}
 
 // ensureLinger is a no-op outside WSL2. On WSL2, it best-effort runs
 // `loginctl enable-linger <user>`; any failure (no loginctl, permission

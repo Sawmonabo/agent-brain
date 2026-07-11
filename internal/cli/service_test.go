@@ -24,6 +24,11 @@ type fakeServiceController struct {
 	uninstallCalls int
 	uninstallErr   error
 
+	startCalls int
+	startErr   error
+	stopCalls  int
+	stopErr    error
+
 	statusErr    error
 	lingerStatus string
 }
@@ -44,8 +49,8 @@ func (f *fakeServiceController) Uninstall() error {
 	return f.uninstallErr
 }
 
-func (f *fakeServiceController) Start() error { return nil }
-func (f *fakeServiceController) Stop() error  { return nil }
+func (f *fakeServiceController) Start() error { f.startCalls++; return f.startErr }
+func (f *fakeServiceController) Stop() error  { f.stopCalls++; return f.stopErr }
 func (f *fakeServiceController) Status() (service.Status, error) {
 	if f.statusErr != nil {
 		return service.StatusUnknown, f.statusErr
@@ -181,6 +186,133 @@ func TestPrintServiceStatusPropagatesStatusError(t *testing.T) {
 	if err := printServiceStatus(&out, controller); !errors.Is(err, want) {
 		t.Fatalf("printServiceStatus error = %v, want it to wrap %v", err, want)
 	}
+}
+
+// --- goal-state idempotent start/stop UX ---
+//
+// startServiceAndReport/stopServiceAndReport are the ONE place the
+// run-state idempotency branch and its message live — runServiceStart/
+// runServiceStop (the standalone commands) and stepService (init's own
+// service step) all delegate here, exactly as installServiceAndReport
+// does for Install. The motivating failure: re-running `agent-brain
+// init` against a healthy running daemon died on launchd's
+// already-loaded EIO instead of no-opping (2026-07-10).
+
+// TestStartServiceAndReportFreshStartPrintsOK proves a clean start
+// prints the plain success line and returns nil.
+func TestStartServiceAndReportFreshStartPrintsOK(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{}
+	var out bytes.Buffer
+	if err := startServiceAndReport(controller, &out); err != nil {
+		t.Fatalf("startServiceAndReport: %v, want nil", err)
+	}
+	if !strings.Contains(out.String(), "service start: ok") {
+		t.Fatalf("output = %q, want the success line", out.String())
+	}
+}
+
+// TestStartServiceAndReportAlreadyRunningPrintsNothingToDo proves the
+// already-running sentinel becomes the nothing-to-do message and is
+// still returned (errors.Is-matchable) so callers can branch on it.
+func TestStartServiceAndReportAlreadyRunningPrintsNothingToDo(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{startErr: service.ErrAlreadyRunning}
+	var out bytes.Buffer
+	err := startServiceAndReport(controller, &out)
+	if !errors.Is(err, service.ErrAlreadyRunning) {
+		t.Fatalf("startServiceAndReport error = %v, want errors.Is(_, ErrAlreadyRunning)", err)
+	}
+	if !strings.Contains(out.String(), "already running — nothing to do") {
+		t.Fatalf("output = %q, want the nothing-to-do message", out.String())
+	}
+}
+
+// TestStartServiceAndReportHardFailurePrintsNothing proves a genuine
+// start failure returns the raw error and prints NOTHING — callers add
+// their own context prefix.
+func TestStartServiceAndReportHardFailurePrintsNothing(t *testing.T) {
+	t.Parallel()
+	want := errors.New("spawn failed: permission denied")
+	controller := &fakeServiceController{startErr: want}
+	var out bytes.Buffer
+	err := startServiceAndReport(controller, &out)
+	if !errors.Is(err, want) {
+		t.Fatalf("startServiceAndReport error = %v, want it to wrap %v", err, want)
+	}
+	if out.String() != "" {
+		t.Fatalf("output = %q, want nothing printed on a hard failure", out.String())
+	}
+}
+
+// TestRunServiceStartSwallowsSentinelWrapsFailure proves the standalone
+// command exits 0 on the idempotent case and prefixes a genuine failure
+// with its own context.
+func TestRunServiceStartSwallowsSentinelWrapsFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("already running exits clean", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := runServiceStart(&out, &fakeServiceController{startErr: service.ErrAlreadyRunning}); err != nil {
+			t.Fatalf("runServiceStart error = %v, want nil", err)
+		}
+	})
+	t.Run("hard failure carries context", func(t *testing.T) {
+		t.Parallel()
+		want := errors.New("spawn failed")
+		var out bytes.Buffer
+		err := runServiceStart(&out, &fakeServiceController{startErr: want})
+		if !errors.Is(err, want) {
+			t.Fatalf("runServiceStart error = %v, want it to wrap %v", err, want)
+		}
+		if !strings.Contains(err.Error(), "service start:") {
+			t.Fatalf("runServiceStart error = %q, want the command's context prefix", err)
+		}
+	})
+}
+
+// TestStopServiceAndReportNotRunningPrintsNothingToDo proves the
+// symmetric stop case: the not-running sentinel becomes the
+// nothing-to-do message and stays errors.Is-matchable.
+func TestStopServiceAndReportNotRunningPrintsNothingToDo(t *testing.T) {
+	t.Parallel()
+	controller := &fakeServiceController{stopErr: service.ErrNotRunning}
+	var out bytes.Buffer
+	err := stopServiceAndReport(controller, &out)
+	if !errors.Is(err, service.ErrNotRunning) {
+		t.Fatalf("stopServiceAndReport error = %v, want errors.Is(_, ErrNotRunning)", err)
+	}
+	if !strings.Contains(out.String(), "not running — nothing to do") {
+		t.Fatalf("output = %q, want the nothing-to-do message", out.String())
+	}
+}
+
+// TestRunServiceStopSwallowsSentinelWrapsFailure mirrors the start
+// command's exit-code contract for stop.
+func TestRunServiceStopSwallowsSentinelWrapsFailure(t *testing.T) {
+	t.Parallel()
+	t.Run("not running exits clean", func(t *testing.T) {
+		t.Parallel()
+		var out bytes.Buffer
+		if err := runServiceStop(&out, &fakeServiceController{stopErr: service.ErrNotRunning}); err != nil {
+			t.Fatalf("runServiceStop error = %v, want nil", err)
+		}
+		if !strings.Contains(out.String(), "not running — nothing to do") {
+			t.Fatalf("output = %q, want the nothing-to-do message", out.String())
+		}
+	})
+	t.Run("hard failure carries context", func(t *testing.T) {
+		t.Parallel()
+		want := errors.New("signal not delivered")
+		var out bytes.Buffer
+		err := runServiceStop(&out, &fakeServiceController{stopErr: want})
+		if !errors.Is(err, want) {
+			t.Fatalf("runServiceStop error = %v, want it to wrap %v", err, want)
+		}
+		if !strings.Contains(err.Error(), "service stop:") {
+			t.Fatalf("runServiceStop error = %q, want the command's context prefix", err)
+		}
+	})
 }
 
 // --- 3b: idempotent install/uninstall UX ---
