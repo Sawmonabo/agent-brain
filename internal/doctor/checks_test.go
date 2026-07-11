@@ -7,11 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/crypto"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
+	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
 // fakeGitleaksOnPath puts a trivial executable named "gitleaks" on PATH —
@@ -332,5 +335,130 @@ func TestRunRemoteReachableWhenRemoteHEADDangles(t *testing.T) {
 	got := result(t, doctor.Run(ctx, deps), "remote")
 	if got.Status != doctor.StatusOK {
 		t.Fatalf("remote row for a reachable origin with dangling HEAD = %+v, want ok", got)
+	}
+}
+
+// writeProjectsRegistry drops a projects.toml into deps' memories checkout
+// path so checkProjectIdentity has a shared registry to compare against.
+func writeProjectsRegistry(t *testing.T, deps doctor.Deps, body string) {
+	t.Helper()
+	path := repo.NewLayout(deps.Paths.MemoriesDir()).ProjectsFile()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectIdentityMatches(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{{Provider: "claude", Folder: "myrepo", LocalDir: "/x", ProjectID: "github.com/owner/myrepo"}}
+	writeProjectsRegistry(t, deps, "version = 1\n\n[projects.myrepo]\nid = \"github.com/owner/myrepo\"\n")
+
+	got := result(t, doctor.Run(context.Background(), deps), "project-identity")
+	if got.Status != doctor.StatusOK {
+		t.Fatalf("project-identity = %+v, want ok", got)
+	}
+}
+
+func TestProjectIdentityDriftedMapping(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{{Provider: "claude", Folder: "myrepo", LocalDir: "/x", ProjectID: "github.com/owner/myrepo"}}
+	writeProjectsRegistry(t, deps, "version = 1\n\n[projects.myrepo]\nid = \"github.com/other/myrepo\"\n")
+
+	got := result(t, doctor.Run(context.Background(), deps), "project-identity")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("project-identity = %+v, want warn on a reassigned folder", got)
+	}
+	for _, want := range []string{"github.com/owner/myrepo", "github.com/other/myrepo", "myrepo", "crosses projects"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Errorf("Detail %q missing %q", got.Detail, want)
+		}
+	}
+	if !strings.Contains(got.Fix, "untrack") {
+		t.Errorf("Fix %q must name the untrack/re-track remediation", got.Fix)
+	}
+}
+
+// TestProjectIdentityMultipleDriftsAreSortedInDetail pins slices.Sort(drifted)
+// (checks.go): every other project-identity test enrolls at most one
+// per-project unit, so a Detail built straight off enrollment (or map)
+// order would still pass them. Enrolling "zeta-project" before
+// "alpha-project" — both drifted, so their folder names sort in the
+// OPPOSITE order from enrollment — and asserting the exact rendered Detail
+// binds that the check sorts before joining, not merely that both folders
+// are named somewhere in it.
+func TestProjectIdentityMultipleDriftsAreSortedInDetail(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{
+		{Provider: "claude", Folder: "zeta-project", LocalDir: "/z", ProjectID: "github.com/owner/zeta-project"},
+		{Provider: "claude", Folder: "alpha-project", LocalDir: "/a", ProjectID: "github.com/owner/alpha-project"},
+	}
+	writeProjectsRegistry(t, deps, "version = 1\n\n"+
+		"[projects.zeta-project]\nid = \"github.com/other/zeta-project\"\n\n"+
+		"[projects.alpha-project]\nid = \"github.com/other/alpha-project\"\n")
+
+	got := result(t, doctor.Run(context.Background(), deps), "project-identity")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("project-identity = %+v, want warn with two drifted folders", got)
+	}
+	want := "project identity drift: " +
+		`alpha-project (claude): registry maps it to "github.com/other/alpha-project", this machine enrolled "github.com/owner/alpha-project" — mirroring crosses projects until re-tracked; ` +
+		`zeta-project (claude): registry maps it to "github.com/other/zeta-project", this machine enrolled "github.com/owner/zeta-project" — mirroring crosses projects until re-tracked`
+	if diff := cmp.Diff(want, got.Detail); diff != "" {
+		t.Fatalf("project-identity Detail not sorted alphabetically (-want +got):\n%s", diff)
+	}
+}
+
+func TestProjectIdentityFolderMissingFromRegistry(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{{Provider: "claude", Folder: "myrepo", LocalDir: "/x", ProjectID: "github.com/owner/myrepo"}}
+	writeProjectsRegistry(t, deps, "version = 1\n")
+
+	got := result(t, doctor.Run(context.Background(), deps), "project-identity")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("project-identity = %+v, want warn when the folder vanished from the registry", got)
+	}
+	if !strings.Contains(got.Detail, "missing") {
+		t.Errorf("Detail %q should say the folder is missing from the shared registry", got.Detail)
+	}
+}
+
+func TestProjectIdentityUnreadableRegistryWarns(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{{Provider: "claude", Folder: "myrepo", LocalDir: "/x", ProjectID: "github.com/owner/myrepo"}}
+	writeProjectsRegistry(t, deps, "version = 99\n") // unsupported version → LoadProjects error
+
+	got := result(t, doctor.Run(context.Background(), deps), "project-identity")
+	if got.Status != doctor.StatusWarn {
+		t.Fatalf("project-identity = %+v, want warn on an unreadable registry", got)
+	}
+	if !strings.Contains(got.Detail, "cannot read the shared project registry") {
+		t.Errorf("Detail %q should say the shared registry could not be read", got.Detail)
+	}
+	if !strings.Contains(got.Fix, "agent-brain sync") {
+		t.Errorf("Fix %q must tell the operator to run agent-brain sync", got.Fix)
+	}
+}
+
+// TestProjectIdentitySkipsWithoutPerProjectUnits: global-scope units carry no
+// ProjectID, so the check must not apply at all (mirrors the prereq checks'
+// enrolled-scoping) — absent from the report, not a vacuous ok.
+func TestProjectIdentitySkipsWithoutPerProjectUnits(t *testing.T) {
+	t.Parallel()
+	deps := minimalDeps(t)
+	deps.Enrolled = []repo.Unit{{Provider: "codex", Folder: "_global", LocalDir: "/y"}}
+
+	report := doctor.Run(context.Background(), deps)
+	for _, res := range report.Results {
+		if res.Name == "project-identity" {
+			t.Fatalf("project-identity should be inapplicable with no per-project units, got %+v", res)
+		}
 	}
 }

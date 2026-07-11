@@ -16,10 +16,15 @@ import (
 // This is the engine's work item: mirror LocalDir ↔
 // <Folder>/<Provider>[/<RepoSubdir>].
 type Unit struct {
-	Provider  string `toml:"provider"`
-	ProjectID string `toml:"project_id"` // canonical id; empty for global scope
-	Folder    string `toml:"folder"`     // repo folder, or GlobalFolder
-	LocalDir  string `toml:"local_dir"`  // absolute, machine-local
+	Provider string `toml:"provider"`
+	// ProjectID is the canonical machine-independent id this machine
+	// enrolled under (empty for global scope). Written by the daemon's
+	// Track; read back by doctor's project-identity check, which compares
+	// it against the shared registry's current mapping for Folder to catch
+	// cross-machine folder reassignment.
+	ProjectID string `toml:"project_id"`
+	Folder    string `toml:"folder"`    // repo folder, or GlobalFolder
+	LocalDir  string `toml:"local_dir"` // absolute, machine-local
 	// RepoSubdir maps this unit under a subdirectory of the provider dir
 	// (<folder>/<provider>/<repo_subdir>). Empty for providers with one
 	// root (claude). Validated by ValidateRelPath when set.

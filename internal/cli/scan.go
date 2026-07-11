@@ -135,7 +135,9 @@ type gitleaksFinding struct {
 // merges results). Folder/Provider/LocalDir use this project's own
 // snake_case JSON convention (matching daemon/api.UnitInfo) instead of
 // embedding repo.Unit directly, which carries fields (ProjectID,
-// RepoSubdir) with toml tags only and isn't meant for wire exposure.
+// RepoSubdir) with toml tags only and isn't meant for wire exposure
+// (ProjectID is consumed by doctor's project-identity check; RepoSubdir by
+// the engine's path mapping).
 // Finding mirrors gitleaks' OWN report schema verbatim (PascalCase) since
 // that half of the payload is a pass-through of an external tool's format,
 // not this project's to rename.

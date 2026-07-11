@@ -375,6 +375,66 @@ func checkRegistryLocal(_ context.Context, deps Deps) (CheckResult, bool) {
 	return CheckResult{Name: name, Status: StatusOK, Detail: "local registry loads"}, true
 }
 
+// checkProjectIdentity verifies the cross-machine linchpin (spec §3): every
+// per-project unit this machine enrolled must still be the project the
+// SHARED registry (.agent-brain/projects.toml in the memories checkout) maps
+// its folder to. The drift is real: machine A `untrack --purge`s folder F
+// (the last tracker deletes the registry row), machine C later tracks a
+// DIFFERENT project whose preferred folder lands back on F — a stale machine
+// still enrolled under F would from then on mirror its memories into a
+// folder the fleet has reassigned. Unit.ProjectID is recorded at Track
+// exactly so this comparison needs no lossy re-derivation (slug reversal)
+// and no network: local enrollment vs the checkout's registry file.
+//
+// Advisory (StatusWarn), deliberately NOT in SafetyGate: the gate's
+// membership rule (gate.go) blocks the WHOLE fleet's cycles, and one
+// drifted folder does not make the other units' cycles unsafe. Per-unit
+// engine withholding on drift is recorded follow-up work in
+// docs/plans/backlog-project-identity-engine-guard.md, not silently skipped.
+func checkProjectIdentity(_ context.Context, deps Deps) (CheckResult, bool) {
+	const name = "project-identity"
+	perProject := make([]repo.Unit, 0, len(deps.Enrolled))
+	for _, unit := range deps.Enrolled {
+		if unit.ProjectID != "" { // global-scope units carry no project identity
+			perProject = append(perProject, unit)
+		}
+	}
+	if len(perProject) == 0 {
+		return CheckResult{}, false
+	}
+	projects, err := repo.LoadProjects(repo.NewLayout(deps.Paths.MemoriesDir()).ProjectsFile())
+	if err != nil {
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: "cannot read the shared project registry: " + err.Error(),
+			Fix:    "run `agent-brain sync`, then `agent-brain doctor` again",
+		}, true
+	}
+	var drifted []string
+	for _, unit := range perProject {
+		entry, ok := projects.Entries[unit.Folder]
+		switch {
+		case !ok:
+			drifted = append(drifted, fmt.Sprintf("%s (%s): folder missing from the shared registry", unit.Folder, unit.Provider))
+		case entry.ID != unit.ProjectID:
+			drifted = append(drifted, fmt.Sprintf("%s (%s): registry maps it to %q, this machine enrolled %q — mirroring crosses projects until re-tracked",
+				unit.Folder, unit.Provider, entry.ID, unit.ProjectID))
+		}
+	}
+	if len(drifted) > 0 {
+		slices.Sort(drifted)
+		return CheckResult{
+			Name: name, Status: StatusWarn,
+			Detail: "project identity drift: " + strings.Join(drifted, "; "),
+			Fix:    "untrack the listed folders and re-track their local dirs (`agent-brain untrack <folder>`, then `agent-brain track <path>`)",
+		}, true
+	}
+	return CheckResult{
+		Name: name, Status: StatusOK,
+		Detail: fmt.Sprintf("%d enrolled folder(s) match the shared registry", len(perProject)),
+	}, true
+}
+
 // conflictLogWarnBytes is doctor's own early-warning threshold — smaller
 // than the daemon's 5 MiB rotation bound (internal/daemon/logging.go's
 // maxConflictLogSize, unreachable from here by the doctor->daemon import
