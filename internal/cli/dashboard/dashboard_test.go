@@ -411,3 +411,51 @@ func TestHeaderFreshOnSwitchToConflicts(t *testing.T) {
 		t.Errorf("header stale after switching to Conflicts (switch did not refetch status); got:\n%s", header)
 	}
 }
+
+func TestFooterAdvertisesOnlyActiveTabKeys(t *testing.T) {
+	t.Parallel()
+	m := New(Config{Data: &fakeData{}})
+
+	m.active = tabProjects
+	projectsFooter := plain(m.footer())
+	for _, want := range []string{"tab/1–4 switch", "↑/↓ select", "s sync", "t untrack", "q quit"} {
+		if !strings.Contains(projectsFooter, want) {
+			t.Errorf("Projects footer %q missing %q", projectsFooter, want)
+		}
+	}
+
+	for _, other := range []tab{tabConflicts, tabActivity, tabDoctor} {
+		m.active = other
+		otherFooter := plain(m.footer())
+		if strings.Contains(otherFooter, "sync") || strings.Contains(otherFooter, "untrack") {
+			t.Errorf("%s footer advertises Projects-only keys: %q", other.title(), otherFooter)
+		}
+		for _, want := range []string{"tab/1–4 switch", "q quit"} {
+			if !strings.Contains(otherFooter, want) {
+				t.Errorf("%s footer %q missing %q", other.title(), otherFooter, want)
+			}
+		}
+	}
+}
+
+// TestProjectsKeysStayDeadOffProjectsTab pins the behavior the old footer
+// lied about: s/t on a non-Projects tab dispatch nothing and mutate nothing.
+func TestProjectsKeysStayDeadOffProjectsTab(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	m := New(Config{Data: fake})
+	m.active = tabConflicts
+
+	m2, cmd := step(m, key("s"))
+	if cmd != nil {
+		t.Fatal("s on Conflicts produced a Cmd; want none")
+	}
+	_, cmd = step(m2, key("t"))
+	if cmd != nil {
+		t.Fatal("t on Conflicts produced a Cmd; want none")
+	}
+	if len(fake.syncCalls) != 0 || len(fake.untrackCalls) != 0 {
+		t.Fatalf("keys off the Projects tab reached the daemon: sync=%v untrack=%v",
+			fake.syncCalls, fake.untrackCalls)
+	}
+}

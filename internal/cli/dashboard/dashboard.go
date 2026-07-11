@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	keybinding "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -316,18 +317,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.projects.update(msg, m.data)
 	}
 
-	switch msg.String() {
-	case "q":
+	switch {
+	case keybinding.Matches(msg, dashboardKeys.Quit):
 		m.quitting = true
 		return m, tea.Quit
-	case "tab", "right", "l":
-		m.active = (m.active + 1) % tabCount
-		return m, m.switchCmd()
-	case "shift+tab", "left", "h":
-		m.active = (m.active + tabCount - 1) % tabCount
-		return m, m.switchCmd()
-	case "1", "2", "3", "4":
-		m.active = tab(msg.String()[0] - '1')
+	case keybinding.Matches(msg, dashboardKeys.TabSwitch):
+		// The binding is the membership gate; the concrete key picks the
+		// direction. "1"–"4" are the only single-rune members left after the
+		// named cases, so the default is exact, not a catch-all.
+		switch msg.String() {
+		case "tab", "right", "l":
+			m.active = (m.active + 1) % tabCount
+		case "shift+tab", "left", "h":
+			m.active = (m.active + tabCount - 1) % tabCount
+		default:
+			m.active = tab(msg.String()[0] - '1')
+		}
 		return m, m.switchCmd()
 	}
 
@@ -382,8 +387,16 @@ func (m Model) tabBar() string {
 	return strings.Join(parts, " ")
 }
 
+// footer advertises exactly the keys that dispatch on the active tab,
+// rendered from the same bindings handleKey matches (keymap.go).
 func (m Model) footer() string {
-	return dimStyle.Render("tab/1–4 switch · s sync · t untrack · q quit")
+	bindings := dashboardKeys.forTab(m.active)
+	parts := make([]string, len(bindings))
+	for i, binding := range bindings {
+		help := binding.Help()
+		parts[i] = help.Key + " " + help.Desc
+	}
+	return dimStyle.Render(strings.Join(parts, " · "))
 }
 
 // statusHeader renders the fleet-level facts once, persistently above the tab

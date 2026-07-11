@@ -97,7 +97,7 @@ PROVIDER   FOLDER                HEALTH     WATCH      LAST CYCLE
 claude     agent-brain           ok         watching   ok
 codex      _global               degraded   failed     degraded
 
-tab/1–4 switch · s sync · t untrack · q quit
+tab/1–4 switch · ↑/↓ select · s sync · t untrack · q quit
 ```
 
 `WATCH` reads `watching`/`failed`/`—`; `LAST CYCLE` reads `ok`/`degraded`/`error`/`—`

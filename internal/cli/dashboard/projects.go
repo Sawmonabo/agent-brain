@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	keybinding "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 
@@ -134,15 +135,15 @@ func (v *projectsView) update(msg tea.KeyPressMsg, data dashboardData) tea.Cmd {
 		return nil // swallow everything else while the confirm is open
 	}
 
-	switch msg.String() {
-	case "s":
+	switch {
+	case keybinding.Matches(msg, dashboardKeys.Sync):
 		unit, ok := v.selectedUnit()
 		if !ok {
 			return nil
 		}
 		v.notice = fmt.Sprintf("syncing %s…", unit.Folder)
 		return syncCmd(data, unit.Folder)
-	case "t":
+	case keybinding.Matches(msg, dashboardKeys.Untrack):
 		unit, ok := v.selectedUnit()
 		if !ok {
 			return nil
