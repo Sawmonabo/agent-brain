@@ -187,6 +187,10 @@ func runKeyRotate(ctx context.Context, client *api.Client, keysetPath string, ou
 
 	if !yes {
 		confirmed, err := confirm()
+		if formCancelled(err) {
+			_, err := fmt.Fprintln(out, "key rotate: cancelled — keyset and repo unchanged")
+			return err
+		}
 		if err != nil {
 			return err
 		}
@@ -241,14 +245,23 @@ func runKeyRotate(ctx context.Context, client *api.Client, keysetPath string, ou
 // contract documented on isAccessible).
 func confirmRotateInteractive(accessible bool) (bool, error) {
 	var confirmed bool
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewConfirm().
-			Title("Rotate the primary key and re-encrypt the whole repo now?").
-			Description("Every other machine must `key import --force` the new keyset immediately, or it fails closed.").
-			Value(&confirmed),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
+	if err := buildRotateConfirmForm(accessible, &confirmed).Run(); err != nil {
 		return false, err
 	}
 	return confirmed, nil
+}
+
+// buildRotateConfirmForm is confirmRotateInteractive's form construction,
+// split out so a test can render it (Init/View) without ever running it —
+// the render is the only way to pin that the cancel hint actually appears
+// in the real production form, not a hand-built replica of it. It also
+// lets a test drive the real accessible-mode path (WithAccessible(true),
+// scripted stdin via WithInput/WithOutput, a real Run()) end to end.
+func buildRotateConfirmForm(accessible bool, confirmed *bool) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
+		huh.NewConfirm().
+			Title(titleWithCancelHint("Rotate the primary key and re-encrypt the whole repo now?", accessible)).
+			Description("Every other machine must `key import --force` the new keyset immediately, or it fails closed.").
+			Value(confirmed),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
 }

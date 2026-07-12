@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/huh/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/cobra"
 
@@ -363,6 +364,63 @@ func TestSelectReleaseTagRefusedHeadless(t *testing.T) {
 	_, err := selectReleaseTag(cmd, &headlessRefusalSource{t: t})
 	if err == nil || !strings.Contains(err.Error(), "agent-brain update <version>") {
 		t.Fatalf("selectReleaseTag error = %v, want the headless refusal naming the alternative", err)
+	}
+}
+
+// TestReleaseSelectionResult pins selectReleaseTag's cancel handling
+// without driving a real huh form: a cancel must print the shipped
+// "nothing changed" message and clear the tag (even if pickReleaseInteractive
+// somehow returned a stale one), a genuine selection passes its tag
+// through untouched, and any other error propagates as-is.
+func TestReleaseSelectionResult(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		tag     string
+		err     error
+		wantTag string
+		wantErr string
+		wantOut string
+	}{
+		{
+			name:    "cancelled clears a stale tag and reports nothing changed",
+			tag:     "v9.9.9",
+			err:     huh.ErrUserAborted,
+			wantTag: "",
+			wantOut: "update: selection cancelled — nothing changed",
+		},
+		{
+			name:    "selected tag passes through",
+			tag:     "v1.2.3",
+			err:     nil,
+			wantTag: "v1.2.3",
+		},
+		{
+			name:    "unrelated error propagates",
+			tag:     "",
+			err:     errors.New("boom"),
+			wantErr: "boom",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			gotTag, gotErr := releaseSelectionResult(&out, testCase.tag, testCase.err)
+			if gotTag != testCase.wantTag {
+				t.Errorf("tag = %q, want %q", gotTag, testCase.wantTag)
+			}
+			if testCase.wantErr == "" {
+				if gotErr != nil {
+					t.Errorf("err = %v, want nil", gotErr)
+				}
+			} else if gotErr == nil || !strings.Contains(gotErr.Error(), testCase.wantErr) {
+				t.Errorf("err = %v, want containing %q", gotErr, testCase.wantErr)
+			}
+			if testCase.wantOut != "" && !strings.Contains(out.String(), testCase.wantOut) {
+				t.Errorf("output = %q, want containing %q", out.String(), testCase.wantOut)
+			}
+		})
 	}
 }
 

@@ -241,6 +241,7 @@ func runMigrate(ctx context.Context, deps trackDeps, client *api.Client, callbac
 
 	report := &reportWriter{w: out}
 	var migratedAny bool
+	var cancelledAtSlug string
 	for _, slug := range slugs {
 		hasContent, err := hasRealContent(filepath.Join(root, slug))
 		if err != nil {
@@ -251,12 +252,33 @@ func runMigrate(ctx context.Context, deps trackDeps, client *api.Client, callbac
 			continue
 		}
 		if err := migrateOne(ctx, deps, client, callbacks, report, slug); err != nil {
+			// A cancelled confirm/name prompt stops the run here rather than
+			// skipping just this slug and continuing: unlike track's discovery
+			// picker (independent projects a user explicitly chose), migrate
+			// works a fixed backlog of legacy slugs one at a time, and
+			// response.Skipped already makes a later `agent-brain migrate`
+			// resume idempotently — including retrying the cancelled slug.
+			if formCancelled(err) {
+				cancelledAtSlug = slug
+				break
+			}
 			return explainDown(err)
 		}
 		migratedAny = true
 	}
 	if report.err != nil {
 		return report.err
+	}
+
+	if cancelledAtSlug != "" {
+		if _, err := fmt.Fprintf(out, "migrate: cancelled at %s — re-run `agent-brain migrate` to resume "+
+			"(already-migrated projects are skipped automatically)\n", cancelledAtSlug); err != nil {
+			return err
+		}
+		if !migratedAny {
+			return nil
+		}
+		return syncAfterTrack(ctx, client, out)
 	}
 
 	if !migratedAny {

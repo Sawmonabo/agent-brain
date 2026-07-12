@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/huh/v2"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
@@ -419,6 +420,123 @@ func TestRunMigrateSubmitsRequestWithSeedDirDistinctFromLocalDir(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "§10") {
 		t.Fatalf("output missing retirement pointer: %s", out.String())
+	}
+}
+
+// TestRunMigrateCancelStopsRunWithoutSkippingAhead proves cancelling one
+// slug's confirm-path prompt stops the run there — it must NOT skip just
+// that slug and continue to the next (unlike track's discovery loop): a
+// later slug that would sort after the cancelled one must never even be
+// offered a prompt.
+func TestRunMigrateCancelStopsRunWithoutSkippingAhead(t *testing.T) {
+	home := t.TempDir()
+	slugs := []string{"-Users-u-dev-alpha", "-Users-u-dev-beta", "-Users-u-dev-gamma"}
+	for _, slug := range slugs {
+		legacyDir := filepath.Join(legacyRoot(home), slug)
+		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(legacyDir, "MEMORY.md"), []byte("# "+slug), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fp := &fakeProvider{name: "claude", scope: provider.ScopePerProject, identity: provider.Identity{ProjectID: "github.com/u/alpha", PreferredFolder: "alpha"}}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRequests := startFakeDaemonForMigrate(t, func(api.MigrateRequest) api.MigrateResponse {
+		return api.MigrateResponse{Folder: "alpha", Files: 1}
+	})
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deps := trackDeps{paths: config.Paths{DataDir: t.TempDir()}, registry: registry, home: home}
+	var confirmCalls int
+	callbacks := migrateCallbacks{
+		confirmProjectPath: func(guess string) (string, error) {
+			confirmCalls++
+			switch confirmCalls {
+			case 1:
+				return guess, nil // alpha: succeeds
+			case 2:
+				return "", huh.ErrUserAborted // beta: cancelled
+			default:
+				t.Fatal("confirmProjectPath called a third time; the run must stop at the cancelled slug, not skip ahead to gamma")
+				return "", nil
+			}
+		},
+		nameRemotelessFolder: func(hint string) (string, error) { return hint, nil },
+	}
+	var out bytes.Buffer
+	if err := runMigrate(context.Background(), deps, client, callbacks, &out); err != nil {
+		t.Fatalf("runMigrate: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "migrate: cancelled at -Users-u-dev-beta") {
+		t.Fatalf("output missing the cancel message naming the slug it stopped at: %s", out.String())
+	}
+	if strings.Contains(out.String(), "retirement checklist") {
+		t.Fatal("a cancelled (incomplete) run must not print the full-completion retirement message")
+	}
+	requests := getRequests()
+	if len(requests) != 1 || requests[0].Slug != "-Users-u-dev-alpha" {
+		t.Fatalf("MigrateRequests = %+v, want exactly one, for alpha (beta cancelled, gamma never reached)", requests)
+	}
+}
+
+// TestRunMigrateCancelOnFirstSlugSkipsSyncAndNothingToMigrateMessage proves
+// two adjacent messages never both fire: a cancel is not "nothing to
+// migrate" (that phrasing is reserved for the all-droppings case), and with
+// nothing yet migrated there is nothing worth an explicit sync for.
+func TestRunMigrateCancelOnFirstSlugSkipsSyncAndNothingToMigrateMessage(t *testing.T) {
+	home := t.TempDir()
+	slug := "-Users-u-dev-alpha"
+	legacyDir := filepath.Join(legacyRoot(home), slug)
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "MEMORY.md"), []byte("# alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := &fakeProvider{name: "claude", scope: provider.ScopePerProject}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startFakeDaemonForMigrate(t, func(api.MigrateRequest) api.MigrateResponse {
+		t.Fatal("daemon Migrate must not be called when the only slug was cancelled")
+		return api.MigrateResponse{}
+	})
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deps := trackDeps{paths: config.Paths{DataDir: t.TempDir()}, registry: registry, home: home}
+	callbacks := migrateCallbacks{
+		confirmProjectPath: func(string) (string, error) { return "", huh.ErrUserAborted },
+		nameRemotelessFolder: func(string) (string, error) {
+			t.Fatal("nameRemotelessFolder must not be called after confirmProjectPath was cancelled")
+			return "", nil
+		},
+	}
+	var out bytes.Buffer
+	if err := runMigrate(context.Background(), deps, client, callbacks, &out); err != nil {
+		t.Fatalf("runMigrate: %v", err)
+	}
+	if !strings.Contains(out.String(), "migrate: cancelled at -Users-u-dev-alpha") {
+		t.Fatalf("output missing cancel message: %s", out.String())
+	}
+	if strings.Contains(out.String(), "nothing to migrate") {
+		t.Fatal(`a cancelled run must not also claim "nothing to migrate" — that message is reserved for the all-droppings case`)
+	}
+	if strings.Contains(out.String(), "sync completed") {
+		t.Fatal("a cancel with nothing migrated yet must not trigger a sync")
 	}
 }
 

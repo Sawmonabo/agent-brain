@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"charm.land/huh/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -136,6 +139,64 @@ func TestRunTrackDiscoverAllModeSkipsRemotelessWithWarning(t *testing.T) {
 	}
 }
 
+// TestRunTrackDiscoverCancelMidLoopSkipsThatUnitAndContinues pins the loop's
+// cancel branch: cancelling one candidate's confirm-path prompt must skip
+// only that unit (with an honest "cancelled — nothing enrolled" message,
+// never a false "nothing changed" claim) and continue to the next
+// candidate, rather than aborting the whole run.
+func TestRunTrackDiscoverCancelMidLoopSkipsThatUnitAndContinues(t *testing.T) {
+	fp := &fakeProvider{
+		name: "fakeproj", scope: provider.ScopePerProject,
+		discovered: []provider.Discovered{
+			{LocalDir: "/tmp/project-a/.claude/memory", Label: "project-a", PathGuess: "/tmp/project-a"},
+			{LocalDir: "/tmp/project-b/.claude/memory", Label: "project-b", PathGuess: "/tmp/project-b"},
+		},
+		identity: provider.Identity{ProjectID: "github.com/u/project-b", PreferredFolder: "project-b"},
+	}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRequests := startFakeDaemonForEnrollment(t, func(api.TrackRequest) string { return "project-b" })
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deps := trackDeps{paths: config.Paths{DataDir: t.TempDir()}, registry: registry, home: t.TempDir()}
+	callbacks := enrollCallbacks{
+		pickEnrollUnits: func(candidates []enrollCandidate) ([]int, error) {
+			indices := make([]int, len(candidates))
+			for i := range candidates {
+				indices[i] = i
+			}
+			return indices, nil
+		},
+		confirmProjectPath: func(guess string) (string, error) {
+			if guess == "/tmp/project-a" {
+				return "", huh.ErrUserAborted
+			}
+			return guess, nil
+		},
+		nameRemotelessFolder: func(hint string) (string, error) { return hint, nil },
+	}
+	var out bytes.Buffer
+	enrolledAny, err := runTrackDiscover(context.Background(), deps, client, callbacks, &out)
+	if err != nil {
+		t.Fatalf("runTrackDiscover: %v", err)
+	}
+	if !enrolledAny {
+		t.Fatal("enrolledAny = false, want true (project-b still enrolled after project-a was cancelled)")
+	}
+	if !strings.Contains(out.String(), "enroll: cancelled — nothing enrolled for /tmp/project-a/.claude/memory") {
+		t.Fatalf("output missing project-a cancellation message: %s", out.String())
+	}
+	requests := getRequests()
+	if len(requests) != 1 || requests[0].ProjectID != "github.com/u/project-b" {
+		t.Fatalf("TrackRequests = %+v, want exactly one for project-b", requests)
+	}
+}
+
 // --- resolveTrackPath / runTrackPath ---
 
 func TestResolveTrackPathMatchesPathGuess(t *testing.T) {
@@ -230,6 +291,41 @@ func TestRunTrackPathResolvesAndEnrollsViaPathGuess(t *testing.T) {
 	requests := getRequests()
 	if len(requests) != 1 || requests[0].ProjectID != "github.com/u/project-a" {
 		t.Fatalf("TrackRequests = %+v", requests)
+	}
+}
+
+// TestRunTrackPathCancelledEnrollsNothing pins the single-path cancel
+// branch: cancelling the confirm-path prompt must report the same honest
+// "cancelled — nothing enrolled" message the discovery loop uses, return no
+// error, and never reach nameRemotelessFolder or the daemon.
+func TestRunTrackPathCancelledEnrollsNothing(t *testing.T) {
+	t.Parallel()
+	fp := &fakeProvider{
+		name: "fakeproj", scope: provider.ScopePerProject,
+		discovered: []provider.Discovered{{LocalDir: "/tmp/project-a/.claude/memory", Label: "project-a", PathGuess: "/tmp/project-a"}},
+	}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := trackDeps{paths: config.Paths{DataDir: t.TempDir()}, registry: registry, home: t.TempDir()}
+	callbacks := enrollCallbacks{
+		confirmProjectPath: func(string) (string, error) { return "", huh.ErrUserAborted },
+		nameRemotelessFolder: func(string) (string, error) {
+			t.Fatal("nameRemotelessFolder must not be called after confirmProjectPath was cancelled")
+			return "", nil
+		},
+	}
+	var out bytes.Buffer
+	enrolledAny, err := runTrackPath(context.Background(), deps, nil, callbacks, &out, "/tmp/project-a")
+	if err != nil {
+		t.Fatalf("runTrackPath: %v", err)
+	}
+	if enrolledAny {
+		t.Fatal("enrolledAny = true, want false (cancelled)")
+	}
+	if !strings.Contains(out.String(), "enroll: cancelled — nothing enrolled for /tmp/project-a/.claude/memory") {
+		t.Fatalf("output: %s", out.String())
 	}
 }
 
@@ -558,6 +654,40 @@ func TestRunUntrackPurgeWithoutYesRequiresConfirmation(t *testing.T) {
 				}
 			} else if len(requests) != 0 {
 				t.Fatalf("UntrackRequests = %+v, want none (declined confirmation)", requests)
+			}
+		})
+	}
+}
+
+// TestPurgeConfirmationResult pins confirmPurgeInteractive's decision table
+// without driving a real huh form: a cancel must win even over an exact
+// typed match (proving the check happens before typed is trusted), a
+// mismatched or empty typed value must decline, and any other error must
+// propagate.
+func TestPurgeConfirmationResult(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		typed   string
+		folder  string
+		err     error
+		want    bool
+		wantErr error
+	}{
+		{name: "cancelled beats an exact match", typed: "alpha", folder: "alpha", err: huh.ErrUserAborted, want: false, wantErr: nil},
+		{name: "exact match confirms", typed: "alpha", folder: "alpha", err: nil, want: true, wantErr: nil},
+		{name: "mismatch declines", typed: "wrong", folder: "alpha", err: nil, want: false, wantErr: nil},
+		{name: "non-cancel error propagates", typed: "alpha", folder: "alpha", err: errors.New("boom"), want: false, wantErr: errors.New("boom")},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got, gotErr := purgeConfirmationResult(testCase.typed, testCase.folder, testCase.err)
+			if got != testCase.want {
+				t.Errorf("confirmed = %v, want %v", got, testCase.want)
+			}
+			if (gotErr == nil) != (testCase.wantErr == nil) || (gotErr != nil && gotErr.Error() != testCase.wantErr.Error()) {
+				t.Errorf("err = %v, want %v", gotErr, testCase.wantErr)
 			}
 		})
 	}

@@ -142,6 +142,12 @@ func runTrackDiscover(ctx context.Context, deps trackDeps, client *api.Client, c
 				}
 				continue
 			}
+			if formCancelled(err) {
+				if _, err := fmt.Fprintf(out, "enroll: cancelled — nothing enrolled for %s\n", discovered.LocalDir); err != nil {
+					return enrolledAny, err
+				}
+				continue
+			}
 			if err != nil {
 				return enrolledAny, err
 			}
@@ -179,6 +185,10 @@ func runTrackPath(ctx context.Context, deps trackDeps, client *api.Client, callb
 	err = enrollOne(ctx, target, client, p, discovered)
 	if errors.Is(err, errSkipRemoteless) {
 		_, err := fmt.Fprintf(out, "track: skipped %s (remoteless; needs a folder name — re-run interactively)\n", discovered.LocalDir)
+		return false, err
+	}
+	if formCancelled(err) {
+		_, err := fmt.Fprintf(out, "enroll: cancelled — nothing enrolled for %s\n", discovered.LocalDir)
 		return false, err
 	}
 	if err != nil {
@@ -402,14 +412,36 @@ func formatUnitCandidates(units []api.UnitInfo) string {
 
 // confirmPurgeInteractive requires typing the folder name back exactly —
 // a purge deletes the repo folder, so confirmation should name the
-// specific thing being removed, not just answer yes/no.
+// specific thing being removed, not just answer yes/no. A cancel is
+// folded into the same "not confirmed" outcome the typed-mismatch case
+// already produces: runUntrack's existing message for it ("purge not
+// confirmed — aborted, the enrollment itself was NOT removed") is already
+// honest and specific, so a cancel needs no new copy of its own.
 func confirmPurgeInteractive(folder string, accessible bool) (bool, error) {
 	var typed string
-	err := huh.NewForm(huh.NewGroup(
+	err := buildPurgeConfirmForm(folder, accessible, &typed).Run()
+	return purgeConfirmationResult(typed, folder, err)
+}
+
+// buildPurgeConfirmForm is confirmPurgeInteractive's form construction,
+// split out so a test can render it (Init/View) without ever running it —
+// the render is the only way to pin that the cancel hint actually appears
+// in the real production form, not a hand-built replica of it.
+func buildPurgeConfirmForm(folder string, accessible bool, typed *string) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
 		huh.NewInput().
-			Title(fmt.Sprintf("Type %q to confirm purging this folder from the repo (history retains it)", folder)).
-			Value(&typed),
-	)).WithAccessible(accessible).Run()
+			Title(titleWithCancelHint(fmt.Sprintf("Type %q to confirm purging this folder from the repo (history retains it)", folder), accessible)).
+			Value(typed),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// purgeConfirmationResult turns confirmPurgeInteractive's form outcome into
+// its return, split out so the cancel branch is testable without driving a
+// real huh form.
+func purgeConfirmationResult(typed, folder string, err error) (bool, error) {
+	if formCancelled(err) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

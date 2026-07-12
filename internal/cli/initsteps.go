@@ -581,6 +581,12 @@ func stepEnrollment(ctx context.Context, state *initState) error {
 				}
 				continue
 			}
+			if formCancelled(err) {
+				if _, err := fmt.Fprintf(state.out, "enroll: cancelled — nothing enrolled for %s\n", discovered.LocalDir); err != nil {
+					return err
+				}
+				continue
+			}
 			if err != nil {
 				return err
 			}

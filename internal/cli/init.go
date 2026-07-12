@@ -109,8 +109,26 @@ func runInit(ctx context.Context, state *initState, accessible bool) error {
 		stepEnrollment,
 		stepFirstSync,
 	}
+	return runInitSteps(ctx, state, steps)
+}
+
+// errInitCancelled signals that one of init's two huh-only decision points
+// was cancelled, its explanatory message already printed. It never reaches
+// a caller of runInit: runInitSteps stops at it but reports success,
+// exactly like update.go's own cancel precedent — a form the user backed
+// out of is a deliberate no-op, not a command failure.
+var errInitCancelled = errors.New("init: cancelled")
+
+// runInitSteps runs each step in order, stopping early — but reporting
+// success — at errInitCancelled. Split from runInit so the stop-early
+// behavior is testable against a fake step list, without driving a real
+// huh form to produce the sentinel.
+func runInitSteps(ctx context.Context, state *initState, steps []func(context.Context, *initState) error) error {
 	for _, step := range steps {
 		if err := step(ctx, state); err != nil {
+			if errors.Is(err, errInitCancelled) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -125,6 +143,12 @@ func runInit(ctx context.Context, state *initState, accessible bool) error {
 // skip), or by --non-interactive (stepKeyset's own "pass --generate-key
 // or --import-key" error is the right outcome then, not a silent guess
 // at which one the user meant).
+//
+// Both forms here run after only stepIdentity and stepGH — gh is
+// authenticated, but nothing persistent (keyset, repo, service) exists yet
+// — so a cancel at either one can honestly say exactly that much has
+// happened, via the shared errInitCancelled sentinel that stops runInit's
+// remaining steps without failing the command.
 func resolveKeysetDecision(state *initState, accessible bool) error {
 	if state.generateKey || state.importKey {
 		return nil
@@ -139,15 +163,11 @@ func resolveKeysetDecision(state *initState, accessible bool) error {
 	}
 
 	var choice string
-	if err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("No keyset yet. Is this the first machine (generate a new keyset) or are you joining one that already has agent-brain set up (import its keyset)?").
-			Options(
-				huh.NewOption("Generate a new keyset (first machine)", "generate"),
-				huh.NewOption("Import an existing keyset (joining a machine)", "import"),
-			).
-			Value(&choice),
-	)).WithAccessible(accessible).Run(); err != nil {
+	err := buildKeysetSourceForm(accessible, &choice).Run()
+	if formCancelled(err) {
+		return reportInitCancelledBeforeKeyset(state)
+	}
+	if err != nil {
 		return err
 	}
 	if choice == "generate" {
@@ -156,16 +176,56 @@ func resolveKeysetDecision(state *initState, accessible bool) error {
 	}
 
 	var armored string
-	if err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Paste the armored keyset (from `agent-brain key export` on the other machine)").
-			Value(&armored),
-	)).WithAccessible(accessible).Run(); err != nil {
+	err = buildKeysetImportForm(accessible, &armored).Run()
+	if formCancelled(err) {
+		return reportInitCancelledBeforeKeyset(state)
+	}
+	if err != nil {
 		return err
 	}
 	state.importKey = true
 	state.importArmored = strings.TrimSpace(armored)
 	return nil
+}
+
+// buildKeysetSourceForm is resolveKeysetDecision's first form, split out so
+// a test can render it (Init/View) without ever running it — the render is
+// the only way to pin that the cancel hint actually appears in the real
+// production form, not a hand-built replica of it.
+func buildKeysetSourceForm(accessible bool, choice *string) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(titleWithCancelHint("No keyset yet. Is this the first machine (generate a new keyset) or are you joining one that already has agent-brain set up (import its keyset)?", accessible)).
+			Options(
+				huh.NewOption("Generate a new keyset (first machine)", "generate"),
+				huh.NewOption("Import an existing keyset (joining a machine)", "import"),
+			).
+			Value(choice),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// buildKeysetImportForm is resolveKeysetDecision's second form (only ever
+// run when buildKeysetSourceForm resolved to "import"), split out for the
+// same render-without-running reason as buildKeysetSourceForm above.
+func buildKeysetImportForm(accessible bool, armored *string) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title(titleWithCancelHint("Paste the armored keyset (from `agent-brain key export` on the other machine)", accessible)).
+			Value(armored),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// reportInitCancelledBeforeKeyset prints resolveKeysetDecision's cancel
+// message and returns the sentinel that stops runInit cleanly. state.login
+// is already set by stepGH, which always runs before either of this
+// function's two forms.
+func reportInitCancelledBeforeKeyset(state *initState) error {
+	if _, err := fmt.Fprintf(state.out,
+		"init: cancelled — gh is authenticated as %s but no keyset, repo, or service was set up yet; re-run `agent-brain init` to resume\n",
+		state.login); err != nil {
+		return err
+	}
+	return errInitCancelled
 }
 
 // confirmKeysetStored is the interactive half of spec §5's recovery
@@ -182,11 +242,40 @@ func confirmKeysetStored(state *initState, accessible bool) error {
 		return nil
 	}
 	var confirmed bool
-	if err := huh.NewForm(huh.NewGroup(
+	err := buildKeysetStoredConfirmForm(accessible, &confirmed).Run()
+	return keysetStoredFormResult(state, confirmed, err)
+}
+
+// buildKeysetStoredConfirmForm is confirmKeysetStored's form construction,
+// split out for the same render-without-running reason as
+// buildKeysetSourceForm above.
+func buildKeysetStoredConfirmForm(accessible bool, confirmed *bool) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
-			Title("I have stored the keyset in my password manager").
-			Value(&confirmed),
-	)).WithAccessible(accessible).Run(); err != nil {
+			Title(titleWithCancelHint("I have stored the keyset in my password manager", accessible)).
+			Value(confirmed),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// keysetStoredFormResult turns confirmKeysetStored's form outcome into its
+// return, split out so both branches are testable without driving a real
+// huh form. formCancelled is checked before confirmed is trusted: Confirm's
+// Update writes its bound value through on every toggle, not just at
+// submission, so a cancelled form can still leave confirmed set to true.
+// The cancel message differs from resolveKeysetDecision's — by this point
+// the keyset itself already exists on disk — and a plain decline
+// (confirmed == false, no error) is untouched: an existing, legitimately
+// hard error unrelated to cancellation.
+func keysetStoredFormResult(state *initState, confirmed bool, err error) error {
+	if formCancelled(err) {
+		if _, printErr := fmt.Fprintln(state.out,
+			"init: cancelled — the keyset was generated and is already on disk; "+
+				"save it (`agent-brain key export` prints it again), then re-run `agent-brain init` to resume"); printErr != nil {
+			return printErr
+		}
+		return errInitCancelled
+	}
+	if err != nil {
 		return err
 	}
 	if !confirmed {

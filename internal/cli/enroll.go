@@ -228,64 +228,121 @@ func wireEnrollmentCallbacks(state *initState, accessible bool) {
 	state.nameRemotelessFolder = callbacks.nameRemotelessFolder
 }
 
-// pickEnrollUnitsInteractive renders the huh MultiSelect[int] picker over
+// buildEnrollPickerForm renders the huh MultiSelect[int] picker over
 // candidate INDICES, not enrollCandidate values directly — huh's type
 // parameter must be comparable, and enrollCandidate embeds a
 // provider.Provider interface plus a []provider.Discovered slice, so it
 // isn't. Options are pre-labeled by buildEnrollCandidates (<provider>
 // <Label>  -> <PathGuess>, or the grouped global-scope form).
-func pickEnrollUnitsInteractive(candidates []enrollCandidate, accessible bool) ([]int, error) {
+//
+// Filterable(false): huh's MultiSelect defaults to filterable, which binds
+// "/" to enter a live filter and esc to leave it — the same esc
+// cancellableKeyMap now also binds to abort the whole form. Form-level Quit
+// is matched before the field ever sees the keypress, so a filtering user's
+// esc would silently cancel the picker (and any selections already made)
+// instead of just clearing the filter. Turning filtering off removes the
+// ambiguity outright rather than leaving a trap for a list that is
+// typically a handful of discovered roots anyway.
+//
+// Split from pickEnrollUnitsInteractive so a test can render this form
+// (Init/View) without ever running it — the render is the only way to pin
+// that the cancel hint actually appears in the real production form, not a
+// hand-built replica of it.
+func buildEnrollPickerForm(candidates []enrollCandidate, accessible bool, chosen *[]int) *huh.Form {
 	options := make([]huh.Option[int], len(candidates))
 	for i, candidate := range candidates {
 		options[i] = huh.NewOption(candidate.label, i)
 	}
-	var chosen []int
-	err := huh.NewForm(huh.NewGroup(
+	return huh.NewForm(huh.NewGroup(
 		huh.NewMultiSelect[int]().
-			Title("Select memory roots to enroll (space to toggle, enter to confirm)").
+			Title(titleWithCancelHint("Select memory roots to enroll (space to toggle, enter to confirm)", accessible)).
+			Filterable(false).
 			Options(options...).
-			Value(&chosen),
-	)).WithAccessible(accessible).Run()
+			Value(chosen),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// pickEnrollUnitsInteractive runs buildEnrollPickerForm and routes its
+// outcome through enrollPickerResult.
+func pickEnrollUnitsInteractive(candidates []enrollCandidate, accessible bool) ([]int, error) {
+	var chosen []int
+	err := buildEnrollPickerForm(candidates, accessible, &chosen).Run()
+	return enrollPickerResult(chosen, err)
+}
+
+// enrollPickerResult decides pickEnrollUnitsInteractive's return from the
+// form's outcome, split out so the cancel branch is testable without
+// driving a real huh form. A cancelled picker enrolls nothing — exactly
+// the outcome of an explicit empty selection, which stepEnrollment and
+// runTrackDiscover already report correctly ("nothing selected") — so
+// routing it through the same nil/nil path needs no cancel-specific
+// handling at either caller.
+func enrollPickerResult(chosen []int, err error) ([]int, error) {
+	if formCancelled(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	return chosen, nil
 }
 
-// confirmProjectPathInteractive prefills the field with the adapter's
+// buildConfirmProjectPathForm prefills the field with the adapter's
 // PathGuess (a slug reversal, which is lossy — hence the confirmation) or,
 // for track's path-argument flow, the exact path already given on the
 // command line, so the common case is just pressing enter, but lets the
-// user correct it before Identify reads the project's git remote.
+// user correct it before Identify reads the project's git remote. path is
+// the caller's prefill — the caller seeds it into *path before passing the
+// pointer in.
+//
+// Split from confirmProjectPathInteractive so a test can render this form
+// (Init/View) without ever running it — the render is the only way to pin
+// that the cancel hint actually appears in the real production form, not a
+// hand-built replica of it.
+func buildConfirmProjectPathForm(accessible bool, path *string) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title(titleWithCancelHint("Confirm this project's path", accessible)).
+			Value(path),
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// confirmProjectPathInteractive runs buildConfirmProjectPathForm and
+// returns the confirmed (or corrected) path.
 func confirmProjectPathInteractive(guess string, accessible bool) (string, error) {
 	path := guess
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Confirm this project's path").
-			Value(&path),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
+	if err := buildConfirmProjectPathForm(accessible, &path).Run(); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
-// nameRemotelessFolderInteractive asks for a folder name for a project
+// buildNameRemotelessFolderForm asks for a folder name for a project
 // Identify could not derive a canonical id for (no git remote). Validated
 // live against repo.ValidateFolderName so a bad name is caught here, not
 // as a wire error surfaced much later from the daemon's own identical
 // check.
-func nameRemotelessFolderInteractive(hint string, accessible bool) (string, error) {
-	name := hint
-	err := huh.NewForm(huh.NewGroup(
+//
+// Split from nameRemotelessFolderInteractive so a test can render this
+// form (Init/View) without ever running it — the render is the only way
+// to pin that the cancel hint actually appears in the real production
+// form, not a hand-built replica of it.
+func buildNameRemotelessFolderForm(accessible bool, name *string) *huh.Form {
+	return huh.NewForm(huh.NewGroup(
 		huh.NewInput().
-			Title("This project has no git remote — choose a folder name for it").
-			Value(&name).
+			Title(titleWithCancelHint("This project has no git remote — choose a folder name for it", accessible)).
+			Value(name).
 			Validate(func(s string) error {
 				return repo.ValidateFolderName(strings.TrimSpace(s))
 			}),
-	)).WithAccessible(accessible).Run()
-	if err != nil {
+	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
+}
+
+// nameRemotelessFolderInteractive runs buildNameRemotelessFolderForm and
+// returns the trimmed folder name.
+func nameRemotelessFolderInteractive(hint string, accessible bool) (string, error) {
+	name := hint
+	if err := buildNameRemotelessFolderForm(accessible, &name).Run(); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(name), nil

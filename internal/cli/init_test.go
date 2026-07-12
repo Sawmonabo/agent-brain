@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/huh/v2"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/config"
@@ -303,6 +305,142 @@ func TestStepKeysetInvalidExistingKeysetErrors(t *testing.T) {
 
 	if err := stepKeyset(context.Background(), state); err == nil {
 		t.Fatal("stepKeyset accepted a corrupt existing keyset")
+	}
+}
+
+// TestReportInitCancelledBeforeKeysetPrintsLoginAndReturnsSentinel pins
+// resolveKeysetDecision's cancel message without driving a real huh form:
+// it must name the already-authenticated gh login (stepGH always runs
+// before either of resolveKeysetDecision's forms) and return the sentinel
+// runInitSteps stops at.
+func TestReportInitCancelledBeforeKeysetPrintsLoginAndReturnsSentinel(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	state := &initState{out: &out, login: "alice"}
+	err := reportInitCancelledBeforeKeyset(state)
+	if !errors.Is(err, errInitCancelled) {
+		t.Fatalf("err = %v, want errInitCancelled", err)
+	}
+	if !strings.Contains(out.String(), "alice") {
+		t.Fatalf("output missing the authenticated login: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "agent-brain init") {
+		t.Fatalf("output missing the resume instruction: %s", out.String())
+	}
+}
+
+// TestKeysetStoredFormResult pins confirmKeysetStored's decision table
+// without driving a real huh form: a cancel must win even over a stale
+// confirmed=true (Confirm's Update writes its bound value through on every
+// toggle, not just at submission), a plain decline is untouched as a
+// legitimately hard error, and any other error propagates as-is.
+func TestKeysetStoredFormResult(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		confirmed       bool
+		err             error
+		wantErrIs       error
+		wantErrContains string
+		wantOutContains string
+	}{
+		{
+			name:            "cancelled wins even over a stale confirmed=true",
+			confirmed:       true,
+			err:             huh.ErrUserAborted,
+			wantErrIs:       errInitCancelled,
+			wantOutContains: "already on disk",
+		},
+		{
+			name:      "confirmed proceeds",
+			confirmed: true,
+			err:       nil,
+		},
+		{
+			name:            "declined is a hard error naming the recovery path",
+			confirmed:       false,
+			err:             nil,
+			wantErrContains: "not confirmed stored",
+		},
+		{
+			name:            "unrelated error propagates as-is",
+			confirmed:       false,
+			err:             errors.New("boom"),
+			wantErrContains: "boom",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			state := &initState{out: &out}
+			err := keysetStoredFormResult(state, testCase.confirmed, testCase.err)
+			switch {
+			case testCase.wantErrIs != nil:
+				if !errors.Is(err, testCase.wantErrIs) {
+					t.Errorf("err = %v, want errors.Is match for %v", err, testCase.wantErrIs)
+				}
+			case testCase.wantErrContains != "":
+				if err == nil || !strings.Contains(err.Error(), testCase.wantErrContains) {
+					t.Errorf("err = %v, want containing %q", err, testCase.wantErrContains)
+				}
+			default:
+				if err != nil {
+					t.Errorf("err = %v, want nil", err)
+				}
+			}
+			if testCase.wantOutContains != "" && !strings.Contains(out.String(), testCase.wantOutContains) {
+				t.Errorf("output = %q, want containing %q", out.String(), testCase.wantOutContains)
+			}
+		})
+	}
+}
+
+// TestRunInitStepsStopsAtCancelSentinelButReportsSuccess pins runInitSteps'
+// stop-early behavior against a fake step list — no huh form needs to
+// produce errInitCancelled for real. A cancel partway through must run no
+// further steps yet still report success, exactly like update.go's own
+// cancel precedent.
+func TestRunInitStepsStopsAtCancelSentinelButReportsSuccess(t *testing.T) {
+	t.Parallel()
+	var ran []string
+	steps := []func(context.Context, *initState) error{
+		func(context.Context, *initState) error { ran = append(ran, "first"); return nil },
+		func(context.Context, *initState) error { ran = append(ran, "cancelled"); return errInitCancelled },
+		func(context.Context, *initState) error {
+			t.Fatal("a step after errInitCancelled must never run")
+			return nil
+		},
+	}
+	if err := runInitSteps(context.Background(), &initState{}, steps); err != nil {
+		t.Fatalf("runInitSteps = %v, want nil (a cancel is a clean stop, not a failure)", err)
+	}
+	if diff := cmp.Diff([]string{"first", "cancelled"}, ran); diff != "" {
+		t.Errorf("steps actually run (-want +got):\n%s", diff)
+	}
+}
+
+// TestRunInitStepsPropagatesAGenuineError proves runInitSteps only ever
+// swallows errInitCancelled specifically — any other step failure still
+// stops the run and surfaces as a real error.
+func TestRunInitStepsPropagatesAGenuineError(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("boom")
+	var ran []string
+	steps := []func(context.Context, *initState) error{
+		func(context.Context, *initState) error { ran = append(ran, "first"); return nil },
+		func(context.Context, *initState) error { ran = append(ran, "failing"); return boom },
+		func(context.Context, *initState) error {
+			t.Fatal("a step after a genuine failure must never run")
+			return nil
+		},
+	}
+	err := runInitSteps(context.Background(), &initState{}, steps)
+	if !errors.Is(err, boom) {
+		t.Fatalf("runInitSteps = %v, want errors.Is match for boom", err)
+	}
+	if diff := cmp.Diff([]string{"first", "failing"}, ran); diff != "" {
+		t.Errorf("steps actually run (-want +got):\n%s", diff)
 	}
 }
 
@@ -1261,6 +1399,61 @@ func TestStepEnrollmentTracksChosenPerProjectCandidate(t *testing.T) {
 	want := api.TrackRequest{Provider: "fakeproj", ProjectID: "github.com/alice/project-a", PreferredFolder: "project-a", LocalDir: "/tmp/project-a/.claude/memory"}
 	if diff := cmp.Diff(want, requests[0]); diff != "" {
 		t.Fatalf("TrackRequest (-want +got):\n%s", diff)
+	}
+}
+
+// TestStepEnrollmentCancelMidLoopSkipsThatUnitAndContinues mirrors
+// runTrackDiscover's own cancel-mid-loop coverage (track.go shares this
+// exact loop shape with stepEnrollment): cancelling one candidate's
+// confirm-path prompt must skip only that candidate, with an honest
+// "cancelled — nothing enrolled" message, and continue enrolling the rest.
+func TestStepEnrollmentCancelMidLoopSkipsThatUnitAndContinues(t *testing.T) {
+	fp := &fakeProvider{
+		name: "fakeproj", scope: provider.ScopePerProject,
+		discovered: []provider.Discovered{
+			{LocalDir: "/tmp/project-a/.claude/memory", Label: "project-a", PathGuess: "/tmp/project-a"},
+			{LocalDir: "/tmp/project-b/.claude/memory", Label: "project-b", PathGuess: "/tmp/project-b"},
+		},
+		identity: provider.Identity{ProjectID: "github.com/u/project-b", PreferredFolder: "project-b"},
+	}
+	registry, err := provider.NewRegistry(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getRequests := startFakeDaemonForEnrollment(t, func(api.TrackRequest) string { return "project-b" })
+
+	var out bytes.Buffer
+	state := &initState{
+		out:      &out,
+		paths:    config.Paths{DataDir: t.TempDir()},
+		registry: registry,
+		pickEnrollUnits: func(candidates []enrollCandidate) ([]int, error) {
+			indices := make([]int, len(candidates))
+			for i := range candidates {
+				indices[i] = i
+			}
+			return indices, nil
+		},
+		confirmProjectPath: func(guess string) (string, error) {
+			if guess == "/tmp/project-a" {
+				return "", huh.ErrUserAborted
+			}
+			return guess, nil
+		},
+		nameRemotelessFolder: func(hint string) (string, error) { return hint, nil },
+	}
+	if err := stepEnrollment(context.Background(), state); err != nil {
+		t.Fatalf("stepEnrollment: %v", err)
+	}
+	if !state.enrolledAny {
+		t.Fatal("enrolledAny = false, want true (project-b still enrolled after project-a was cancelled)")
+	}
+	if !strings.Contains(out.String(), "enroll: cancelled — nothing enrolled for /tmp/project-a/.claude/memory") {
+		t.Fatalf("output missing project-a cancellation message: %s", out.String())
+	}
+	requests := getRequests()
+	if len(requests) != 1 || requests[0].ProjectID != "github.com/u/project-b" {
+		t.Fatalf("TrackRequests = %+v, want exactly one for project-b", requests)
 	}
 }
 

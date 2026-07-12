@@ -203,8 +203,15 @@ func selectReleaseTag(cmd *cobra.Command, source selfupdate.ReleaseSource) (stri
 		return "", fmt.Errorf("update: %w in %s", selfupdate.ErrNoRelease, productRepo)
 	}
 	tag, err := pickReleaseInteractive(choices)
-	if errors.Is(err, huh.ErrUserAborted) {
-		_, printErr := fmt.Fprintln(cmd.OutOrStdout(), "update: selection cancelled — nothing changed")
+	return releaseSelectionResult(cmd.OutOrStdout(), tag, err)
+}
+
+// releaseSelectionResult turns pickReleaseInteractive's outcome into
+// selectReleaseTag's return, split out so the cancel branch is testable
+// without driving a real huh form.
+func releaseSelectionResult(out io.Writer, tag string, err error) (string, error) {
+	if formCancelled(err) {
+		_, printErr := fmt.Fprintln(out, "update: selection cancelled — nothing changed")
 		return "", printErr
 	}
 	if err != nil {
@@ -258,23 +265,36 @@ func releasePickerCandidates(releases []ghx.ReleaseInfo, currentVersion string) 
 // the chosen tag. Only ever called on an interactive terminal — see
 // selectReleaseTag for why the accessible backend is off-limits.
 func pickReleaseInteractive(choices []releaseChoice) (string, error) {
-	options := make([]huh.Option[string], len(choices))
-	for i, choice := range choices {
-		options[i] = huh.NewOption(choice.label, choice.tag)
-	}
 	var tag string
-	if err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
-			Title("Select the release to install").
-			Options(options...).
-			Value(&tag),
-	)).Run(); err != nil {
+	if err := buildReleasePickerForm(choices, &tag).Run(); err != nil {
 		return "", err
 	}
 	if tag == "" {
 		return "", errors.New("update: no release selected")
 	}
 	return tag, nil
+}
+
+// buildReleasePickerForm is pickReleaseInteractive's form construction,
+// split out so a test can render it (Init/View) without ever running it —
+// the render is the only way to pin that the cancel hint actually appears
+// in the real production form, not a hand-built replica of it.
+//
+// The cancel hint is unconditional here (accessible hardcoded false, not
+// threaded as a parameter): selectReleaseTag already refuses with
+// isAccessible() before this is ever reached, so this form structurally
+// never runs in accessible mode — there is no accessible value to thread.
+func buildReleasePickerForm(choices []releaseChoice, tag *string) *huh.Form {
+	options := make([]huh.Option[string], len(choices))
+	for i, choice := range choices {
+		options[i] = huh.NewOption(choice.label, choice.tag)
+	}
+	return huh.NewForm(huh.NewGroup(
+		huh.NewSelect[string]().
+			Title(titleWithCancelHint("Select the release to install", false)).
+			Options(options...).
+			Value(tag),
+	)).WithKeyMap(cancellableKeyMap())
 }
 
 // runUpdate is the update command's flow: check → report or apply →

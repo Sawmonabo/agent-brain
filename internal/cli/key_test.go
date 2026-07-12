@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/huh/v2"
+
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
 )
@@ -363,6 +365,83 @@ func TestKeyRotateAbortsWithoutTouchingKeyset(t *testing.T) {
 	}
 	if got := reencryptHits(); got != 0 {
 		t.Fatalf("a declined rotate called the daemon %d times; want 0", got)
+	}
+}
+
+// TestKeyRotateCancelledLeavesKeysetAndRepoUnchanged pins the cancel branch
+// distinctly from the decline branch: cancelling the confirmation must
+// print the cancel-specific message the brief requires ("keyset and repo
+// unchanged" — true here, since the confirm gates the operation before
+// anything is touched), not the generic "not confirmed — aborted" copy a
+// plain decline gets, and must change nothing and never call the daemon.
+func TestKeyRotateCancelledLeavesKeysetAndRepoUnchanged(t *testing.T) {
+	reencryptHits := startFakeDaemonForRotate(t, api.ReencryptResponse{})
+	configDir := t.TempDir()
+	keysetPath := filepath.Join(configDir, "keyset.json")
+	if err := keys.Generate(keysetPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(keysetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := newAPIClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	cancelled := func() (bool, error) { return false, huh.ErrUserAborted }
+	if err := runKeyRotate(context.Background(), client, keysetPath, &out, &errOut, false, cancelled); err != nil {
+		t.Fatalf("runKeyRotate (cancelled): %v", err)
+	}
+	if !strings.Contains(out.String(), "key rotate: cancelled — keyset and repo unchanged") {
+		t.Fatalf("cancelled rotate must print the cancel-specific message; got %q", out.String())
+	}
+	if strings.Contains(out.String(), "not confirmed") {
+		t.Fatalf("cancelled rotate must not also print the decline message; got %q", out.String())
+	}
+	after, err := os.ReadFile(keysetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a cancelled rotate must not modify the keyset")
+	}
+	if got := reencryptHits(); got != 0 {
+		t.Fatalf("a cancelled rotate called the daemon %d times; want 0", got)
+	}
+}
+
+// TestConfirmRotateAccessibleModeNeverShowsCancelHint drives the real
+// accessible path end to end — not just titleWithCancelHint's own unit
+// test — because that is the path where showing the hint would be an
+// active lie: huh.Form.RunWithContext sends an accessible form straight to
+// runAccessible, which calls Confirm.RunAccessible directly, a bufio.Scanner
+// line read (internal/accessibility.PromptBool) with no bubbletea program
+// underneath it and no notion of "keys" at all. Esc reaches that path as
+// inert text, never a cancel. Scripting real stdin/stdout through the exact
+// *huh.Form confirmRotateInteractive builds (buildRotateConfirmForm) means a
+// regression that reintroduces the hint on this path fails here, live,
+// rather than only in the pure function's own isolated unit test.
+func TestConfirmRotateAccessibleModeNeverShowsCancelHint(t *testing.T) {
+	t.Parallel()
+	var confirmed bool
+	form := buildRotateConfirmForm(true, &confirmed)
+	var output bytes.Buffer
+	if err := form.WithInput(strings.NewReader("y\n")).WithOutput(&output).Run(); err != nil {
+		t.Fatalf("accessible Run: %v", err)
+	}
+	if !confirmed {
+		t.Fatal("scripted \"y\" input did not confirm — the accessible prompt was not actually driven")
+	}
+	rendered := stripANSI(output.String())
+	if strings.Contains(rendered, "esc cancel") {
+		t.Fatalf("accessible-mode prompt must never advertise esc cancel — esc is inert on this path, "+
+			"a bare Scanner read, not a bubbletea program: got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Rotate the primary key and re-encrypt the whole repo now?") {
+		t.Fatalf("accessible-mode prompt must still show the real title: got %q", rendered)
 	}
 }
 
