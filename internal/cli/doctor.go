@@ -91,7 +91,7 @@ func newDoctorCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&fix, "fix", false, "apply the idempotent wiring repairs (filters, attributes, credential helper), then re-check")
+	cmd.Flags().BoolVar(&fix, "fix", false, "apply the idempotent wiring repairs (filters, attributes, credential helper, maintenance posture), then re-check")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the report as JSON")
 	cmd.Flags().BoolVar(&offline, "offline", false, "skip the network reachability check")
 	return cmd
