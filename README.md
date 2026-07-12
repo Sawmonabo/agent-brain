@@ -12,6 +12,17 @@ sync engine is the only writer, git filters encrypt content transparently on the
 > holds the retired bash/chezmoi/age v1 system until v2 merges (ADR 11). The public
 > `v2.0.0` release and Homebrew tap activate only after the ADR-13 history scrub.
 
+## Table of contents
+
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Commands](#commands)
+  - [`agent-brain dashboard`](#agent-brain-dashboard)
+- [Security model](#security-model)
+- [Uninstall](#uninstall)
+- [Documentation](#documentation)
+- [License](#license)
+
 ## Install
 
 **Homebrew (once the repo is public):**
@@ -20,7 +31,7 @@ sync engine is the only writer, git filters encrypt content transparently on the
 brew install sawmonabo/tap/agent-brain
 ```
 
-**While the repo is private** (the current posture, as of 2026-07-10 — Homebrew
+**While the repo is private** (the current posture, as of 2026-07-11 — Homebrew
 fetches release assets anonymously, so `brew install` is not yet live):
 
 ```bash
@@ -36,8 +47,9 @@ Once installed, `agent-brain update` keeps the binary current through the same
 authenticated `gh` path — it works against the private repo, verifies the release
 checksums, swaps atomically, and restarts the service (`--prerelease` while only
 release candidates exist; Homebrew installs use `brew upgrade` instead). Naming a
-version pins it exactly — `agent-brain update v2.0.0-rc.1` — including a deliberate,
-warned rollback; `--select` picks from a list on a terminal.
+version pins it exactly — `agent-brain update v2.0.0-rc.2` — including a deliberate,
+warned rollback; `--select` picks from a list on a terminal, `--list` shows what is
+installable.
 
 Per-OS runbooks (macOS, Linux, WSL2) live in [docs/onboarding.md](docs/onboarding.md).
 
@@ -67,14 +79,15 @@ flags):
 | `status` | Show daemon state and the last sync cycle (`--json` for the raw payload) |
 | `projects` | List enrolled projects and their health (`--json`) |
 | `conflicts` | Inspect retain-both conflict blocks (`list`, `show <path>`) |
-| `doctor` | Check (and with `--fix`, repair) this machine's wiring (`--json`, `--offline`) |
+| `doctor` | Check (and with `--fix`, repair) this machine's wiring — filters, attributes, credential helper, maintenance posture (`--json`, `--offline`) |
 | `scan` | Scan enrolled memory for pasted secrets via gitleaks — advisory (`--project`, `--json`, `--reveal-secrets`) |
 | `dashboard` | Live TUI over the running daemon (projects, conflicts, activity, doctor) |
 | `key export` / `key import [--force]` / `key rotate` | Manage the shared Tink keyset (back up, restore, fleet-rotate) |
 | `service install\|uninstall\|start\|stop\|status\|logs` | Install or control the login-started daemon service |
 | `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--prerelease`, `--list [--json]`, `--select`, `--no-restart`) |
-| `migrate` | One-time import of the bash-era `~/.agent-brain` memory tree (spec §10) |
+| `migrate` | One-time import of the bash-era `~/.agent-brain` memory tree (`--yes`, `--skip-preflight`; spec §10) |
 | `daemon run` | Run the sync daemon in the foreground (the service manager invokes this) |
+| `completion <shell>` | Generate the shell autocompletion script (bash, zsh, fish, powershell) |
 
 Read commands offer `--json`; `NO_COLOR` and non-TTY output degrade to plain text.
 
@@ -102,7 +115,10 @@ tab/1–4 switch · ↑/↓ select · s sync · t untrack · a add · q quit
 
 `WATCH` reads `watching`/`failed`/`—`; `LAST CYCLE` reads `ok`/`degraded`/`error`/`—`
 (the whole-cycle `error` a degraded flag alone cannot show). A `LOCAL DIR` column
-appears on terminals ≥120 columns wide. **Activity** adds daemon uptime, any quiesce
+appears on terminals ≥120 columns wide. While a modal owns the keyboard (the untrack
+confirm or the add flow), the footer and the modal's inline hints advertise exactly
+that modal's keys — both render from the same key bindings, so they cannot disagree.
+**Activity** adds daemon uptime, any quiesce
 deadline, the fleet watch-trigger count (the max over units, since triggers are
 fleet-global), and the last cycle's mirror/push summary. **Doctor** renders the
 read-only `--offline` battery with per-check `✓`/`⚠`/`✗`/`i` glyphs. When the daemon
@@ -118,6 +134,13 @@ service.
   refuses to commit plaintext when the filter is selected but missing or broken, and
   the daemon refuses to sync until `doctor` passes. A missing or stale keyset pauses
   that sync and degrades the unit — it never writes plaintext to a git object.
+- **Single-writer integrity.** The daemon's engine is the checkout's only writer, and
+  the checkout pins git's auto-maintenance to run inline, never detached (ADR 19) —
+  installed at `init`, re-pinned every sync cycle, checked by `doctor` — so no
+  background git process ever races the engine. If a machine goes offline, cycles
+  keep capturing locally and queue the push; anything else that breaks a fetch
+  (expired auth, a vanished remote) surfaces as a loud cycle error, never a silent
+  "offline".
 - **The keyset never enters any repo.** One shared Tink keyset lives at
   `~/.config/agent-brain/keyset.json`, mode 0600, gitignored, transferred between
   machines only by `key export` / `key import` over a channel you choose. `key rotate`
