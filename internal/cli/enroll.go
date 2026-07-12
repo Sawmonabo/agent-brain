@@ -253,12 +253,31 @@ func buildEnrollPickerForm(candidates []enrollCandidate, accessible bool, chosen
 	for i, candidate := range candidates {
 		options[i] = huh.NewOption(candidate.label, i)
 	}
+
+	title := titleWithCancelHint("Select memory roots to enroll (space to toggle, enter to confirm)", accessible)
+	titleLines := strings.Count(title, "\n") + 1
 	return huh.NewForm(huh.NewGroup(
 		huh.NewMultiSelect[int]().
-			Title(titleWithCancelHint("Select memory roots to enroll (space to toggle, enter to confirm)", accessible)).
+			Title(title).
 			Filterable(false).
 			Options(options...).
-			Value(chosen),
+			Value(chosen).
+			// Explicit Height, sized as TOTAL FIELD height (options + title), not
+			// just the options count. huh v2.0.3's MultiSelect.updateViewportSize
+			// (field_multiselect.go) has no unset-height branch the way Select's
+			// does (field_select.go: "If no height is set size the viewport to the
+			// number of options"): left unset, it seeds height from an
+			// options-ONLY measurement and then unconditionally subtracts the
+			// rendered title+description height from it, so every title line eats
+			// one option row — with this field's two-line cancel-hint title, a
+			// 2-option list rendered 0 options. Passing the total field height
+			// here restores one visible row per option regardless of title length.
+			// Accepted degradation: at very narrow widths where the title itself
+			// wraps onto more lines than titleLines counted, the viewport loses
+			// that many rows and scrolls instead (huh's ensureCursorVisible keeps
+			// the cursor on-screen) — correct, just not perfect, and simpler than
+			// tracking the title's actual rendered wrap width.
+			Height(len(candidates) + titleLines),
 	)).WithAccessible(accessible).WithKeyMap(cancellableKeyMap())
 }
 
