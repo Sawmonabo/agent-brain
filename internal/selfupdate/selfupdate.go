@@ -43,7 +43,8 @@ var (
 	// self-updating behind brew's back desyncs the Cellar's idea of what
 	// is installed from what actually runs.
 	ErrBrewManaged = errors.New("this binary is managed by Homebrew — run `brew upgrade agent-brain` instead")
-	// ErrNoRelease means no release matched the requested channel.
+	// ErrNoRelease means resolution found no installable release — the repo
+	// publishes none, or the pinned version does not exist.
 	ErrNoRelease = errors.New("no matching release found")
 	// ErrChecksumMismatch means the downloaded archive did not hash to the
 	// value the release's checksums file promises for it.
@@ -67,16 +68,11 @@ type Options struct {
 	// TargetPath is the resolved (symlink-free) path of the binary to
 	// replace.
 	TargetPath string
-	// Prerelease widens the channel to include prerelease tags. Stable
-	// releases still win when they compare higher — semver precedence
-	// puts v2.0.0 above v2.0.0-rc.9.
-	Prerelease bool
 	// RequestedVersion pins the update to one exact release ("2.0.0-rc.1"
-	// or "v2.0.0-rc.1") instead of resolving the newest. Naming a version
-	// is a stronger opt-in than the channel flag, so Prerelease does not
-	// apply — and unlike implicit resolution, an explicitly requested
-	// OLDER release is honored (deliberate rollback), reported through
-	// Decision.Downgrade so the CLI can warn.
+	// or "v2.0.0-rc.1") instead of resolving the newest. Unlike implicit
+	// resolution, an explicitly requested OLDER release is honored
+	// (deliberate rollback), reported through Decision.Downgrade so the CLI
+	// can warn.
 	RequestedVersion string
 	// GOOS and GOARCH select the release asset (runtime values in
 	// production; fixed values in tests).
@@ -86,8 +82,8 @@ type Options struct {
 // Decision is Check's verdict.
 type Decision struct {
 	// Latest is the resolved target release tag ("v2.0.0-rc.2"): the
-	// highest tag on the requested channel, or the pinned tag when
-	// Options.RequestedVersion is set.
+	// highest non-draft tag, or the pinned tag when Options.RequestedVersion
+	// is set.
 	Latest string
 	// UpdateNeeded reports whether installing Latest would change the
 	// running binary. Implicit resolution sets it only for a strictly
@@ -128,8 +124,8 @@ const (
 	sanityKillWaitDelay = 2 * time.Second
 )
 
-// Check resolves the target release — the newest on the requested channel,
-// or exactly Options.RequestedVersion when set — and reports whether
+// Check resolves the target release — the newest non-draft release, or
+// exactly Options.RequestedVersion when set — and reports whether
 // installing it would change the running binary. The dev-build and
 // Homebrew guards run here, before any network call, so `update --check`
 // refuses exactly where `update` would.
@@ -157,9 +153,6 @@ func (u *Updater) Check(ctx context.Context, opts Options) (Decision, error) {
 		if release.IsDraft {
 			continue
 		}
-		if release.IsPrerelease && !opts.Prerelease {
-			continue
-		}
 		if !semver.IsValid(release.TagName) {
 			continue
 		}
@@ -168,22 +161,16 @@ func (u *Updater) Check(ctx context.Context, opts Options) (Decision, error) {
 		}
 	}
 	if latest == "" {
-		hint := ""
-		if !opts.Prerelease {
-			hint = " on the stable channel (pass --prerelease to consider release candidates)"
-		}
-		return Decision{}, fmt.Errorf("%w%s in %s", ErrNoRelease, hint, opts.Repo)
+		return Decision{}, fmt.Errorf("%w in %s", ErrNoRelease, opts.Repo)
 	}
 	return Decision{Latest: latest, UpdateNeeded: semver.Compare(latest, current) > 0}, nil
 }
 
-// resolveRequested pins the decision to an explicitly named release. The
-// channel filter deliberately does not apply — naming a version is a
-// stronger opt-in than --prerelease — and an older release is honored
-// with Downgrade set, because deliberate rollback is exactly why an
-// operator names a version. Drafts stay invisible: they are unpublished
-// by definition. Matching is by semver equality, so "2.1.0" and "v2.1.0"
-// both resolve to the real tag.
+// resolveRequested pins the decision to an explicitly named release. An
+// older release is honored with Downgrade set, because deliberate rollback
+// is exactly why an operator names a version. Drafts stay invisible: they
+// are unpublished by definition. Matching is by semver equality, so
+// "2.1.0" and "v2.1.0" both resolve to the real tag.
 func resolveRequested(current string, opts Options, releases []ghx.ReleaseInfo) (Decision, error) {
 	requested := "v" + strings.TrimPrefix(opts.RequestedVersion, "v")
 	if !semver.IsValid(requested) {

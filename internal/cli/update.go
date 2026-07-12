@@ -41,7 +41,7 @@ type updateEngine interface {
 }
 
 func newUpdateCmd() *cobra.Command {
-	var check, prerelease, noRestart, selectRelease, list, jsonOut bool
+	var check, noRestart, selectRelease, list, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "update [version]",
 		Short: "Update agent-brain to a newer release and restart the service",
@@ -49,13 +49,11 @@ func newUpdateCmd() *cobra.Command {
 			"against the release's checksums file, sanity-runs the new binary, atomically " +
 			"replaces the current one, and restarts the daemon service so it picks the new " +
 			"binary up.\n\n" +
-			"With no arguments the newest release wins: stable channel by default, " +
-			"--prerelease widens it to release candidates, and the resolved version is " +
+			"With no arguments the newest release wins, and the resolved version is " +
 			"never older than the running one. Naming a version (`agent-brain update " +
-			"v2.1.0` or `2.1.0`) pins that exact release instead — the channel flag does " +
-			"not apply, and an explicitly named OLDER release is installed after a " +
-			"downgrade warning (state written by the newer version may not load; run " +
-			"`agent-brain doctor` afterwards).\n\n" +
+			"v2.1.0` or `2.1.0`) pins that exact release instead, and an explicitly " +
+			"named OLDER release is installed after a downgrade warning (state written " +
+			"by the newer version may not load; run `agent-brain doctor` afterwards).\n\n" +
 			"--list prints exactly the releases a version argument accepts (--json for " +
 			"scripts); --select offers the same rows as an interactive picker on a " +
 			"terminal.\n\n" +
@@ -96,7 +94,6 @@ func newUpdateCmd() *cobra.Command {
 				Repo:           productRepo,
 				CurrentVersion: Version,
 				TargetPath:     binaryPath,
-				Prerelease:     prerelease,
 				GOOS:           runtime.GOOS,
 				GOARCH:         runtime.GOARCH,
 			}
@@ -132,19 +129,16 @@ func newUpdateCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&check, "check", false,
 		"only report what would happen; install nothing")
-	cmd.Flags().BoolVar(&prerelease, "prerelease", false,
-		"when resolving the newest release, consider prerelease tags (release candidates) too")
 	cmd.Flags().BoolVar(&noRestart, "no-restart", false,
 		"replace the binary but leave the running daemon service alone (it keeps the old version until restarted)")
 	cmd.Flags().BoolVar(&selectRelease, "select", false,
-		"pick the release from an interactive list (terminal only; both channels shown)")
+		"pick the release from an interactive list (terminal only)")
 	cmd.Flags().BoolVar(&list, "list", false,
-		"list the installable releases (both channels, newest first) and exit")
+		"list the installable releases (newest first) and exit")
 	cmd.Flags().BoolVar(&jsonOut, "json", false,
 		"with --list, emit the releases as JSON")
 	cmd.MarkFlagsMutuallyExclusive("list", "select")
 	cmd.MarkFlagsMutuallyExclusive("list", "check")
-	cmd.MarkFlagsMutuallyExclusive("list", "prerelease")
 	cmd.MarkFlagsMutuallyExclusive("list", "no-restart")
 	return cmd
 }
@@ -230,9 +224,8 @@ type releaseChoice struct {
 }
 
 // releasePickerCandidates orders the picker: non-draft semver releases,
-// newest first, labeled with their channel and a marker on the running
-// version. Both channels always show — a human choosing from a list is a
-// stronger opt-in than --prerelease, which only steers implicit resolution.
+// newest first, each labeled with a prerelease badge where applicable and a
+// marker on the running version.
 func releasePickerCandidates(releases []ghx.ReleaseInfo, currentVersion string) []releaseChoice {
 	current := "v" + currentVersion
 	choices := make([]releaseChoice, 0, len(releases))

@@ -344,11 +344,11 @@ Bare `agent-brain` prints help. Command tree:
   **`key export`** / **`key import [--force]`** / **`key rotate [--yes]`** (fail-closed
   fleet re-encrypt, §5), **`migrate [--skip-preflight | --yes]`** (§10),
   **`daemon run`** (foreground).
-- **`update [version] [--check | --prerelease | --list [--json] | --select |
+- **`update [version] [--check | --list [--json] | --select |
   --no-restart]`** — gh-native self-update (ADR 18): resolve the target
-  release — newest by default (semver max; stable channel, `--prerelease`
-  admits release candidates), an exact pin when a version is named
-  (`update v2.1.0` — the channel flag doesn't apply), or an interactive pick
+  release — the newest release by default (semver max over non-draft tags,
+  rc and stable alike), an exact pin when a version is named
+  (`update v2.1.0`), or an interactive pick
   via `--select` (TTY only) — download archive + checksums through
   authenticated `gh`, verify sha256, sanity-run the new binary, atomically
   swap it over the current executable, then bounce the service and confirm

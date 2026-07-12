@@ -156,8 +156,7 @@ service logs`), and vice versa.
 
 ```bash
 agent-brain update --check              # report whether a newer release exists
-agent-brain update                      # download, verify, swap, restart the service
-agent-brain update --prerelease         # admit release candidates (needed until v2.0.0 tags)
+agent-brain update                      # download, verify, swap, restart the service (newest release, rc or stable)
 agent-brain update --list               # show the installable releases (--json for scripts)
 agent-brain update v2.0.0-rc.2          # pin an exact release (rollback too — warned, then honored)
 agent-brain update --select             # pick from the release list (interactive terminal only)

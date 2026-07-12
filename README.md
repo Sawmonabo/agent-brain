@@ -45,11 +45,10 @@ go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest
 
 Once installed, `agent-brain update` keeps the binary current through the same
 authenticated `gh` path — it works against the private repo, verifies the release
-checksums, swaps atomically, and restarts the service (`--prerelease` while only
-release candidates exist; Homebrew installs use `brew upgrade` instead). Naming a
-version pins it exactly — `agent-brain update v2.0.0-rc.2` — including a deliberate,
-warned rollback; `--select` picks from a list on a terminal, `--list` shows what is
-installable.
+checksums, swaps atomically, and restarts the service (Homebrew installs use
+`brew upgrade` instead). Naming a version pins it exactly — `agent-brain update
+v2.0.0-rc.2` — including a deliberate, warned rollback; `--select` picks from a
+list on a terminal, `--list` shows what is installable.
 
 Per-OS runbooks (macOS, Linux, WSL2) live in [docs/onboarding.md](docs/onboarding.md).
 
@@ -84,7 +83,7 @@ flags):
 | `dashboard` | Live TUI over the running daemon (projects, conflicts, activity, doctor) |
 | `key export` / `key import [--force]` / `key rotate` | Manage the shared Tink keyset (back up, restore, fleet-rotate) |
 | `service install\|uninstall\|start\|stop\|status\|logs` | Install or control the login-started daemon service |
-| `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--prerelease`, `--list [--json]`, `--select`, `--no-restart`) |
+| `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--list [--json]`, `--select`, `--no-restart`) |
 | `migrate` | One-time import of the bash-era `~/.agent-brain` memory tree (`--yes`, `--skip-preflight`; spec §10) |
 | `daemon run` | Run the sync daemon in the foreground (the service manager invokes this) |
 | `completion <shell>` | Generate the shell autocompletion script (bash, zsh, fish, powershell) |

@@ -5,6 +5,10 @@ pinning and a deliberate-rollback posture, and decision 8 (interactive picker,
 TTY-only) was added — the original "rollback is manual by design" consequence
 contradicted the command's own reason to exist.*
 
+*Amended 2026-07-12: decision 2's channel clause is reversed — the `--prerelease`
+flag is retired and bare `update` (and `--check`) resolve the newest release across
+all channels; see the dated amendment in decision 2.*
+
 - **Status:** Accepted
 - **Date:** 2026-07-10
 - **Deciders:** Sawmon (requested the command during the 9.7 soak; design approved in-session)
@@ -67,6 +71,24 @@ are expected to detect and refuse that case.
    may refuse to load under the older binary; the warning names
    `agent-brain doctor` and the post-restart readiness poll surfaces a
    daemon that fails to come back.
+   **Amended 2026-07-12 (reverses this decision's original channel clause):**
+   the channel concept is retired. Bare `update` (and `--check`) resolve the
+   newest non-draft release across ALL channels — rc and stable alike — and
+   the `--prerelease` flag is deleted. Rationale: the audience for gh-native
+   self-update is the owner fleet (authenticated gh, private repo), and
+   Homebrew is the eventual public channel; for an owner fleet every tag is
+   deliberate, so "newest release" is always the intended target, and
+   `update <version>` pins any machine that must hold back. The retired
+   stable-by-default clause also forced the flag onto every invocation until
+   v2.0.0 tags at T12 (the stable channel is empty until then, so bare
+   `update` errored naming the flag) and made `--list --prerelease` a
+   mutual-exclusion trap (`--list` already shows both). Accepted consequence,
+   stated honestly: post-GA, bare `update` also takes future rcs
+   (v2.1.0-rc.1 sorts above v2.0.0) — a machine that must hold back pins with
+   `update <version>`. The safety that does NOT change: `golang.org/x/mod`
+   semver orders an rc BELOW its own release (v2.0.0-rc.4 < v2.0.0), and
+   implicit resolution keeps the never-downgrade invariant, so removing the
+   flag can never cause a backwards move.
 
 3. **Fail-closed verification pipeline, in order.** Download the platform
    archive plus the GoReleaser checksums asset into a temp dir; verify sha256

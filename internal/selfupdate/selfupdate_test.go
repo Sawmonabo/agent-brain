@@ -110,11 +110,14 @@ func TestCheckRefusesBrewManagedInstall(t *testing.T) {
 	}
 }
 
-// TestCheckChannelAndOrdering proves the resolution rules in one table:
-// drafts never count, prereleases need opt-in, non-semver tags are skipped,
-// the maximum is by semver (not list order), and equal-or-older latest
-// means no update (never downgrade).
-func TestCheckChannelAndOrdering(t *testing.T) {
+// TestCheckResolutionAndOrdering proves implicit resolution in one table:
+// the newest non-draft semver tag wins regardless of channel — an rc above
+// every stable IS taken with no flag — while drafts and non-semver tags are
+// skipped, the maximum is by semver (not list order), an equal-or-older
+// maximum means no update (never downgrade, even when the only candidate is
+// an rc below the running version), and a corpus with no installable tag
+// yields ErrNoRelease.
+func TestCheckResolutionAndOrdering(t *testing.T) {
 	t.Parallel()
 	releases := []ghx.ReleaseInfo{
 		{TagName: "v2.0.0-rc.2", IsPrerelease: true},
@@ -128,33 +131,23 @@ func TestCheckChannelAndOrdering(t *testing.T) {
 	tests := []struct {
 		name       string
 		current    string
-		prerelease bool
 		releases   []ghx.ReleaseInfo
 		wantLatest string
 		wantNeeded bool
 		wantErr    error
 	}{
 		{
-			name:       "stable channel picks semver max ignoring drafts and prereleases",
+			name:       "newest non-draft semver wins, drafts and non-semver skipped",
 			current:    "2.0.0",
 			releases:   releases,
 			wantLatest: "v2.1.0",
 			wantNeeded: true,
 		},
 		{
-			name:       "prerelease channel still prefers the higher stable",
-			current:    "2.0.0",
-			prerelease: true,
-			releases:   releases,
-			wantLatest: "v2.1.0",
-			wantNeeded: true,
-		},
-		{
-			name:       "prerelease channel picks rc when it is the max",
-			current:    "2.0.0-rc.1",
-			prerelease: true,
-			releases:   []ghx.ReleaseInfo{{TagName: "v2.0.0-rc.2", IsPrerelease: true}},
-			wantLatest: "v2.0.0-rc.2",
+			name:       "rc above every stable is taken with no flag",
+			current:    "2.1.0",
+			releases:   []ghx.ReleaseInfo{{TagName: "v2.1.0"}, {TagName: "v2.2.0-rc.1", IsPrerelease: true}},
+			wantLatest: "v2.2.0-rc.1",
 			wantNeeded: true,
 		},
 		{
@@ -165,16 +158,29 @@ func TestCheckChannelAndOrdering(t *testing.T) {
 			wantNeeded: false,
 		},
 		{
-			name:       "never downgrade",
+			name:       "never downgrade to an older stable",
 			current:    "9.9.9",
 			releases:   releases,
 			wantLatest: "v2.1.0",
 			wantNeeded: false,
 		},
 		{
-			name:     "stable channel with only prereleases published",
-			current:  "2.0.0-rc.2",
-			releases: []ghx.ReleaseInfo{{TagName: "v2.0.0-rc.2", IsPrerelease: true}},
+			name:       "rc below the running version never downgrades",
+			current:    "2.1.0",
+			releases:   []ghx.ReleaseInfo{{TagName: "v2.0.0-rc.2", IsPrerelease: true}},
+			wantLatest: "v2.0.0-rc.2",
+			wantNeeded: false,
+		},
+		{
+			name:     "no releases at all is ErrNoRelease",
+			current:  "2.0.0",
+			releases: nil,
+			wantErr:  ErrNoRelease,
+		},
+		{
+			name:     "only draft and non-semver tags is ErrNoRelease",
+			current:  "2.0.0",
+			releases: []ghx.ReleaseInfo{{TagName: "v9.0.0", IsDraft: true}, {TagName: "nightly-build"}},
 			wantErr:  ErrNoRelease,
 		},
 	}
@@ -185,7 +191,6 @@ func TestCheckChannelAndOrdering(t *testing.T) {
 			decision, err := updater.Check(t.Context(), Options{
 				CurrentVersion: test.current,
 				TargetPath:     "/home/user/.local/bin/agent-brain",
-				Prerelease:     test.prerelease,
 			})
 			if test.wantErr != nil {
 				if !errors.Is(err, test.wantErr) {
@@ -205,10 +210,9 @@ func TestCheckChannelAndOrdering(t *testing.T) {
 }
 
 // TestCheckRequestedVersion proves explicit-version pinning in one table:
-// the channel filter does not apply (an rc pins without --prerelease), an
-// older release is honored with Downgrade set (deliberate rollback), equal
-// is a no-op, drafts stay invisible, and both "X" and "vX" spellings
-// resolve to the real tag.
+// an rc pins the same as a stable release, an older release is honored with
+// Downgrade set (deliberate rollback), equal is a no-op, drafts stay
+// invisible, and both "X" and "vX" spellings resolve to the real tag.
 func TestCheckRequestedVersion(t *testing.T) {
 	t.Parallel()
 	releases := []ghx.ReleaseInfo{
@@ -231,7 +235,7 @@ func TestCheckRequestedVersion(t *testing.T) {
 			want:      Decision{Latest: "v2.1.0", UpdateNeeded: true},
 		},
 		{
-			name:      "prerelease pin needs no channel flag",
+			name:      "pins a prerelease",
 			current:   "1.9.0",
 			requested: "v2.0.0-rc.2",
 			want:      Decision{Latest: "v2.0.0-rc.2", UpdateNeeded: true},
@@ -329,21 +333,6 @@ func TestCheckRequestedVersionGuardsStillFirst(t *testing.T) {
 				t.Fatalf("ListReleases called %d times, want 0 — guards must answer before any network call", source.listCalls)
 			}
 		})
-	}
-}
-
-// TestCheckStableChannelErrorNamesPrereleaseHint proves the rc-phase UX:
-// when only prereleases exist, the stable-channel refusal tells the user
-// about --prerelease instead of a bare "nothing found".
-func TestCheckStableChannelErrorNamesPrereleaseHint(t *testing.T) {
-	t.Parallel()
-	updater := &Updater{
-		Source: &fakeSource{releases: []ghx.ReleaseInfo{{TagName: "v2.0.0-rc.2", IsPrerelease: true}}},
-		Getenv: noEnv,
-	}
-	_, err := updater.Check(t.Context(), Options{CurrentVersion: "2.0.0-rc.2", TargetPath: "/home/user/.local/bin/agent-brain"})
-	if err == nil || !strings.Contains(err.Error(), "--prerelease") {
-		t.Fatalf("Check error = %v, want it to name the --prerelease escape hatch", err)
 	}
 }
 

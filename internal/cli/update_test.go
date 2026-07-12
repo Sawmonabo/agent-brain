@@ -233,8 +233,8 @@ func TestRunUpdateCheckOnlyExplicitHintEchoesVersion(t *testing.T) {
 }
 
 // TestReleasePickerCandidates proves the picker rows: semver-descending
-// order regardless of list order, drafts and non-semver tags dropped,
-// channel badge on prereleases, and the running marker.
+// order regardless of list order, drafts and non-semver tags dropped, the
+// prerelease badge, and the running marker.
 func TestReleasePickerCandidates(t *testing.T) {
 	t.Parallel()
 	releases := []ghx.ReleaseInfo{
@@ -319,7 +319,6 @@ func TestUpdateFlagConflicts(t *testing.T) {
 		{name: "select with a version argument", args: []string{"--select", "v2.0.0"}, wantErr: "not both"},
 		{name: "list with select", args: []string{"--list", "--select"}, wantErr: "list"},
 		{name: "list with check", args: []string{"--list", "--check"}, wantErr: "list"},
-		{name: "list with prerelease", args: []string{"--list", "--prerelease"}, wantErr: "list"},
 		{name: "list with no-restart", args: []string{"--list", "--no-restart"}, wantErr: "list"},
 	}
 	for _, test := range tests {
@@ -334,6 +333,18 @@ func TestUpdateFlagConflicts(t *testing.T) {
 				t.Fatalf("Execute(%v) error = %v, want it to contain %q", test.args, err, test.wantErr)
 			}
 		})
+	}
+}
+
+// TestUpdateHasNoPrereleaseFlag pins the ADR 18 reversal: implicit
+// resolution takes the newest release across all channels, so the command
+// defines no `--prerelease` flag — `agent-brain update --prerelease` is an
+// unknown-flag error, not a channel steer. Guards against an upstream
+// copy-paste reintroducing the retired flag.
+func TestUpdateHasNoPrereleaseFlag(t *testing.T) {
+	t.Parallel()
+	if flag := newUpdateCmd().Flags().Lookup("prerelease"); flag != nil {
+		t.Fatalf("update defines a --%s flag, want none — the channel concept is retired", flag.Name)
 	}
 }
 
