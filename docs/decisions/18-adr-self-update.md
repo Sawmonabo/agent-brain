@@ -125,8 +125,9 @@ are expected to detect and refuse that case.
 
 7. **Release discovery: `--list [--json]` for scripts, `--select` for a
    terminal (added 2026-07-10).** Both surfaces print/offer the SAME rows
-   from one candidate builder — non-draft semver releases, both channels
-   badged, semver-descending, running version marked — which is exactly the
+   from one candidate builder — non-draft semver releases, rc and stable
+   alike with prereleases badged, semver-descending, running version
+   marked — which is exactly the
    set a version argument accepts. This is the enumeration companion every
    version-taking installer grows (mise `ls-remote --json`; rustup's missing
    list is a long-open feature request), and it replaces pointing users at
