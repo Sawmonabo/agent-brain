@@ -607,56 +607,12 @@ func TestReadingRenderIsCached(t *testing.T) {
 	}
 }
 
-// TestReadingViewHeightBudgetHoldsAboveTheChromeFloor pins the height
-// contract for heights at or above the reading screen's honest chrome
-// floor — header line + its blank (2), plus the backlinks panel's own lines
-// + trailing blank when open, plus one viewport row. At or above that
-// floor, View renders no more than height lines; below it the contract is
-// different (TestReadingViewClampsBelowTheChromeFloor).
-func TestReadingViewHeightBudgetHoldsAboveTheChromeFloor(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name          string
-		height        int
-		backlinksOpen bool
-	}{
-		{"tight, panel closed", 3, false}, // floor: 2 chrome + 1 viewport row
-		{"roomy, panel closed", 20, false},
-		{"tight, panel open", 8, true}, // floor: 2 + (1 header + 2 rows + 1 blank) + 1
-		{"roomy, panel open", 20, true},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			bodies := readingFixtureBodies()
-			bodies["claude/alpha.md"] = hundredLineBody()
-			memories := readingFixtureMemories()
-			readBody := fakeReadBody(bodies)
-			reading := NewReading(ReadingDeps{
-				Memory:   memories[0],
-				Index:    links.BuildIndex(memories, readBody),
-				ReadBody: readBody,
-			})
-			if testCase.backlinksOpen {
-				next, _ := reading.Update(key("b"))
-				reading = next.(*Reading)
-			}
-
-			got := reading.View(80, testCase.height)
-			if lineCount := strings.Count(got, "\n") + 1; lineCount > testCase.height {
-				t.Errorf("View rendered %d lines, want <= %d (height budget); got:\n%s",
-					lineCount, testCase.height, plain(got))
-			}
-		})
-	}
-}
-
-// TestReadingViewClampsBelowTheChromeFloor pins the floor itself: below
-// chrome+1 the viewport is clamped to a single row rather than zero — a
-// zero-height viewport would render nothing at all — so the total is the
-// irreducible chrome+1 frame, larger than the requested height by design.
-func TestReadingViewClampsBelowTheChromeFloor(t *testing.T) {
-	t.Parallel()
+// newHundredLineReading builds a Reading over the 100-line alpha body —
+// the shared fixture for the height and half-page assertions below —
+// optionally with the backlinks panel opened (alpha's two referrers: Beta
+// and Gamma).
+func newHundredLineReading(t *testing.T, backlinksOpen bool) *Reading {
+	t.Helper()
 	bodies := readingFixtureBodies()
 	bodies["claude/alpha.md"] = hundredLineBody()
 	memories := readingFixtureMemories()
@@ -666,16 +622,123 @@ func TestReadingViewClampsBelowTheChromeFloor(t *testing.T) {
 		Index:    links.BuildIndex(memories, readBody),
 		ReadBody: readBody,
 	})
+	if backlinksOpen {
+		next, _ := reading.Update(key("b"))
+		reading = next.(*Reading)
+	}
+	return reading
+}
 
-	got := plain(reading.View(80, 1)) // below the closed-panel floor of 3
-	if !strings.Contains(got, "row 001") {
-		t.Fatalf("clamped view lost the viewport's single row; got:\n%s", got)
+// TestReadingViewFillsHeightExactlyAtAndAboveTheChromeFloor pins the height
+// contract in BOTH directions — never more than height lines, and never a
+// wasted row either. The viewport pads its content area to its full height,
+// so at or above the screen's honest chrome floor View renders EXACTLY
+// height lines. The floor is chrome+1: header line + one blank (2 lines)
+// with the panel closed, plus the panel's own lines and the ONE blank line
+// its "\n\n" separator opens when it is open — with this fixture's two
+// referrers the panel is 3 lines (title + 2 rows), so the open floor is
+// 2+3+1+1 = 7.
+func TestReadingViewFillsHeightExactlyAtAndAboveTheChromeFloor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		height        int
+		backlinksOpen bool
+	}{
+		{"panel closed, at the floor", 3, false},
+		{"panel closed, one above the floor", 4, false},
+		{"panel closed, roomy", 20, false},
+		{"panel open, at the floor", 7, true},
+		{"panel open, one above the floor", 8, true},
+		{"panel open, roomy", 20, true},
 	}
-	if strings.Contains(got, "row 002") {
-		t.Fatalf("clamped view rendered more than the single clamped row; got:\n%s", got)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			reading := newHundredLineReading(t, testCase.backlinksOpen)
+
+			got := reading.View(80, testCase.height)
+			if lineCount := strings.Count(got, "\n") + 1; lineCount != testCase.height {
+				t.Errorf("View rendered %d lines, want exactly %d; got:\n%s",
+					lineCount, testCase.height, plain(got))
+			}
+		})
 	}
-	if lineCount := strings.Count(got, "\n") + 1; lineCount != 3 {
-		t.Errorf("clamped view has %d lines, want exactly 3 (header, blank, one viewport row); got:\n%s", lineCount, got)
+}
+
+// TestReadingViewClampsBelowTheChromeFloor pins the floor itself: below
+// chrome+1 the viewport is clamped to a single row rather than zero — a
+// zero-height viewport would render nothing at all — so the total is the
+// irreducible chrome+1 frame, larger than the requested height by design,
+// for both panel states.
+func TestReadingViewClampsBelowTheChromeFloor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		height        int
+		backlinksOpen bool
+		wantLineCount int
+	}{
+		{"panel closed", 1, false, 3}, // header, blank, one viewport row
+		{"panel open", 5, true, 7},    // + panel title, 2 referrer rows, separating blank
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			reading := newHundredLineReading(t, testCase.backlinksOpen)
+
+			got := plain(reading.View(80, testCase.height))
+			if !strings.Contains(got, "row 001") {
+				t.Fatalf("clamped view lost the viewport's single row; got:\n%s", got)
+			}
+			if strings.Contains(got, "row 002") {
+				t.Fatalf("clamped view rendered more than the single clamped row; got:\n%s", got)
+			}
+			if lineCount := strings.Count(got, "\n") + 1; lineCount != testCase.wantLineCount {
+				t.Errorf("clamped view has %d lines, want exactly %d (chrome + one viewport row); got:\n%s",
+					lineCount, testCase.wantLineCount, got)
+			}
+		})
+	}
+}
+
+// controlKey builds the KeyPressMsg a real ctrl+letter press produces: the
+// letter's code with the ctrl modifier and NO Text — a populated Text would
+// override the keystroke form (ultraviolet's Key.String prefers Text), so
+// "ctrl+d" only ever comes from the modifier field.
+func controlKey(letter rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: letter, Mod: tea.ModCtrl}
+}
+
+// TestReadingViewportHalfPageKeys pins spec §4's ctrl+d/ctrl+u: this
+// package's own keymap wires them (readingViewportKeyMap — the viewport's
+// stock defaults are overridden, so upstream's own tests prove nothing
+// about these two bindings). ctrl+d moves the visible slice down about
+// half a page; ctrl+u returns to the top — asserted directionally, so both
+// a deleted binding (no movement) and swapped bindings (wrong direction)
+// fail.
+func TestReadingViewportHalfPageKeys(t *testing.T) {
+	t.Parallel()
+	reading := newHundredLineReading(t, false)
+
+	if got := plain(reading.View(80, 20)); !strings.Contains(got, "row 001") {
+		t.Fatalf("setup: initial view missing the top row; got:\n%s", got)
+	}
+
+	next, _ := reading.Update(controlKey('d'))
+	reading = next.(*Reading)
+	halfDown := plain(reading.View(80, 20))
+	if strings.Contains(halfDown, "row 001") {
+		t.Fatalf("ctrl+d did not scroll away from the top; got:\n%s", halfDown)
+	}
+	if !strings.Contains(halfDown, "row 019") {
+		t.Fatalf("ctrl+d did not move about half a page down; got:\n%s", halfDown)
+	}
+
+	next, _ = reading.Update(controlKey('u'))
+	reading = next.(*Reading)
+	if got := plain(reading.View(80, 20)); !strings.Contains(got, "row 001") {
+		t.Errorf("ctrl+u did not scroll back to the top; got:\n%s", got)
 	}
 }
 

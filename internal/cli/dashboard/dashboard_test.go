@@ -1570,3 +1570,46 @@ func TestReadingBreadcrumbExtendsPerLevel(t *testing.T) {
 		t.Errorf("breadcrumb = %q, want the reading segment appended", got)
 	}
 }
+
+// TestMarkdownRendererPreservesReadingSubstitutionMarkers pins the reading
+// view's substitution contract THROUGH the real pinned glamour renderer,
+// for both background flavours: the pre-render forms substituteLinks emits
+// (views/reading.go) must survive rendering — ▶target◀ and [[target]]
+// verbatim, and ~~target~~ struck via the theme's own strikethrough style
+// (SGR 9) with no literal tildes left behind. The committed views-level
+// suite drives nil/fake Render seams, so without this a glamour bump that
+// started mangling any of these forms would degrade the reading view with
+// every test still green.
+func TestMarkdownRendererPreservesReadingSubstitutionMarkers(t *testing.T) {
+	t.Parallel()
+	strikethroughPattern := regexp.MustCompile(`\x1b\[(?:[0-9]+;)*9m`)
+	const displayBody = "read ▶one◀ then [[two]] then ~~ghost~~ (dangling) end"
+
+	tests := []struct {
+		name   string
+		isDark bool
+	}{
+		{"dark", true},
+		{"light", false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			render := newMarkdownRenderer(styleName(testCase.isDark))
+			rendered := render(displayBody, 80)
+
+			visible := plain(rendered)
+			for _, want := range []string{"▶one◀", "[[two]]", "ghost (dangling)"} {
+				if !strings.Contains(visible, want) {
+					t.Errorf("rendered output lost %q; got:\n%s", want, visible)
+				}
+			}
+			if strings.Contains(visible, "~~") {
+				t.Errorf("strikethrough markers rendered as literal tildes; got:\n%s", visible)
+			}
+			if !strikethroughPattern.MatchString(rendered) {
+				t.Errorf("no SGR strikethrough (CSI …9m) in the rendered output:\n%q", rendered)
+			}
+		})
+	}
+}

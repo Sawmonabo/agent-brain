@@ -373,7 +373,10 @@ func (r *Reading) View(width, height int) string {
 		panel := r.renderBacklinksPanel()
 		view.WriteString(panel)
 		view.WriteString("\n\n")
-		chromeLines += strings.Count(panel, "\n") + 1 + 2 // panel lines + separating blank
+		// The "\n\n" adds ONE blank line, not two: the first newline
+		// terminates the panel's last line, only the second opens a blank.
+		panelLineCount := strings.Count(panel, "\n") + 1
+		chromeLines += panelLineCount + 1
 	}
 
 	if r.loadErr != nil {
@@ -507,7 +510,7 @@ const (
 
 // substituteLinks rewrites body's [[target]] spans for display, BEFORE the
 // markdown render. Rewriting the source is the only reliable channel
-// through glamour (verified against charm.land/glamour/v2 v2.1.1):
+// through glamour (verified against charm.land/glamour/v2 v2.0.1):
 //
 //   - a post-render overlay would have to re-locate each link inside
 //     glamour's re-wrapped, ANSI-decorated output — fragile positional
