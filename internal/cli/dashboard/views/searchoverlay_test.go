@@ -324,6 +324,17 @@ func TestSearchOverlayFindsBodyNeedleAcrossTwoFolders(t *testing.T) {
 			t.Errorf("view missing cross-project row %q; got:\n%s", want, view)
 		}
 	}
+
+	// The needle itself must carry spec §7's highlight all the way through
+	// the real pipeline — engine-computed span in, Badge-emphasized split
+	// out. Asserted on the second row: the first is the cursor row, whose
+	// Selected wrap this assertion is not about.
+	raw := overlay.View(160, 40)
+	styles := theme.Default(true)
+	wantSegment := styles.Dim.Render("body:1: another ") + styles.Badge.Render("needle") + styles.Dim.Render(" line")
+	if !strings.Contains(raw, wantSegment) {
+		t.Errorf("view does not Badge-highlight the engine-reported span; want segment %q in:\n%q", wantSegment, raw)
+	}
 }
 
 // TestSearchOverlayCapsDisplayWithMoreLine pins the no-silent-truncation
@@ -480,5 +491,29 @@ func TestSearchOverlayNoMatchNotice(t *testing.T) {
 	overlay.Update(queryCmd())
 	if view := plain(overlay.View(120, 40)); !strings.Contains(view, "no memories match") {
 		t.Errorf("an answered empty query shows no notice:\n%s", view)
+	}
+}
+
+// TestSearchOverlayHighlightsMatchedSpanWithinFragment pins spec §7's match
+// highlight to the exact runes Hit.MatchStart/MatchEnd address: the row's
+// fragment must render as a dim tag+prefix, the Badge-emphasized match, and
+// a dim suffix — byte-for-byte, computed through the same theme styles the
+// overlay holds, so a highlight that drifts even one rune off the span (or
+// skips the split entirely) fails. Asserted on a NON-cursor row: the cursor
+// row additionally wraps in Selected, which would bury the segment
+// boundaries this test is about.
+func TestSearchOverlayHighlightsMatchedSpanWithinFragment(t *testing.T) {
+	t.Parallel()
+	overlay := newSearchOverlayForTest()
+	deliverHits(t, overlay, []search.Hit{
+		{Memory: searchOverlayMemory("acme", "apple"), Tier: search.TierName, Fragment: "apple", MatchStart: 0, MatchEnd: 1},
+		{Memory: searchOverlayMemory("zenith", "guide"), Tier: search.TierBody, Fragment: "the needle hides here", MatchStart: 4, MatchEnd: 10, Line: 2},
+	})
+
+	raw := overlay.View(120, 40)
+	styles := theme.Default(true)
+	want := styles.Dim.Render("body:2: the ") + styles.Badge.Render("needle") + styles.Dim.Render(" hides here")
+	if !strings.Contains(raw, want) {
+		t.Errorf("view does not render the fragment as dim/Badge/dim split exactly at the match span\nwant segment: %q\nview:\n%q", want, raw)
 	}
 }

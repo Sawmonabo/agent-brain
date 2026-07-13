@@ -357,3 +357,125 @@ func TestQueryFragment(t *testing.T) {
 		}
 	})
 }
+
+// TestQueryMatchSpan pins Hit.MatchStart/MatchEnd — the Fragment-relative
+// rune span a renderer highlights: verbatim offsets when the text fits the
+// 120-rune cap (including spans touching the Fragment's first and last
+// rune), the full first-to-last extent of a name-tier fuzzy subsequence,
+// rebased offsets once a long body line is trimmed around the match, and a
+// span clipped to the Fragment's end when the match itself is wider than
+// the cap. wantHighlight re-slices the Fragment by the reported span — the
+// exact operation a highlighting renderer performs — so an off-by-one in
+// either offset surfaces as visibly wrong highlighted text, not just as two
+// bare integers.
+func TestQueryMatchSpan(t *testing.T) {
+	t.Parallel()
+
+	oversizeQuery := strings.Repeat("abcdefghij", 13) // 130 runes, over fragmentRuneCap's 120
+
+	testCases := []struct {
+		name          string
+		memory        memoryfs.Memory
+		body          string
+		query         string
+		wantTier      search.Tier
+		wantFragment  string
+		wantSpanStart int
+		wantSpanEnd   int
+		wantHighlight string // the exact text the span addresses within Fragment
+	}{
+		{
+			name:          "description span starts at the fragment's first rune",
+			memory:        mem("m1", "unrelated", "needle at the start"),
+			query:         "needle",
+			wantTier:      search.TierDescription,
+			wantFragment:  "needle at the start",
+			wantSpanStart: 0,
+			wantSpanEnd:   6,
+			wantHighlight: "needle",
+		},
+		{
+			name:          "description span ends at the fragment's last rune",
+			memory:        mem("m1", "unrelated", "ends with needle"),
+			query:         "needle",
+			wantTier:      search.TierDescription,
+			wantFragment:  "ends with needle",
+			wantSpanStart: 10,
+			wantSpanEnd:   16,
+			wantHighlight: "needle",
+		},
+		{
+			name:          "name-tier span is the subsequence's first-to-last extent",
+			memory:        mem("m1", "config-notes", ""),
+			query:         "cnf",
+			wantTier:      search.TierName,
+			wantFragment:  "config-notes",
+			wantSpanStart: 0,
+			wantSpanEnd:   4,
+			wantHighlight: "conf", // the unmatched o sits inside the extent
+		},
+		{
+			name:          "body-tier span is relative to the matched line",
+			memory:        mem("m1", "unrelated", ""),
+			body:          "line one\nthe needle here\n",
+			query:         "needle",
+			wantTier:      search.TierBody,
+			wantFragment:  "the needle here",
+			wantSpanStart: 4,
+			wantSpanEnd:   10,
+			wantHighlight: "needle",
+		},
+		{
+			name:     "trimming a long line rebases the span into the window",
+			memory:   mem("m1", "unrelated", ""),
+			body:     strings.Repeat("x", 200) + "NEEDLE" + strings.Repeat("y", 200),
+			query:    "needle",
+			wantTier: search.TierBody,
+			// 120-rune window centered on the 6-rune match at [200, 206):
+			// 57 runes of slack either side.
+			wantFragment:  strings.Repeat("x", 57) + "NEEDLE" + strings.Repeat("y", 57),
+			wantSpanStart: 57,
+			wantSpanEnd:   63,
+			wantHighlight: "NEEDLE",
+		},
+		{
+			name:          "match wider than the cap is clipped with the fragment",
+			memory:        mem("m1", "unrelated", ""),
+			body:          oversizeQuery,
+			query:         oversizeQuery,
+			wantTier:      search.TierBody,
+			wantFragment:  strings.Repeat("abcdefghij", 12), // the match's first 120 runes, uncentered
+			wantSpanStart: 0,
+			wantSpanEnd:   120,
+			wantHighlight: strings.Repeat("abcdefghij", 12),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			bodies := map[string]string{tc.memory.RepoPath: tc.body}
+			hits := search.Query([]memoryfs.Memory{tc.memory}, fakeReadBody(bodies, nil), tc.query, 0)
+			if len(hits) != 1 {
+				t.Fatalf("len(hits) = %d, want 1", len(hits))
+			}
+			hit := hits[0]
+			if hit.Tier != tc.wantTier {
+				t.Fatalf("Tier = %v, want %v", hit.Tier, tc.wantTier)
+			}
+			if hit.Fragment != tc.wantFragment {
+				t.Fatalf("Fragment = %q, want %q", hit.Fragment, tc.wantFragment)
+			}
+			if hit.MatchStart != tc.wantSpanStart || hit.MatchEnd != tc.wantSpanEnd {
+				t.Errorf("span = [%d, %d), want [%d, %d)", hit.MatchStart, hit.MatchEnd, tc.wantSpanStart, tc.wantSpanEnd)
+			}
+			fragmentRunes := []rune(hit.Fragment)
+			if hit.MatchStart < 0 || hit.MatchEnd < hit.MatchStart || hit.MatchEnd > len(fragmentRunes) {
+				t.Fatalf("span [%d, %d) does not address Fragment's %d runes", hit.MatchStart, hit.MatchEnd, len(fragmentRunes))
+			}
+			if got := string(fragmentRunes[hit.MatchStart:hit.MatchEnd]); got != tc.wantHighlight {
+				t.Errorf("Fragment[MatchStart:MatchEnd] = %q, want %q", got, tc.wantHighlight)
+			}
+		})
+	}
+}

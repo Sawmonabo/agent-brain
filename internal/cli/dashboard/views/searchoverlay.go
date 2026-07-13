@@ -330,7 +330,7 @@ func (s *SearchOverlay) resultLines(height int) []string {
 // renderHitRow renders one result row: cursor marker, the memory's
 // fleet-unique identity, then the matched fragment dimmed and tagged with
 // the tier it matched at — spec §7's "project · provider · memory ·
-// matched fragment".
+// matched fragment", with the match itself highlighted (renderFragment).
 func (s *SearchOverlay) renderHitRow(row int) string {
 	hit := s.hits[row]
 	marker := "  "
@@ -338,11 +338,37 @@ func (s *SearchOverlay) renderHitRow(row int) string {
 		marker = "> "
 	}
 	identity := hit.Memory.Folder + " · " + hit.Memory.Provider + " · " + hit.Memory.Name
-	line := marker + identity + " · " + s.deps.Styles.Dim.Render(tierTag(hit)+": "+hit.Fragment)
+	line := marker + identity + " · " + s.renderFragment(hit)
 	if row == s.cursor {
 		line = s.deps.Styles.Selected.Render(line)
 	}
 	return line
+}
+
+// renderFragment renders a hit's tier tag and fragment, splitting the
+// fragment at Hit.MatchStart/MatchEnd so the runes that actually matched
+// carry spec §7's highlight — the Badge style, the bold emphasis the theme
+// already derives from the palette, rather than a color of this view's own —
+// between the dim tag+prefix and dim suffix. The span is clamped into the
+// fragment before slicing: the engine guarantees a valid span (trimFragment
+// rebases it into the window it returns), so the clamp changes nothing for
+// real hits — it only keeps a malformed span in a hand-built Hit from
+// panicking a render. A span clamped to empty renders the fragment
+// uniformly dim: nothing matched-looking gets invented.
+func (s *SearchOverlay) renderFragment(hit search.Hit) string {
+	tag := tierTag(hit) + ": "
+	fragmentRunes := []rune(hit.Fragment)
+	matchStart := min(max(hit.MatchStart, 0), len(fragmentRunes))
+	matchEnd := min(max(hit.MatchEnd, matchStart), len(fragmentRunes))
+	if matchStart == matchEnd {
+		return s.deps.Styles.Dim.Render(tag + hit.Fragment)
+	}
+	rendered := s.deps.Styles.Dim.Render(tag + string(fragmentRunes[:matchStart]))
+	rendered += s.deps.Styles.Badge.Render(string(fragmentRunes[matchStart:matchEnd]))
+	if matchEnd < len(fragmentRunes) {
+		rendered += s.deps.Styles.Dim.Render(string(fragmentRunes[matchEnd:]))
+	}
+	return rendered
 }
 
 // tierTag names the tier a Hit matched at for its row's fragment prefix.

@@ -36,6 +36,19 @@ type Hit struct {
 	// match: the Name verbatim for TierName, the Description verbatim for
 	// TierDescription, or the matching body line for TierBody.
 	Fragment string
+	// MatchStart and MatchEnd are the [start, end) span of the matched text
+	// within Fragment, in RUNES — the unit foldRunes already standardizes on
+	// so spans stay aligned with what a cell-oriented terminal UI highlights
+	// — and already rebased through any trimming, so a renderer can
+	// emphasize []rune(Fragment)[MatchStart:MatchEnd] directly. For TierName
+	// the span runs from the first to the last subsequence-matched rune,
+	// including any unmatched runes between them (query "cnf" on "config"
+	// spans "conf"). A match wider than the 120-rune cap is cut off together
+	// with the Fragment itself, so the span never reaches past Fragment's
+	// end. Never empty: Query only produces Hits for non-empty trimmed
+	// queries, whose matched spans have at least one rune.
+	MatchStart int
+	MatchEnd   int
 	// Line is the 1-based body line Fragment came from; 0 for TierName and
 	// TierDescription, which have no line of their own.
 	Line int
@@ -145,55 +158,60 @@ func Query(memories []memoryfs.Memory, readBody func(memoryfs.Memory) (string, e
 // to classify. readBody is only called once the cheaper name and
 // description checks have both already failed.
 func matchOne(memory memoryfs.Memory, readBody func(memoryfs.Memory) (string, error), foldedQuery []rune) (scoredHit, bool) {
-	if fragment, matchQuality, ok := matchName(memory.Name, foldedQuery); ok {
-		return scoredHit{hit: Hit{Memory: memory, Tier: TierName, Fragment: fragment}, quality: matchQuality}, true
+	if fragment, fragmentStart, fragmentEnd, matchQuality, ok := matchName(memory.Name, foldedQuery); ok {
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierName, Fragment: fragment, MatchStart: fragmentStart, MatchEnd: fragmentEnd}, quality: matchQuality}, true
 	}
-	if fragment, ok := matchDescription(memory.Description, foldedQuery); ok {
-		return scoredHit{hit: Hit{Memory: memory, Tier: TierDescription, Fragment: fragment}, quality: qualityNone}, true
+	if fragment, fragmentStart, fragmentEnd, ok := matchDescription(memory.Description, foldedQuery); ok {
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierDescription, Fragment: fragment, MatchStart: fragmentStart, MatchEnd: fragmentEnd}, quality: qualityNone}, true
 	}
 	body, err := readBody(memory)
 	if err != nil {
 		return scoredHit{}, false
 	}
-	if fragment, line, ok := matchBody(body, foldedQuery); ok {
-		return scoredHit{hit: Hit{Memory: memory, Tier: TierBody, Fragment: fragment, Line: line}, quality: qualityNone}, true
+	if fragment, fragmentStart, fragmentEnd, line, ok := matchBody(body, foldedQuery); ok {
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierBody, Fragment: fragment, MatchStart: fragmentStart, MatchEnd: fragmentEnd, Line: line}, quality: qualityNone}, true
 	}
 	return scoredHit{}, false
 }
 
 // matchName reports whether foldedQuery occurs in name as a case-insensitive
 // subsequence, returning name trimmed to a display Fragment around the
-// matched span, plus its nameQuality classification — computed here from
-// the same folded name used for the subsequence test, rather than folding
-// name again later to recompute it.
-func matchName(name string, foldedQuery []rune) (fragment string, matchQuality quality, ok bool) {
+// matched span, that span rebased to Fragment-relative rune offsets
+// (Hit.MatchStart/MatchEnd), plus its nameQuality classification — computed
+// here from the same folded name used for the subsequence test, rather than
+// folding name again later to recompute it.
+func matchName(name string, foldedQuery []rune) (fragment string, fragmentStart, fragmentEnd int, matchQuality quality, ok bool) {
 	foldedName := foldRunes(name)
 	start, end, ok := subsequenceSpan(foldedName, foldedQuery)
 	if !ok {
-		return "", qualityNone, false
+		return "", 0, 0, qualityNone, false
 	}
-	return trimFragment([]rune(name), start, end), nameQuality(foldedName, foldedQuery), true
+	fragment, fragmentStart, fragmentEnd = trimFragment([]rune(name), start, end)
+	return fragment, fragmentStart, fragmentEnd, nameQuality(foldedName, foldedQuery), true
 }
 
 // matchDescription reports whether foldedQuery occurs in description as a
 // case-insensitive substring, returning description trimmed to a display
-// Fragment around the matched span.
-func matchDescription(description string, foldedQuery []rune) (fragment string, ok bool) {
+// Fragment around the matched span, plus that span rebased to
+// Fragment-relative rune offsets (Hit.MatchStart/MatchEnd).
+func matchDescription(description string, foldedQuery []rune) (fragment string, fragmentStart, fragmentEnd int, ok bool) {
 	start, end, ok := substringSpan(foldRunes(description), foldedQuery)
 	if !ok {
-		return "", false
+		return "", 0, 0, false
 	}
-	return trimFragment([]rune(description), start, end), true
+	fragment, fragmentStart, fragmentEnd = trimFragment([]rune(description), start, end)
+	return fragment, fragmentStart, fragmentEnd, true
 }
 
 // matchBody scans body line by line for the first case-insensitive
-// substring match, returning that line's Fragment and its 1-based line
-// number. Scanning stops at the first match — later lines are never
-// inspected, so a memory can contribute at most one body Hit regardless of
-// how many lines actually contain the query. A trailing '\r' (CRLF line
-// endings) is stripped from each candidate line before matching, so it
-// never leaks into Fragment.
-func matchBody(body string, foldedQuery []rune) (fragment string, line int, ok bool) {
+// substring match, returning that line's Fragment, the match's span rebased
+// to Fragment-relative rune offsets (Hit.MatchStart/MatchEnd), and its
+// 1-based line number. Scanning stops at the first match — later lines are
+// never inspected, so a memory can contribute at most one body Hit
+// regardless of how many lines actually contain the query. A trailing '\r'
+// (CRLF line endings) is stripped from each candidate line before matching,
+// so it never leaks into Fragment.
+func matchBody(body string, foldedQuery []rune) (fragment string, fragmentStart, fragmentEnd, line int, ok bool) {
 	lineNumber := 0
 	for candidate := range strings.SplitSeq(body, "\n") {
 		lineNumber++
@@ -202,9 +220,10 @@ func matchBody(body string, foldedQuery []rune) (fragment string, line int, ok b
 		if !found {
 			continue
 		}
-		return trimFragment([]rune(candidate), start, end), lineNumber, true
+		fragment, fragmentStart, fragmentEnd = trimFragment([]rune(candidate), start, end)
+		return fragment, fragmentStart, fragmentEnd, lineNumber, true
 	}
-	return "", 0, false
+	return "", 0, 0, 0, false
 }
 
 // nameQuality classifies how strongly foldedName matches foldedQuery: an
@@ -292,17 +311,26 @@ func substringSpan(haystack, needle []rune) (start, end int, ok bool) {
 
 // trimFragment returns text trimmed to at most fragmentRuneCap runes,
 // centered on the [matchStart, matchEnd) rune span so the text that matched
-// stays inside the result; text no longer than the cap is returned
-// unchanged. A match itself wider than the cap (a query longer than
-// fragmentRuneCap) is not centered — the window simply starts at
-// matchStart, which may cut off the match's tail rather than its head.
-func trimFragment(text []rune, matchStart, matchEnd int) string {
+// stays inside the result, plus that same span rebased to rune offsets
+// within the returned fragment (Hit.MatchStart/MatchEnd's contract); text
+// no longer than the cap is returned unchanged, span included. A match
+// itself wider than the cap (a query longer than fragmentRuneCap) is not
+// centered — the window simply starts at matchStart, which may cut off the
+// match's tail rather than its head — and the rebased span is clipped to
+// the window's end when that happens, so it only ever addresses runes the
+// fragment actually contains.
+func trimFragment(text []rune, matchStart, matchEnd int) (fragment string, fragmentStart, fragmentEnd int) {
 	if len(text) <= fragmentRuneCap {
-		return string(text)
+		return string(text), matchStart, matchEnd
 	}
 	slack := max(fragmentRuneCap-(matchEnd-matchStart), 0)
 	start := max(matchStart-slack/2, 0)
 	end := min(start+fragmentRuneCap, len(text))
 	start = max(end-fragmentRuneCap, 0)
-	return string(text[start:end])
+	// start <= matchStart by construction: the centering line places start
+	// at or left of the match, and the reclamp can only move it further left
+	// (end <= the centered start + fragmentRuneCap, so end-fragmentRuneCap
+	// never exceeds the centered start). Only the span's END can therefore
+	// stick out of the window and need clipping.
+	return string(text[start:end]), matchStart - start, min(matchEnd, end) - start
 }
