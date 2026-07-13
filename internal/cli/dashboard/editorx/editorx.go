@@ -130,11 +130,17 @@ func Stage(dir, filename string, content []byte) (scratchPath string, err error)
 }
 
 // Command builds the exec.Cmd that runs ed with scratchPath appended as
-// its final argument. ed.Argv must be non-empty, as guaranteed by a
-// successful Resolve. Command neither starts the process nor binds a
-// context — nothing here bounds its lifetime — because the TUI owns
-// process lifetime via tea.ExecProcess/Cmd.Run.
+// its final argument. ed.Argv must be non-empty — only a successful
+// Resolve constructs an Editor, and Resolve never returns an empty argv —
+// so an empty argv here is a caller bug (a hand-built Editor literal), and
+// Command panics with the precondition rather than letting ed.Argv[0]
+// fail as a bare index-out-of-range. Command neither starts the process
+// nor binds a context — nothing here bounds its lifetime — because the
+// TUI owns process lifetime via tea.ExecProcess/Cmd.Run.
 func Command(ed Editor, scratchPath string) *exec.Cmd {
+	if len(ed.Argv) == 0 {
+		panic("editorx: Command called with empty Editor.Argv — only a successful Resolve may construct Editor")
+	}
 	args := make([]string, 0, len(ed.Argv))
 	args = append(args, ed.Argv[1:]...)
 	args = append(args, scratchPath)

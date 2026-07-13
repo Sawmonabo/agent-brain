@@ -434,3 +434,25 @@ func TestCommandAppendsScratchPathLast(t *testing.T) {
 		})
 	}
 }
+
+// TestCommandPanicsOnEmptyArgv pins Command's precondition: an Editor can
+// only come from a successful Resolve, so a hand-built literal with no
+// argv must fail loudly at the boundary — with a message naming Resolve —
+// not as a bare index-out-of-range inside exec.Command construction.
+func TestCommandPanicsOnEmptyArgv(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			t.Fatal("Command(Editor{}, ...) did not panic; want a precondition panic")
+		}
+		message, ok := recovered.(string)
+		if !ok {
+			t.Fatalf("panic value is %T (%v), want a string precondition message", recovered, recovered)
+		}
+		if !strings.Contains(message, "Resolve") || !strings.Contains(message, "empty Editor.Argv") {
+			t.Fatalf("panic message %q does not name the empty-Argv precondition and Resolve as the only constructor", message)
+		}
+	}()
+	editorx.Command(editorx.Editor{}, "/scratch/dir/notes.md")
+}
