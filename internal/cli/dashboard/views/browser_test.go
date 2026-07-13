@@ -359,12 +359,13 @@ func TestBrowserPreviewUnavailableOnReadError(t *testing.T) {
 	}
 }
 
-// TestBrowserPreviewRenderIsCached pins M1: View runs on every keypress and
-// on every ~2s RefreshMsg tick while the browser sits open idle, so without
-// a cache, renderPreview would re-read the selected memory's full body (up
-// to memoryfs.ReadBody's own size cap) and re-run glamour over it that
-// often — real, avoidable cost at any real project's body sizes. The cache
-// is keyed on (RepoPath, ModTime, width); this proves a repeated View with
+// TestBrowserPreviewRenderIsCached pins the preview cache: View runs on
+// every keypress and on every ~2s RefreshMsg tick while the browser sits
+// open idle, so without a cache, renderPreview would re-read the selected
+// memory's full body (up to memoryfs.ReadBody's own size cap) and re-run
+// glamour over it that often — real, avoidable cost at any real project's
+// body sizes. The cache is keyed on (RepoPath, ModTime, width); this
+// proves a repeated View with
 // none of the three changed costs one read, and each one changing on its
 // own forces exactly one more.
 func TestBrowserPreviewRenderIsCached(t *testing.T) {
@@ -671,11 +672,12 @@ func TestVisibleWindowKeepsCursorInBounds(t *testing.T) {
 	}
 }
 
-// TestBrowserListWindowsAroundCursor pins M2 end-to-end: a project with
-// more memories than fit the pane must keep the cursor's own row visible
-// rather than let it walk off-screen. 30 memories at height 10 (five
-// windows' worth) — cursor at construction's default (0) must show the top
-// slice; walking it down to 25 must bring that row into view.
+// TestBrowserListWindowsAroundCursor pins the scroll-follow behavior
+// end-to-end: a project with more memories than fit the pane must keep the
+// cursor's own row visible rather than let it walk off-screen. 30 memories
+// at height 10 (five windows' worth) — cursor at construction's default (0)
+// must show the top slice; walking it down to 25 must bring that row into
+// view.
 func TestBrowserListWindowsAroundCursor(t *testing.T) {
 	t.Parallel()
 	const rowCount = 30
@@ -720,16 +722,22 @@ func TestBrowserListWindowsAroundCursor(t *testing.T) {
 	}
 }
 
-// TestBrowserViewNeverExceedsHeightBudget pins the height contract: View
-// must never render more than height lines, no matter how much chrome (the
-// title line and its blank, the filter line and its blank when open, and
-// however many provider-group header lines the visible window happens to
-// include) it layers on top of the windowed list rows. Runs over a crowded,
-// three-provider fixture at several cursor positions — including both
-// ends of the list, where visibleWindow's clamping is most likely to
-// surface an off-by-one — with the filter both closed and open, since
-// opening it changes the chrome budget listRowBudget must account for.
-func TestBrowserViewNeverExceedsHeightBudget(t *testing.T) {
+// TestBrowserViewHeightBudgetHoldsAboveTheClampFloor pins the height
+// contract for heights at or above listRowBudget's clamp floor — chrome
+// (2 lines for the title and its blank, plus 2 more when the filter is
+// open) plus countDistinctProviders(rows) plus 1 — where View renders no
+// more than height lines, no matter how much chrome (the title line and
+// its blank, the filter line and its blank when open, and however many
+// provider-group header lines the visible window happens to include) it
+// layers on top of the windowed list rows. Below that floor the contract
+// is different: see TestBrowserViewClampsToOneRowBelowTheClampFloor. This
+// fixture (30 memories, 3 providers) uses height 10 throughout, which
+// clears the floor for either filter state (6 closed, 8 open) with room to
+// spare. Runs at several cursor positions — including both ends of the
+// list, where visibleWindow's clamping is most likely to surface an
+// off-by-one — with the filter both closed and open, since opening it
+// changes the chrome budget listRowBudget must account for.
+func TestBrowserViewHeightBudgetHoldsAboveTheClampFloor(t *testing.T) {
 	t.Parallel()
 	const rowCount = 30
 	const groupSize = 10
@@ -789,6 +797,61 @@ func TestBrowserViewNeverExceedsHeightBudget(t *testing.T) {
 				t.Errorf("cursor row %q not visible; got:\n%s", wantRow, got)
 			}
 		})
+	}
+}
+
+// TestBrowserViewClampsToOneRowBelowTheClampFloor pins the max(budget, 1)
+// floor in listRowBudget itself: below chrome+countDistinctProviders(rows)+1,
+// height alone can't fit even one list row once chrome is accounted for, so
+// the budget is clamped to 1 rather than left at zero or negative — a zero
+// or negative rowBudget would hit visibleWindow's own "height <= 0" identity
+// branch and render every row unwindowed, which is the one outcome
+// guaranteed to overflow an already-tight height instead of degrading
+// gracefully. Deliberately does not assert lineCount <= height — below the
+// floor that bound does not hold by design (see
+// TestBrowserViewHeightBudgetHoldsAboveTheClampFloor for the contract that
+// does hold, above it): this asserts instead that the clamp holds the
+// window to exactly one row and does not expand toward the full listing.
+//
+// Reuses the crowded three-provider fixture (30 memories, groups of 10) at
+// height 3 — below that fixture's own floor of 6 (chrome 2 + 3 providers +
+// 1) — where the rendered body is, by design, an irreducible frame larger
+// than the requested height: title line, its blank, exactly one
+// provider-group header, and the cursor's own row (4 lines, not <= 3).
+func TestBrowserViewClampsToOneRowBelowTheClampFloor(t *testing.T) {
+	t.Parallel()
+	const rowCount = 30
+	const groupSize = 10
+	const height = 3
+	providerNames := []string{"claude", "codex", "gemini"}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	memories := make([]memoryfs.Memory, rowCount)
+	for i := range memories {
+		provider := providerNames[i/groupSize]
+		memories[i] = memoryfs.Memory{
+			Provider: provider,
+			Name:     fmt.Sprintf("Memory %02d", i),
+			RepoPath: fmt.Sprintf("%s/memory-%02d.md", provider, i),
+			ModTime:  base.Add(time.Duration(rowCount-i) * time.Hour),
+		}
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memories, nil },
+	})
+
+	got := plain(browser.View(80, height))
+
+	if !strings.Contains(got, "Memory 00") {
+		t.Fatalf("cursor's own row (Memory 00) not visible at the clamped floor; got:\n%s", got)
+	}
+	if strings.Contains(got, "Memory 29") {
+		t.Errorf("clamp did not hold: view reaches rows far outside a single-row window — looks like the full listing rendered unwindowed; got:\n%s", got)
+	}
+	if lineCount := strings.Count(got, "\n") + 1; lineCount != 4 {
+		t.Errorf("clamped view has %d lines, want exactly 4 (title, blank, one provider header, one row); got:\n%s", lineCount, got)
 	}
 }
 
