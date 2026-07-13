@@ -223,17 +223,19 @@ func pickUnit(units []api.UnitInfo, providerHint string) (api.UnitInfo, bool) {
 // earlier Cmd's message, so a queued request CAN arrive after another
 // request's modal opened — admitting it would fork the flow state the
 // modal is about to act on, or silently replace an open delete confirm),
-// while the search overlay or palette owns the screen (the same
+// while help, the search overlay, or the palette owns the screen (the same
 // no-ordering-guarantee race: a request queued by a screen key can land
-// after that chrome opened, and handleKey checks both chrome surfaces
+// after that chrome opened, and handleKey checks all three chrome surfaces
 // before the flow modal, so the flow it would start — a modal, or an
 // ExecProcess editor launch — would sit underneath a surface that owns the
 // keyboard and starve invisibly), or while the daemon is quiesced (spec
 // §15's grey-out-with-refusal for mutating actions). Refusing starts under
 // open chrome also makes chrome-over-modal unreachable in both directions:
-// a flow modal can now open only while chrome is closed, and while one is
-// open handleKey's modal priority consumes the very keys that would open
-// chrome. It deliberately guards only flow STARTS — a landing edit is never
+// a flow modal can open only while chrome is closed (here), and while one is
+// open the key path to chrome is closed by handleKey's modal priority and
+// the message path — a palette choice landing late as a Cmd — by dispatch's
+// own flow-modal gate. It deliberately guards only flow STARTS — a landing
+// edit is never
 // blocked, because refusing a finish would discard content the user already
 // wrote; a quiesce that begins mid-edit merely defers the capture, which the
 // pendingCapture deadline toast names explicitly.
@@ -244,6 +246,10 @@ func (m *Model) refuseFlowStart() bool {
 	}
 	if m.flowModal != nil {
 		m.pushToast("a prompt is already open — finish or esc it first")
+		return true
+	}
+	if m.helpOpen {
+		m.pushToast("help is open — close it first")
 		return true
 	}
 	if m.searchOverlay != nil {

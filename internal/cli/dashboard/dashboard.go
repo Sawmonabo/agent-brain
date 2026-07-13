@@ -1166,6 +1166,19 @@ func (m *Model) dispatch(id string) tea.Cmd {
 	if m.refuseIfQuiesced(action) {
 		return nil
 	}
+	// A palette choice reaches dispatch as a Cmd message (PaletteChoiceMsg),
+	// which — unlike a keystroke, which handleKey routes to an open flow modal
+	// before any global — can land AFTER a flow-request message opened a
+	// modal. Refuse a chrome-opening choice here so no message path can layer
+	// help, the search overlay, or the palette OVER a modal that owns the
+	// screen (handleKey checks all three before the flow modal, so the chrome
+	// would starve it); the key path to these is already closed by handleKey's
+	// modal priority. The set is exactly dispatch's chrome openers: the help
+	// and search special-cases below, and the open-palette runner.
+	if m.flowModal != nil && (id == "help" || id == "search" || id == "open-palette") {
+		m.pushToast("a prompt is already open — finish or esc it first")
+		return nil
+	}
 	if id == "help" {
 		m.helpOpen = true
 		return nil

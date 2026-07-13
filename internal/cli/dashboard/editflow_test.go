@@ -897,6 +897,70 @@ func TestFlowRequestRefusedWhilePaletteOpen(t *testing.T) {
 	)
 }
 
+// TestFlowRequestRefusedWhileHelpOpen is the help twin of the search and
+// palette pins: the help overlay owns the keyboard first of all the chrome
+// (handleKey checks it before palette and search), so a request landing after
+// `?` opened help must be refused for every kind, with help left open.
+func TestFlowRequestRefusedWhileHelpOpen(t *testing.T) {
+	t.Parallel()
+	assertFlowRequestRefusedUnderChrome(
+		t,
+		func(t *testing.T, m Model) Model {
+			m, _ = step(m, key("?"))
+			if !m.helpOpen {
+				t.Fatal("setup: ? did not open help")
+			}
+			return m
+		},
+		"help is open — close it first",
+		func(m Model) bool { return m.helpOpen },
+	)
+}
+
+// TestChromeOpenRefusedWhileFlowModalOpen pins the message-path direction of
+// the chrome/modal exclusion. A palette choice reaches dispatch as a Cmd
+// message (PaletteChoiceMsg), which — unlike a keystroke, routed to an open
+// flow modal before any global in handleKey — can land AFTER a flow-request
+// message opened a modal. dispatch must refuse a chrome-opening choice while a
+// flow modal is open, so the help or search overlay can never layer over a
+// modal that owns the screen.
+func TestChromeOpenRefusedWhileFlowModalOpen(t *testing.T) {
+	t.Parallel()
+	const wantRefusal = "a prompt is already open — finish or esc it first"
+	tests := []struct {
+		name         string
+		id           string
+		chromeOpened func(Model) bool
+	}{
+		{name: "search", id: "search", chromeOpened: func(m Model) bool { return m.searchOverlay != nil }},
+		{name: "help", id: "help", chromeOpened: func(m Model) bool { return m.helpOpen }},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m, _ := newFlowModel(t, terminalEditorSettings())
+			memory := writeFlowMemory(t, t.TempDir(), "note.md", "# note\n")
+
+			m, _ = step(m, views.DeleteRequestMsg{Memory: memory})
+			if m.flowModal == nil || m.flowModal.kind != flowModalDeleteConfirm {
+				t.Fatal("setup: delete request did not open the confirm modal")
+			}
+
+			m, _ = step(m, views.PaletteChoiceMsg{ID: testCase.id})
+
+			if testCase.chromeOpened(m) {
+				t.Errorf("%s chrome opened over an open flow modal", testCase.id)
+			}
+			if m.flowModal == nil || m.flowModal.kind != flowModalDeleteConfirm {
+				t.Error("the refused chrome open disturbed the flow modal")
+			}
+			if got := plain(m.toastLine()); got != wantRefusal {
+				t.Errorf("toast = %q, want exactly %q", got, wantRefusal)
+			}
+		})
+	}
+}
+
 // TestNewRefusedWithoutEditorAtRequest pins n's no-editor refusal at REQUEST
 // time, exactly like e's: the exact ErrNoEditor wording lands immediately
 // and no name modal ever opens — deferring the refusal to submit would
