@@ -608,6 +608,93 @@ func TestProjectsAddDiscoverFailureAborts(t *testing.T) {
 	}
 }
 
+// TestProjectsStaleTrackResultPreservesPickerCursorAndCandidates is the
+// views-level counterpart to root's TestProjectsStaleTrackResultKeepsNewFlow:
+// it drives the identical stale-result interleaving directly against
+// ProjectsView so it can assert on addCursor and addCandidates, fields
+// unexported from this package and therefore invisible to a test built from
+// the root package.
+func TestProjectsStaleTrackResultPreservesPickerCursorAndCandidates(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	candidates := []TrackCandidate{
+		{Provider: "claude", Label: "claude  one  → /g/one", PathGuess: "/g/one", Roots: []TrackRoot{{LocalDir: "/x/one"}}},
+		{Provider: "claude", Label: "claude  two  → /g/two", PathGuess: "/g/two", Roots: []TrackRoot{{LocalDir: "/x/two"}}},
+	}
+	actions := trackActionsFor(candidates, provider.Identity{}, nil)
+	view := NewProjectsView()
+
+	// Reach a real AddPicking state through key events, then move the cursor off
+	// row 0 so "cursor untouched" is a meaningful claim.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("j"))
+	if view.Adding != AddPicking {
+		t.Fatalf("setup: Adding = %v, want AddPicking", view.Adding)
+	}
+	if view.addCursor != 1 {
+		t.Fatalf("setup: addCursor = %d, want 1", view.addCursor)
+	}
+
+	// The prior enrollment's result lands now. It is no longer AddTracking, so
+	// it must not stomp the new picker — but it is still a real outcome.
+	view.OnTrackResult(TrackResultMsg{Folders: []string{"agent-brain"}})
+
+	if view.Adding != AddPicking {
+		t.Fatalf("Adding = %v, want AddPicking (a stale result must not reset the new flow)", view.Adding)
+	}
+	if view.addCursor != 1 {
+		t.Fatalf("addCursor = %d, want 1 (a stale result moved the picker cursor)", view.addCursor)
+	}
+	if diff := cmp.Diff(candidates, view.addCandidates); diff != "" {
+		t.Fatalf("a stale result mutated the picker candidates (-want +got):\n%s", diff)
+	}
+}
+
+// TestProjectsAddEscCancelsEachStage pins the updateAdd Cancel branch across
+// all three interactive add stages: esc must reset Adding to AddNone and
+// never reach the daemon, whether it fires from the picker, the path
+// confirm, or the folder naming input.
+func TestProjectsAddEscCancelsEachStage(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	candidates := []TrackCandidate{{
+		Provider:  "claude",
+		Label:     "claude  myrepo  → /g/myrepo",
+		PathGuess: "/g/myrepo",
+		Roots:     []TrackRoot{{LocalDir: "/x/memory"}},
+	}}
+	identity := provider.Identity{PreferredFolder: "myrepo"}
+	actions := trackActionsFor(candidates, identity, nil)
+	view := NewProjectsView()
+
+	// Stage 1: cancel from the picker.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("esc"))
+	if view.Adding != AddNone {
+		t.Fatal("esc in the picker did not reset the add flow")
+	}
+
+	// Stage 2: cancel from the path confirm.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("enter"))
+	drive(t, &view, fake, actions, key("esc"))
+	if view.Adding != AddNone {
+		t.Fatal("esc in the path confirm did not reset the add flow")
+	}
+
+	// Stage 3: cancel from the folder naming input.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("enter"))
+	drive(t, &view, fake, actions, key("enter"))
+	drive(t, &view, fake, actions, key("esc"))
+	if view.Adding != AddNone {
+		t.Fatal("esc in the naming input did not reset the add flow")
+	}
+	if len(fake.trackCalls) != 0 {
+		t.Fatalf("cancelled flows must never track: %v", fake.trackCalls)
+	}
+}
+
 // TestAddViewHintsRenderFromModalBindings pins the add flow's inline hints to
 // the same ForModal bindings the root's global footer renders (dashboard.go's
 // footer()), so the two surfaces cannot hand-drift the way they already had:

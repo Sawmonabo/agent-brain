@@ -60,3 +60,47 @@ func TestDefaultStylesRenderPlainText(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultDiffersByBackground proves Default(isDark) actually branches on
+// its argument. TestDefaultStylesRenderPlainText's CSI round-trip holds even
+// for a Default that ignored isDark and always returned one hardcoded
+// flavour, so it alone cannot catch that regression — this test compares the
+// resolved color itself. GetForeground reads the lipgloss.Style's stored
+// color.Color value directly, not a rendered string: a rendered string's
+// ANSI escapes depend on the terminal's color profile, which is not fixed
+// when tests run without a TTY, so asserting on rendered output here would be
+// flaky rather than a genuine flavour check.
+func TestDefaultDiffersByBackground(t *testing.T) {
+	t.Parallel()
+	dark := Default(true)
+	light := Default(false)
+
+	tests := []struct {
+		name  string
+		dark  lipgloss.Style
+		light lipgloss.Style
+	}{
+		{"Title", dark.Title, light.Title},
+		{"Header", dark.Header, light.Header},
+		{"Dim", dark.Dim, light.Dim},
+		{"OK", dark.OK, light.OK},
+		{"Warn", dark.Warn, light.Warn},
+		{"Fail", dark.Fail, light.Fail},
+		{"Info", dark.Info, light.Info},
+		{"ActiveTab", dark.ActiveTab, light.ActiveTab},
+		{"InactiveTab", dark.InactiveTab, light.InactiveTab},
+		{"Badge", dark.Badge, light.Badge},
+		{"Toast", dark.Toast, light.Toast},
+		// Selected carries no palette-derived color (Reverse(true) only), so
+		// it is identical by construction in both flavours — deliberately
+		// excluded, since including it would assert a false invariant.
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := testCase.dark.GetForeground(); got == testCase.light.GetForeground() {
+				t.Errorf("%s foreground identical between dark and light flavours: %v", testCase.name, got)
+			}
+		})
+	}
+}
