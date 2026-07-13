@@ -107,6 +107,10 @@ type Config struct {
 	// Projects tab's add action.
 	Discover func(context.Context) ([]views.TrackCandidate, error)
 	Identify func(ctx context.Context, providerName string, root views.TrackRoot, projectPath string) (provider.Identity, error)
+	// Registry is the shared provider registry (buildTrackDeps().registry in
+	// the cli command) — memoryfs classification needs it to resolve each
+	// enrolled unit's pattern table (Task 6).
+	Registry *provider.Registry
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed

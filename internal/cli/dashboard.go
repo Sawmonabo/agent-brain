@@ -59,11 +59,16 @@ func launchHub(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	deps, err := buildTrackDeps()
+	if err != nil {
+		return err
+	}
 
 	model := dashboard.New(dashboard.Config{
 		Data:     dashboard.NewData(client, offlineDoctorRunner()),
 		Discover: dashboardDiscover(),
 		Identify: dashboardIdentify(),
+		Registry: deps.registry,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting
