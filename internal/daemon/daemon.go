@@ -154,6 +154,11 @@ type Daemon struct {
 
 	syncRequests  chan syncRequest
 	adminRequests chan adminRequest
+	// readRequests carries History/Blob lookups to the engine goroutine
+	// (ADR 20 D3): a separate channel from adminRequests because the loop
+	// arm servicing it must not run a post-op cycle or check quiesce (see
+	// submitRead and the loop's readRequests arm).
+	readRequests chan adminRequest
 }
 
 // New validates config; all I/O happens in Run.
@@ -173,6 +178,7 @@ func New(cfg Config) (*Daemon, error) {
 		lastCycle:     map[string]*api.UnitCycleResult{},
 		syncRequests:  make(chan syncRequest),
 		adminRequests: make(chan adminRequest),
+		readRequests:  make(chan adminRequest),
 	}, nil
 }
 
@@ -410,6 +416,17 @@ func (d *Daemon) loop(ctx context.Context, syncEngine *engine.Engine, logger *sl
 			result, err := request.run(ctx, syncEngine)
 			request.reply <- adminReply{result: result, err: err}
 			runCycle(request.reason, "")
+		case request := <-d.readRequests:
+			// Read-only history/blob work runs HERE so it can never race the
+			// writer (ADR 20 D3). Unlike adminRequests: no post-op cycle
+			// (nothing changed) and no quiesce refusal — spec §15 greys
+			// mutations only, and the quiesce window's checkout surgery
+			// (.git/config/.gitattributes re-wiring) cannot corrupt a `git
+			// log`/`cat-file` read; a checkout mid-init re-clone is instead
+			// caught by submitRead's own refreshState "ready" gate, same as
+			// every other engine-goroutine op.
+			result, err := request.run(ctx, syncEngine)
+			request.reply <- adminReply{result: result, err: err}
 		}
 	}
 }
@@ -870,6 +887,7 @@ func (d *Daemon) Projects() api.ProjectsResponse {
 			Provider:      u.Provider,
 			Folder:        u.Folder,
 			LocalDir:      u.LocalDir,
+			RepoSubdir:    u.RepoSubdir,
 			Degraded:      d.degraded[u.Folder],
 			WatchState:    d.watchState[u.LocalDir],
 			WatchTriggers: d.watchTriggers[u.LocalDir],
@@ -893,6 +911,36 @@ func (d *Daemon) submitAdmin(ctx context.Context, reason string, run func(contex
 	timeout := time.After(adminWaitTimeout)
 	select {
 	case d.adminRequests <- request:
+	case <-timeout:
+		return nil, errors.New("daemon busy with a sync cycle — try again")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case reply := <-request.reply:
+		return reply.result, reply.err
+	case <-timeout:
+		return nil, errors.New("admin operation timed out")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// submitRead hands a read-only history/blob lookup to the engine goroutine
+// and waits bounded for its reply — submitAdmin's shape, minus the quiesce
+// check: spec §15 greys mutations only, and a history/blob read cannot
+// corrupt or race the quiesce window's checkout surgery (ADR 20 D3), so
+// there is nothing for a hold to protect a read from. The readiness gate
+// stays: a checkout mid-init re-clone must still refuse, the same as every
+// other engine-goroutine op.
+func (d *Daemon) submitRead(ctx context.Context, reason string, run func(context.Context, *engine.Engine) (any, error)) (any, error) {
+	if state, detail := d.refreshState(ctx); state != "ready" {
+		return nil, fmt.Errorf("%w: %s", errNotInitialized, detail)
+	}
+	request := adminRequest{reason: reason, run: run, reply: make(chan adminReply, 1)}
+	timeout := time.After(adminWaitTimeout)
+	select {
+	case d.readRequests <- request:
 	case <-timeout:
 		return nil, errors.New("daemon busy with a sync cycle — try again")
 	case <-ctx.Done():
@@ -1046,4 +1094,86 @@ func (d *Daemon) Reencrypt(ctx context.Context) (api.ReencryptResponse, error) {
 		return api.ReencryptResponse{}, err
 	}
 	return result.(api.ReencryptResponse), nil
+}
+
+// History implements controller: engine.History runs on the engine goroutine
+// through the read funnel (submitRead, ADR 20 D3), so it never races the
+// single writer. See mapHistoryError for the error→status mapping shared
+// with Blob.
+func (d *Daemon) History(ctx context.Context, folder, path string, limit int) (api.HistoryResponse, error) {
+	result, err := d.submitRead(ctx, "history", func(ctx context.Context, e *engine.Engine) (any, error) {
+		versions, err := e.History(ctx, folder, path, limit)
+		if err != nil {
+			return nil, mapHistoryError(err)
+		}
+		return toHistoryResponse(versions), nil
+	})
+	if err != nil {
+		return api.HistoryResponse{}, err
+	}
+	return result.(api.HistoryResponse), nil
+}
+
+// Blob implements controller: engine.BlobAt runs on the engine goroutine
+// through the read funnel (submitRead, ADR 20 D3), so it never races the
+// single writer.
+func (d *Daemon) Blob(ctx context.Context, folder, path, rev string) (api.BlobResponse, error) {
+	result, err := d.submitRead(ctx, "blob", func(ctx context.Context, e *engine.Engine) (any, error) {
+		content, err := e.BlobAt(ctx, folder, path, rev)
+		if err != nil {
+			return nil, mapHistoryError(err)
+		}
+		return api.BlobResponse{Content: string(content)}, nil
+	})
+	if err != nil {
+		return api.BlobResponse{}, err
+	}
+	return result.(api.BlobResponse), nil
+}
+
+// mapHistoryError translates a History/BlobAt failure into the controller's
+// HTTP status, shared by both since History can only ever produce the
+// "everything else" case below (ErrBlobTooLarge/ErrBlobBinary are
+// BlobAt-specific). Guard order: the two content caps are checked first;
+// everything else — Task 1's shape validation (engine.ErrBadHistoryInput:
+// a malformed folder/path/rev) and a git failure resolving an unknown rev
+// or path (BlobAt's cat-file surfaces that verbatim, by design) — is the
+// caller naming something that does not exist, a 400 like any other bad
+// --project name (TriggerSync). A genuine infrastructure failure cannot
+// reach here: submitRead's refreshState gate already refused an unhealthy
+// checkout before the engine goroutine ever ran this call.
+func mapHistoryError(err error) error {
+	switch {
+	case errors.Is(err, engine.ErrBlobTooLarge):
+		return statusError{code: http.StatusRequestEntityTooLarge, msg: err.Error()}
+	case errors.Is(err, engine.ErrBlobBinary):
+		return statusError{code: http.StatusUnsupportedMediaType, msg: err.Error()}
+	default:
+		return statusError{code: http.StatusBadRequest, msg: err.Error()}
+	}
+}
+
+// toHistoryResponse projects engine.HistoryVersion (Task 1) onto the wire
+// shape: Timestamp is *time.Time, nil when Stamp is zero (Task 1's "not a
+// capture subject" signal), rather than encoding the misleading literal
+// "0001-01-01T00:00:00Z". A nil versions input (no history) still yields a
+// non-nil, empty Versions slice, matching Projects()'s same
+// never-null-on-the-wire convention for a list response.
+func toHistoryResponse(versions []engine.HistoryVersion) api.HistoryResponse {
+	response := api.HistoryResponse{Versions: make([]api.HistoryVersion, len(versions))}
+	for i, v := range versions {
+		wire := api.HistoryVersion{
+			Rev:     v.Rev,
+			Subject: v.Subject,
+			Host:    v.Host,
+			Paths:   v.Paths,
+			Live:    v.Live,
+		}
+		if !v.Stamp.IsZero() {
+			stamp := v.Stamp
+			wire.Timestamp = &stamp
+		}
+		response.Versions[i] = wire
+	}
+	return response
 }

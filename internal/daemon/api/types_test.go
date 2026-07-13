@@ -133,3 +133,104 @@ func TestSyncSummaryOmitsOfflineWhenFalse(t *testing.T) {
 		t.Errorf("zero-value SyncSummary serialized the offline key; it must omitempty:\n%s", blob)
 	}
 }
+
+// TestHistoryResponseRoundTrip proves the history wire shape survives JSON
+// intact (go-cmp), and that a version with no Host/Timestamp — Task 1's
+// "not a capture subject" signal, e.g. a foreign non-engine commit —
+// omits both keys from ITS OWN serialized object rather than merely being
+// obscured by a sibling version that does carry them.
+func TestHistoryResponseRoundTrip(t *testing.T) {
+	t.Parallel()
+	stamp := time.Date(2026, 7, 12, 9, 0, 0, 0, time.UTC)
+	want := HistoryResponse{Versions: []HistoryVersion{
+		{
+			Rev:       "abc123def4567890abc123def4567890abc123d",
+			Subject:   "memory: host-a alpha 2026-07-12T09:00:00Z",
+			Host:      "host-a",
+			Timestamp: &stamp,
+			Paths:     []string{"claude/notes.md"},
+			Live:      true,
+		},
+		{
+			Rev:     "0000000000000000000000000000000000000f",
+			Subject: "merge stuff",
+			Live:    false,
+			// Host, Timestamp, Paths all zero: a foreign (non-capture) subject.
+		},
+	}}
+
+	blob, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got HistoryResponse
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("HistoryResponse round-trip (-want +got):\n%s", diff)
+	}
+
+	soloBlob, err := json.Marshal(want.Versions[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	soloJSON := string(soloBlob)
+	for _, absent := range []string{"host", "timestamp", "paths"} {
+		if strings.Contains(soloJSON, absent) {
+			t.Errorf("zero-Host/nil-Timestamp version serialized %q; it must omitempty:\n%s", absent, soloJSON)
+		}
+	}
+	for _, present := range []string{"rev", "subject", "live"} {
+		if !strings.Contains(soloJSON, present) {
+			t.Errorf("zero-Host/nil-Timestamp version dropped required key %q:\n%s", present, soloJSON)
+		}
+	}
+}
+
+// TestBlobResponseRoundTrips proves the (deliberately minimal) blob wire
+// shape survives JSON intact.
+func TestBlobResponseRoundTrips(t *testing.T) {
+	t.Parallel()
+	want := BlobResponse{Content: "decrypted memory content\n"}
+	blob, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got BlobResponse
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("BlobResponse round-trip (-want +got):\n%s", diff)
+	}
+}
+
+// TestUnitInfoRepoSubdirAdditiveContract pins RepoSubdir's additive wire
+// contract: a unit with none set — every unit before this task — serializes
+// BYTE-IDENTICAL to the pre-change payload (old daemons/clients unaffected),
+// and a unit with one set round-trips it intact.
+func TestUnitInfoRepoSubdirAdditiveContract(t *testing.T) {
+	t.Parallel()
+	blob, err := json.Marshal(UnitInfo{Provider: "claude", Folder: "alpha", LocalDir: "/l/a", Degraded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"provider":"claude","folder":"alpha","local_dir":"/l/a","degraded":true}`
+	if got := string(blob); got != want {
+		t.Errorf("UnitInfo without RepoSubdir = %s, want byte-identical pre-change payload %s", got, want)
+	}
+
+	withSubdir := UnitInfo{Provider: "codex", Folder: "_global", LocalDir: "/home/u/.codex/memories", RepoSubdir: "memories"}
+	blob, err = json.Marshal(withSubdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got UnitInfo
+	if err := json.Unmarshal(blob, &got); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(withSubdir, got); diff != "" {
+		t.Errorf("UnitInfo RepoSubdir round-trip (-want +got):\n%s", diff)
+	}
+}

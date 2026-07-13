@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,10 +26,23 @@ type fakeController struct {
 	migrate   api.MigrateResponse
 	reencrypt api.ReencryptResponse
 	quiesce   api.QuiesceResponse
+	history   api.HistoryResponse
+	blob      api.BlobResponse
 
 	reencryptErr    error // when set, Reencrypt returns it (drives the writeError envelope test)
 	quiescedSeconds int   // last Quiesce arg, for the route's method-switch test
 	resumed         bool  // set by Resume
+	historyErr      error // when set, History returns it (drives the error-mapping tests)
+	blobErr         error // when set, Blob returns it (drives the 413/415 tests)
+
+	// historyFolder/historyPath/historyLimit and blobFolder/blobPath/blobRev
+	// record the last call's arguments, for the query-parsing tests.
+	historyFolder string
+	historyPath   string
+	historyLimit  int
+	blobFolder    string
+	blobPath      string
+	blobRev       string
 }
 
 func (f *fakeController) Status() api.StatusResponse { return f.status }
@@ -60,6 +74,16 @@ func (f *fakeController) Quiesce(seconds int) api.QuiesceResponse {
 func (f *fakeController) Resume() api.QuiesceResponse {
 	f.resumed = true
 	return api.QuiesceResponse{}
+}
+
+func (f *fakeController) History(_ context.Context, folder, path string, limit int) (api.HistoryResponse, error) {
+	f.historyFolder, f.historyPath, f.historyLimit = folder, path, limit
+	return f.history, f.historyErr
+}
+
+func (f *fakeController) Blob(_ context.Context, folder, path, rev string) (api.BlobResponse, error) {
+	f.blobFolder, f.blobPath, f.blobRev = folder, path, rev
+	return f.blob, f.blobErr
 }
 
 // shortSocketDir avoids t.TempDir(): test names inflate the path past
@@ -273,6 +297,120 @@ func TestClientReportsDaemonNotRunning(t *testing.T) {
 	if !errors.Is(err, api.ErrDaemonNotRunning) {
 		t.Fatalf("err = %v, want ErrDaemonNotRunning", err)
 	}
+}
+
+// TestHistoryEndpointParsesQuery pins /v0/history's GET-only query-string
+// contract: the exact folder/path/limit values reach the controller
+// untouched, a non-GET is refused, a malformed limit is a 400 before the
+// controller ever sees the request, and a controller statusError surfaces
+// through the same writeError envelope every other route uses.
+func TestHistoryEndpointParsesQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("GET threads folder/path/limit to the controller", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{history: api.HistoryResponse{Versions: []api.HistoryVersion{{Rev: "abc", Live: true}}}}
+		client := api.NewClient(startServer(t, fake, defaultPeerUID))
+
+		resp, err := client.History(context.Background(), "projA", "claude/n.md", 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(fake.history, resp); diff != "" {
+			t.Fatalf("history response (-want +got):\n%s", diff)
+		}
+		if fake.historyFolder != "projA" || fake.historyPath != "claude/n.md" || fake.historyLimit != 7 {
+			t.Fatalf("controller saw folder=%q path=%q limit=%d, want projA/claude/n.md/7", fake.historyFolder, fake.historyPath, fake.historyLimit)
+		}
+	})
+
+	t.Run("POST is refused", func(t *testing.T) {
+		t.Parallel()
+		client := api.NewClient(startServer(t, &fakeController{}, defaultPeerUID))
+		if err := client.PostForTest(context.Background(), "/v0/history"); err == nil ||
+			!strings.Contains(err.Error(), "405") {
+			t.Fatalf("POST /v0/history err = %v, want a 405", err)
+		}
+	})
+
+	t.Run("a malformed limit is a 400 before the controller sees the request", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{}
+		socketPath := startServer(t, fake, defaultPeerUID)
+		// The typed client cannot express a malformed limit; probe the raw
+		// query string directly.
+		if err := api.NewClient(socketPath).GetForTest(context.Background(), "/v0/history?folder=projA&limit=notanumber"); err == nil ||
+			!strings.Contains(err.Error(), "400") {
+			t.Fatalf("bad limit err = %v, want a 400", err)
+		}
+		if fake.historyFolder != "" {
+			t.Fatalf("controller was called (folder=%q) despite the malformed limit", fake.historyFolder)
+		}
+	})
+
+	t.Run("a controller statusError surfaces through the error envelope", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{historyErr: statusError{code: http.StatusBadRequest, msg: "bad folder"}}
+		client := api.NewClient(startServer(t, fake, defaultPeerUID))
+		if _, err := client.History(context.Background(), "x", "", 0); err == nil ||
+			!strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "bad folder") {
+			t.Fatalf("history error envelope = %v, want a 400 carrying %q", err, "bad folder")
+		}
+	})
+}
+
+// TestBlobEndpointParsesQuery pins /v0/blob's GET-only query-string
+// contract: folder/path/rev reach the controller untouched, a non-GET is
+// refused, and BlobAt's two content guards (oversize, binary) pass through
+// as 413/415 respectively via a controller statusError.
+func TestBlobEndpointParsesQuery(t *testing.T) {
+	t.Parallel()
+
+	t.Run("GET threads folder/path/rev to the controller", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{blob: api.BlobResponse{Content: "hello\n"}}
+		client := api.NewClient(startServer(t, fake, defaultPeerUID))
+
+		resp, err := client.Blob(context.Background(), "projA", "claude/n.md", "abc123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(fake.blob, resp); diff != "" {
+			t.Fatalf("blob response (-want +got):\n%s", diff)
+		}
+		if fake.blobFolder != "projA" || fake.blobPath != "claude/n.md" || fake.blobRev != "abc123" {
+			t.Fatalf("controller saw folder=%q path=%q rev=%q, want projA/claude/n.md/abc123", fake.blobFolder, fake.blobPath, fake.blobRev)
+		}
+	})
+
+	t.Run("POST is refused", func(t *testing.T) {
+		t.Parallel()
+		client := api.NewClient(startServer(t, &fakeController{}, defaultPeerUID))
+		if err := client.PostForTest(context.Background(), "/v0/blob"); err == nil ||
+			!strings.Contains(err.Error(), "405") {
+			t.Fatalf("POST /v0/blob err = %v, want a 405", err)
+		}
+	})
+
+	t.Run("oversize content is a 413", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{blobErr: statusError{code: http.StatusRequestEntityTooLarge, msg: "blob exceeds the API size cap"}}
+		client := api.NewClient(startServer(t, fake, defaultPeerUID))
+		if _, err := client.Blob(context.Background(), "x", "y", "abc"); err == nil ||
+			!strings.Contains(err.Error(), "413") {
+			t.Fatalf("oversize blob err = %v, want a 413", err)
+		}
+	})
+
+	t.Run("binary content is a 415", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeController{blobErr: statusError{code: http.StatusUnsupportedMediaType, msg: "blob is not valid UTF-8 text"}}
+		client := api.NewClient(startServer(t, fake, defaultPeerUID))
+		if _, err := client.Blob(context.Background(), "x", "y", "abc"); err == nil ||
+			!strings.Contains(err.Error(), "415") {
+			t.Fatalf("binary blob err = %v, want a 415", err)
+		}
+	})
 }
 
 func TestListenSocketReplacesStaleSocket(t *testing.T) {

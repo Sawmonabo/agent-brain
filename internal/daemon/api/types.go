@@ -151,7 +151,12 @@ type UnitInfo struct {
 	Provider string `json:"provider"`
 	Folder   string `json:"folder"`
 	LocalDir string `json:"local_dir"`
-	Degraded bool   `json:"degraded"`
+	// RepoSubdir mirrors repo.Unit.RepoSubdir — the hub needs it to map this
+	// unit's local file to its repo path (<provider>/<repo_subdir>/<file>).
+	// Additive (Task-Phase-5): empty for every unit enrolled before this
+	// field existed, so a pre-change payload is byte-identical.
+	RepoSubdir string `json:"repo_subdir,omitempty"`
+	Degraded   bool   `json:"degraded"`
 	// WatchState is the unit's live watch posture: "watching" when its dir is
 	// attached to the fsnotify watcher, or "failed: <reason>" when establishing
 	// or running the watch failed — the ticker/poll backstop still syncs such a
@@ -183,4 +188,41 @@ type UnitCycleResult struct {
 // ProjectsResponse answers GET /v0/projects.
 type ProjectsResponse struct {
 	Units []UnitInfo `json:"units"`
+}
+
+// HistoryVersion is one commit touching the queried folder/path, newest
+// first (spec §6). It mirrors engine.HistoryVersion (Task 1) with one
+// deliberate wire-shape difference: Timestamp is a *time.Time, omitempty,
+// nil meaning "not a capture subject" — the engine's own HistoryVersion
+// instead carries a zero time.Time for that same case, which would encode
+// as the misleading literal "0001-01-01T00:00:00Z" over JSON.
+type HistoryVersion struct {
+	Rev     string `json:"rev"`
+	Subject string `json:"subject"`
+	// Host is the machine that made this capture; empty for a foreign
+	// (non-capture-subject) commit.
+	Host string `json:"host,omitempty"`
+	// Timestamp is parsed from the engine's own capture-subject convention
+	// (`memory: <host> <folder> <timestamp>`); nil for a foreign commit.
+	Timestamp *time.Time `json:"timestamp,omitempty"`
+	// Paths lists this version's folder-relative changed paths — populated
+	// only in folder-wide mode (path == "" on the request), which is also
+	// the source for the deleted-memories view (a path present in some
+	// version's Paths but absent from HEAD).
+	Paths []string `json:"paths,omitempty"`
+	// Live means this rev's blob content, at the queried path, equals
+	// HEAD's — a path-mode-only question; always false in folder-wide mode.
+	Live bool `json:"live"`
+}
+
+// HistoryResponse answers GET /v0/history.
+type HistoryResponse struct {
+	Versions []HistoryVersion `json:"versions"`
+}
+
+// BlobResponse answers GET /v0/blob: decrypted content at a revision (via
+// the checkout's own textconv/filter machinery), size-capped and refused
+// when binary — see engine.ErrBlobTooLarge/ErrBlobBinary.
+type BlobResponse struct {
+	Content string `json:"content"`
 }

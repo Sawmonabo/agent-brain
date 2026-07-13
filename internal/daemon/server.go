@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -29,6 +30,8 @@ type controller interface {
 	Reencrypt(ctx context.Context) (api.ReencryptResponse, error)
 	Quiesce(seconds int) api.QuiesceResponse
 	Resume() api.QuiesceResponse
+	History(ctx context.Context, folder, path string, limit int) (api.HistoryResponse, error)
+	Blob(ctx context.Context, folder, path, rev string) (api.BlobResponse, error)
 }
 
 // peerUIDFunc extracts the connecting process's UID from a unix socket
@@ -95,6 +98,45 @@ func newServer(ctrl controller, peerUID peerUIDFunc) *http.Server {
 			return
 		}
 		writeJSON(w, ctrl.Projects())
+	})
+	// /v0/history and /v0/blob are READ-ONLY (spec §6): GET-only, query-string
+	// args like /v0/status, served through the engine goroutine's read funnel
+	// (submitRead) rather than the admin/mutation path — never a POST, never a
+	// JSON body. They must never gain a write sibling on this route.
+	mux.HandleFunc("/v0/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		query := r.URL.Query()
+		limit := 0
+		if raw := query.Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil {
+				http.Error(w, "invalid limit: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			limit = parsed
+		}
+		response, err := ctrl.History(r.Context(), query.Get("folder"), query.Get("path"), limit)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, response)
+	})
+	mux.HandleFunc("/v0/blob", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		query := r.URL.Query()
+		response, err := ctrl.Blob(r.Context(), query.Get("folder"), query.Get("path"), query.Get("rev"))
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, response)
 	})
 	mux.HandleFunc("/v0/track", postHandler(ctrl.Track))
 	mux.HandleFunc("/v0/untrack", postHandler(ctrl.Untrack))

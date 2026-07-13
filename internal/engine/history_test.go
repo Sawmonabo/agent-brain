@@ -326,6 +326,41 @@ func TestHistoryRejectsBadInputs(t *testing.T) {
 	}
 }
 
+// TestValidateHistoryInputsWrapsSentinel pins the ErrBadHistoryInput
+// sentinel: every validate-history-inputs failure — a malformed folder, a
+// path escaping the checkout, and a badly-shaped rev — must be
+// errors.Is-detectable, so the daemon (Task 2) can map any of them to a 400
+// without pattern-matching message text. The prefix and specific detail
+// TestHistoryRejectsBadInputs/TestBlobAtRejectsBadRev already pin must
+// survive alongside the sentinel wrap.
+func TestValidateHistoryInputsWrapsSentinel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		folder string
+		path   string
+		rev    string
+	}{
+		{"folder contains a path separator", "no/slash", "", ""},
+		{"folder shaped like a git flag", "-rf", "", ""},
+		{"path escapes the checkout with a traversal segment", "projA", "../escape", ""},
+		{"rev shaped like a shell command", "projA", "", "abc$(rm)"},
+		{"rev matching a symbolic ref, not a hash", "projA", "", "HEAD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateHistoryInputs(tt.folder, tt.path, tt.rev)
+			if !errors.Is(err, ErrBadHistoryInput) {
+				t.Fatalf("validateHistoryInputs(%q, %q, %q) = %v, want errors.Is(_, ErrBadHistoryInput)", tt.folder, tt.path, tt.rev, err)
+			}
+			if !strings.HasPrefix(err.Error(), "history:") {
+				t.Fatalf("validateHistoryInputs(%q, %q, %q) error = %q, want a %q-prefixed error", tt.folder, tt.path, tt.rev, err.Error(), "history:")
+			}
+		})
+	}
+}
+
 // TestBlobAtReturnsPlaintextAtRev proves BlobAt rides the checkout's own
 // decrypt wiring rather than a bespoke path of its own: against a checkout
 // with REAL filters (the real binary, never the test binary — see

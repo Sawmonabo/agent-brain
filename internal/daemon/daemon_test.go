@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
+	"github.com/Sawmonabo/agent-brain/internal/engine"
 	"github.com/Sawmonabo/agent-brain/internal/gitx"
 	"github.com/Sawmonabo/agent-brain/internal/gitx/gitxtest"
 	"github.com/Sawmonabo/agent-brain/internal/keys"
@@ -1067,5 +1070,133 @@ func TestAdminOpsRequireInitializedRepo(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not initialized") {
 			t.Fatalf("%s on uninitialized repo: err = %v, want actionable message", name, err)
 		}
+	}
+}
+
+// wireHistoryVersions mirrors the daemon's engine.HistoryVersion → wire
+// api.HistoryVersion projection (an unexported daemon-package conversion
+// unreachable from this external test package), so a direct engine.History
+// call can be compared against the API's JSON response.
+func wireHistoryVersions(versions []engine.HistoryVersion) []api.HistoryVersion {
+	wire := make([]api.HistoryVersion, len(versions))
+	for i, v := range versions {
+		wire[i] = api.HistoryVersion{Rev: v.Rev, Subject: v.Subject, Host: v.Host, Paths: v.Paths, Live: v.Live}
+		if !v.Stamp.IsZero() {
+			stamp := v.Stamp
+			wire[i].Timestamp = &stamp
+		}
+	}
+	return wire
+}
+
+// TestHistoryServedThroughReadFunnel provisions a ready checkout, drives two
+// real sync cycles so the capture commits carry the engine's own subject
+// convention, then asserts the API's History mirrors what a direct
+// engine.History call against the SAME checkout returns — proving the read
+// funnel (Task 2's submitRead/readRequests) changes nothing about what the
+// read itself sees, only how it is scheduled.
+func TestHistoryServedThroughReadFunnel(t *testing.T) {
+	paths, unit := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	memoryFile := filepath.Join(unit.LocalDir, "memories", "fact.md")
+	if err := os.MkdirAll(filepath.Dir(memoryFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memoryFile, []byte("first\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Sync(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memoryFile, []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Sync(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	const repoPath = "claude/memories/fact.md" // <provider>/<relative-to-LocalDir>
+	resp, err := client.History(context.Background(), unit.Folder, repoPath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Versions) != 2 {
+		t.Fatalf("len(resp.Versions) = %d, want 2 capture commits", len(resp.Versions))
+	}
+
+	directEngine, err := engine.New(paths.MemoriesDir(), "comparison-host", testRegistry(t), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := directEngine.History(context.Background(), unit.Folder, repoPath, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(wireHistoryVersions(want), resp.Versions); diff != "" {
+		t.Fatalf("API History vs direct engine.History (-want +got):\n%s", diff)
+	}
+}
+
+// TestReadsRefuseUninitialized pins submitRead's readiness gate: History
+// against an unprovisioned checkout returns the same actionable refusal
+// every mutating endpoint returns (envelope: HTTP 500 naming
+// `agent-brain init`), not a git failure or a panic.
+func TestReadsRefuseUninitialized(t *testing.T) {
+	base, err := os.MkdirTemp("", "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	paths := config.Paths{ConfigDir: filepath.Join(base, "cfg"), DataDir: filepath.Join(base, "data")}
+	t.Setenv("AGENT_BRAIN_RUNTIME_DIR", filepath.Join(base, "run"))
+	client := startDaemon(t, paths)
+
+	if _, err := client.History(context.Background(), "alpha", "", 0); err == nil ||
+		!strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "run `agent-brain init`") {
+		t.Fatalf("history on uninitialized repo: err = %v, want a 500 naming `agent-brain init`", err)
+	}
+}
+
+// TestReadsAllowedWhileQuiesced pins the mutations-only greying contract
+// (spec §15, ADR 20 D3): while quiesced, History succeeds — the quiesce
+// window's checkout surgery (.git/config/.gitattributes re-wiring) cannot
+// corrupt a `git log`/`cat-file` read — while TriggerSync is refused. A
+// future refactor that folded reads into submitAdmin would regress this
+// silently; this test pins it.
+func TestReadsAllowedWhileQuiesced(t *testing.T) {
+	paths, unit := newDaemonEnv(t)
+	client := startDaemon(t, paths)
+
+	memoryFile := filepath.Join(unit.LocalDir, "memories", "fact.md")
+	if err := os.MkdirAll(filepath.Dir(memoryFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memoryFile, []byte("before quiesce\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Sync(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Quiesce(context.Background(), 60); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Sync(context.Background(), ""); err == nil ||
+		!strings.Contains(err.Error(), "quiesced until") {
+		t.Fatalf("sync while quiesced: err = %v, want an error naming the quiesce expiry", err)
+	}
+
+	resp, err := client.History(context.Background(), unit.Folder, "claude/memories/fact.md", 0)
+	if err != nil {
+		t.Fatalf("history while quiesced: %v, want success", err)
+	}
+	if len(resp.Versions) != 1 {
+		t.Fatalf("history while quiesced = %+v, want one version", resp.Versions)
+	}
+
+	if _, err := client.Resume(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

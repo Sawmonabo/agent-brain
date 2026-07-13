@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -59,6 +61,38 @@ func (c *Client) Sync(ctx context.Context, project string) (SyncResponse, error)
 func (c *Client) Projects(ctx context.Context) (ProjectsResponse, error) {
 	var out ProjectsResponse
 	err := c.do(ctx, http.MethodGet, "/v0/projects", nil, &out)
+	return out, err
+}
+
+// History lists commits touching folder (folder-wide mode, path == "") or
+// folder/path (path mode), newest first, capped at limit — served through
+// the daemon's read funnel (ADR 20 D3), never the mutation path. limit <= 0
+// omits the query parameter entirely, letting the daemon apply its own
+// default (spec §6).
+func (c *Client) History(ctx context.Context, folder, path string, limit int) (HistoryResponse, error) {
+	values := url.Values{}
+	values.Set("folder", folder)
+	if path != "" {
+		values.Set("path", path)
+	}
+	if limit > 0 {
+		values.Set("limit", strconv.Itoa(limit))
+	}
+	var out HistoryResponse
+	err := c.do(ctx, http.MethodGet, "/v0/history?"+values.Encode(), nil, &out)
+	return out, err
+}
+
+// Blob fetches folder/path's decrypted content as it stood at rev (a full
+// or abbreviated commit hash, typically one History returned) — served
+// through the daemon's read funnel like History.
+func (c *Client) Blob(ctx context.Context, folder, path, rev string) (BlobResponse, error) {
+	values := url.Values{}
+	values.Set("folder", folder)
+	values.Set("path", path)
+	values.Set("rev", rev)
+	var out BlobResponse
+	err := c.do(ctx, http.MethodGet, "/v0/blob?"+values.Encode(), nil, &out)
 	return out, err
 }
 
@@ -113,6 +147,13 @@ func (c *Client) Resume(ctx context.Context) (QuiesceResponse, error) {
 // GetForTest issues a bare GET so tests can probe method handling.
 func (c *Client) GetForTest(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodGet, path, nil, &struct{}{})
+}
+
+// PostForTest issues a bare, bodyless POST so tests can probe method
+// handling on GET-only routes (History/Blob) — the mirror image of
+// GetForTest, which probes POST-only routes.
+func (c *Client) PostForTest(ctx context.Context, path string) error {
+	return c.do(ctx, http.MethodPost, path, nil, &struct{}{})
 }
 
 // do issues one request. A nil in sends no body; a non-nil in is JSON-encoded

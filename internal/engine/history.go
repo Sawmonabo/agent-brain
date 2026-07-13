@@ -38,6 +38,12 @@ var (
 	// NUL byte) — never a sign of raw ciphertext leaking, since textconv
 	// already ran before this check.
 	ErrBlobBinary = errors.New("blob is not valid UTF-8 text")
+	// ErrBadHistoryInput means folder, path, or rev failed shape validation
+	// in validateHistoryInputs before any git subprocess ran. The daemon
+	// (Task 2) maps it to a 400 via errors.Is — the caller named something
+	// malformed, not a server failure — rather than pattern-matching
+	// message text.
+	ErrBadHistoryInput = errors.New("history: invalid input")
 )
 
 // revPattern is the only shape BlobAt accepts for rev: a full or
@@ -218,16 +224,16 @@ func validateHistoryInputs(folder, path, rev string) error {
 	// registration.
 	if folder != repo.GlobalFolder {
 		if err := repo.ValidateFolderName(folder); err != nil {
-			return fmt.Errorf("history: %w", err)
+			return fmt.Errorf("%w: %w", ErrBadHistoryInput, err)
 		}
 	}
 	if path != "" {
 		if err := repo.ValidateRelPath(path); err != nil {
-			return fmt.Errorf("history: %w", err)
+			return fmt.Errorf("%w: %w", ErrBadHistoryInput, err)
 		}
 	}
 	if rev != "" && !revPattern.MatchString(rev) {
-		return fmt.Errorf("history: invalid rev %q", rev)
+		return fmt.Errorf("%w: invalid rev %q", ErrBadHistoryInput, rev)
 	}
 	return nil
 }
