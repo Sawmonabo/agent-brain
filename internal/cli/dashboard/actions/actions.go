@@ -28,13 +28,14 @@ type Scope int
 // Scopes in declaration order — AllScopes and the help overlay's group
 // ordering both depend on this exact sequence.
 const (
-	ScopeGlobal    Scope = iota // any root view
-	ScopeProjects               // Projects tab
-	ScopeDoctor                 // Doctor tab
-	ScopeBrowser                // memory browser (Task 11+)
-	ScopeReading                // reading view (Task 12+)
-	ScopeHistory                // history view (Task 14+)
-	ScopeConflicts              // conflicts tab/detail
+	ScopeGlobal         Scope = iota // any root view
+	ScopeProjects                    // Projects tab
+	ScopeDoctor                      // Doctor tab
+	ScopeBrowser                     // memory browser (Task 11+)
+	ScopeReading                     // reading view (Task 12+)
+	ScopeHistory                     // history view (Task 14+)
+	ScopeConflicts                   // conflicts tab
+	ScopeConflictDetail              // conflict detail screen (pushed from the tab)
 )
 
 // String names a Scope for the help overlay's group headers.
@@ -54,6 +55,8 @@ func (s Scope) String() string {
 		return "History"
 	case ScopeConflicts:
 		return "Conflicts"
+	case ScopeConflictDetail:
+		return "Conflict detail"
 	default:
 		return "Unknown"
 	}
@@ -64,7 +67,7 @@ func (s Scope) String() string {
 // overlay's group ordering does not depend on ScopeConflicts happening to be
 // the last constant — a scope inserted later stays correct by construction.
 func AllScopes() []Scope {
-	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeConflicts}
+	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeConflicts, ScopeConflictDetail}
 }
 
 // Action is one user-invokable operation. The SAME rows drive the palette
@@ -147,6 +150,23 @@ var registry = []Action{
 	{ID: "history-diff-older", Title: "diff older", Keys: []string{"D"}, KeyHint: "D", Scope: ScopeHistory},
 	{ID: "history-restore", Title: "restore", Keys: []string{"R"}, KeyHint: "R", Scope: ScopeHistory, Mutates: true},
 	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory},
+	// ScopeConflicts rows: the Conflicts tab's own list cursor + drill-in,
+	// matched directly by ConflictsView.Update exactly as Projects' select/open
+	// are — no root runner, unconditionally available so the tab footer keeps
+	// naming them (dashboard.go's available()).
+	{ID: "conflicts-select", Title: "select", Keys: []string{"up", "down", "k", "j"}, KeyHint: "↑/↓", Scope: ScopeConflicts},
+	{ID: "conflicts-open", Title: "open", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeConflicts},
+	// ScopeConflictDetail rows: the pushed conflict-detail screen's own keys
+	// (spec §10), matched directly by ConflictDetail.updateKey. read/back are
+	// structural navigation; edit only EMITS EditRequestMsg — the root's
+	// startEditFlow owns every gate (cleaning up a merge IS an edit) — so its
+	// live availability is flowAvailable (editor resolves ∧ fact-class ∧ no
+	// active handoff ∧ the recorded path still maps to an enrolled unit),
+	// rendered struck rather than hidden when false. read is likewise gated on
+	// the path still mapping: an unmapped record offers nothing to read.
+	{ID: "conflictdetail-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeConflictDetail},
+	{ID: "conflictdetail-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeConflictDetail, Mutates: true},
+	{ID: "conflictdetail-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeConflictDetail},
 }
 
 // Registry returns the full static table, defensively copied so a caller

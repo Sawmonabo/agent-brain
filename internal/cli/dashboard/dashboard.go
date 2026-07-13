@@ -557,6 +557,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.pushScreen(views.NewBrowser(m.buildBrowserDeps(msg.Folder, msg.Units)))
 		return m, nil
 
+	case views.OpenConflictMsg:
+		// The conflicts-tab twin of OpenFolderMsg: ConflictsView cannot build a
+		// *views.ConflictDetail itself (it holds none of Registry/Units/
+		// memoryfs/glamour), so it emits the selected record and the root — the
+		// only place with all of those — resolves the record's path to a live
+		// memory and pushes the detail screen.
+		m = m.pushScreen(views.NewConflictDetail(m.buildConflictDetailDeps(msg.Record)))
+		return m, nil
+
 	case views.PushScreenMsg:
 		// A pushed screen that needs an initial async load (the History screen's
 		// version fetch) exposes InitCmd; issuing it here — right after the push,
@@ -805,9 +814,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Everything else belongs to the active view (table nav, s/u/a on Projects).
-	if m.active == tabProjects {
+	// Everything else belongs to the active view: Projects' table nav + s/u/a,
+	// or the Conflicts list's cursor + enter-to-detail. Both route here, after
+	// the globals, exactly as they do on the Projects tab today.
+	switch m.active {
+	case tabProjects:
 		return m, m.projects.Update(msg, m.data, m.actions)
+	case tabConflicts:
+		return m, m.conflicts.Update(msg)
 	}
 	return m, nil
 }
@@ -1140,6 +1154,8 @@ func (m Model) stackScope(screen views.Screen) actions.Scope {
 		return actions.ScopeReading
 	case *views.History:
 		return actions.ScopeHistory
+	case *views.ConflictDetail:
+		return actions.ScopeConflictDetail
 	default:
 		return actions.ScopeGlobal
 	}
@@ -1282,6 +1298,22 @@ func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.Brows
 	}
 }
 
+// buildConflictDetailDeps assembles a views.ConflictDetailDeps from the root's
+// own composition-at-the-edge dependencies, the same registry/memoryfs/glamour
+// seams buildBrowserDeps threads. Units is the whole fleet snapshot — the
+// detail resolves the record's repo-relative path down to the one enrolled
+// unit that still carries it (or renders the untracked notice when none does).
+func (m Model) buildConflictDetailDeps(record config.ConflictRecord) views.ConflictDetailDeps {
+	return views.ConflictDetailDeps{
+		Record:   record,
+		Units:    m.projects.Units,
+		Registry: m.registry,
+		ReadBody: memoryfs.ReadBody,
+		Render:   m.renderMarkdown,
+		Styles:   m.styles,
+	}
+}
+
 // findAction looks up a registry row by ID. Registry() is a handful of
 // entries, so a linear scan costs nothing next to a keypress or a render.
 func findAction(id string) (actions.Action, bool) {
@@ -1384,12 +1416,20 @@ func (m *Model) available(id string) bool {
 		"browser-history", "browser-show-deleted", "browser-back",
 		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path",
 		"reading-history", "reading-back",
-		"history-view", "history-diff", "history-diff-older", "history-back":
+		"history-view", "history-diff", "history-diff-older", "history-back",
+		"conflicts-select", "conflicts-open", "conflictdetail-back":
 		return true
-	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit":
+	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit", "conflictdetail-edit":
 		return m.flowAvailable(id)
 	case "history-restore":
 		return m.historyRestoreAvailable()
+	case "conflictdetail-read":
+		// Unlike the browser/reading read rows — always live because their
+		// screen always has a memory — a conflict detail can render a record
+		// whose path no longer maps to a live file, so read is honest only when
+		// one resolved. flowTarget reports exactly that for the detail on top.
+		_, ok := m.flowTarget()
+		return ok
 	case "add-project":
 		return m.actions.AddAvailable()
 	default:

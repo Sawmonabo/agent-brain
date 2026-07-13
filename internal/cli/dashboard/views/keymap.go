@@ -84,6 +84,17 @@ type DashboardKeymap struct {
 	HistoryDiffOlder keybinding.Binding
 	HistoryRestore   keybinding.Binding
 	HistoryBack      keybinding.Binding
+	// ConflictsSelect/ConflictsOpen own the Conflicts tab's flat list cursor
+	// and its drill-in to a detail screen; ConflictsSelect reuses the same
+	// ↑/↓/k/j keys as Select, kept a distinct binding so its footer row scopes
+	// to Conflicts rather than Projects. ConflictDetail* own the pushed detail
+	// screen (Task 17): Read jumps to the reading view, Edit only EMITS
+	// EditRequestMsg (the root owns the handoff and every gate), Back pops.
+	ConflictsSelect    keybinding.Binding
+	ConflictsOpen      keybinding.Binding
+	ConflictDetailRead keybinding.Binding
+	ConflictDetailEdit keybinding.Binding
+	ConflictDetailBack keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
 	// subset each modal state honors, and the tab-level set above never
@@ -130,6 +141,11 @@ var DashboardKeys = DashboardKeymap{
 	HistoryDiffOlder:   bindingFor("history-diff-older"),
 	HistoryRestore:     bindingFor("history-restore"),
 	HistoryBack:        bindingFor("history-back"),
+	ConflictsSelect:    bindingFor("conflicts-select"),
+	ConflictsOpen:      bindingFor("conflicts-open"),
+	ConflictDetailRead: bindingFor("conflictdetail-read"),
+	ConflictDetailEdit: bindingFor("conflictdetail-edit"),
+	ConflictDetailBack: bindingFor("conflictdetail-back"),
 	Cancel:             keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
 	Accept:             keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(

@@ -734,6 +734,10 @@ func (m *Model) flowTarget() (memoryfs.Memory, bool) {
 		return screen.Selected()
 	case *views.Reading:
 		return screen.Memory(), true
+	case *views.ConflictDetail:
+		// ok is false for an unmapped record — nothing to edit, so the e row
+		// reads struck, exactly as an unselected browser row does.
+		return screen.Memory()
 	default:
 		return memoryfs.Memory{}, false
 	}
@@ -755,7 +759,7 @@ func (m *Model) flowAvailable(id string) bool {
 	switch id {
 	case "browser-new":
 		return m.editorResolves() && m.browserHasUnits()
-	case "browser-edit", "reading-edit":
+	case "browser-edit", "reading-edit", "conflictdetail-edit":
 		target, ok := m.flowTarget()
 		return ok && target.Class == provider.ClassFact && m.editorResolves()
 	case "browser-rename", "browser-delete":

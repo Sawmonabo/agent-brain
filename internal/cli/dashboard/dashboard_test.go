@@ -1458,6 +1458,95 @@ func TestEnterOnProjectsPushesBrowser(t *testing.T) {
 	}
 }
 
+// TestEnterOnConflictsPushesDetail pins the Conflicts tab's drill-in, the twin
+// of enter-to-browse: the tab footer advertises its own select/open rows, enter
+// on the selected record emits views.OpenConflictMsg, the root resolves it into
+// a *views.ConflictDetail and pushes it under a "Conflicts ▸ …" breadcrumb with
+// the detail's own read/edit/back footer, and esc pops the whole round trip
+// back to the tab.
+func TestEnterOnConflictsPushesDetail(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Notes\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{Data: &fakeData{}, Registry: registry, Settings: terminalEditorSettings()})
+	m.getenv = func(string) string { return "" }
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.active = tabConflicts
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+	m.conflicts.Set([]config.ConflictRecord{{Time: "2026-07-09T11:00:00Z", Path: "acme/claude/notes.md", Mode: "fact"}}, nil)
+
+	tabFooter := plain(m.View().Content)
+	for _, want := range []string{"select", "open"} {
+		if !strings.Contains(tabFooter, want) {
+			t.Errorf("Conflicts tab footer missing %q; got:\n%s", want, tabFooter)
+		}
+	}
+
+	m = drive(t, m, key("enter"))
+
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after enter, want 1", len(m.stack))
+	}
+	if _, ok := m.stack[0].(*views.ConflictDetail); !ok {
+		t.Fatalf("stack top = %T, want *views.ConflictDetail", m.stack[0])
+	}
+	pushed := plain(m.View().Content)
+	if !strings.Contains(pushed, "Conflicts ▸ notes") {
+		t.Errorf("view missing the detail breadcrumb; got:\n%s", pushed)
+	}
+	for _, want := range []string{"read", "edit", "back"} {
+		if !strings.Contains(pushed, want) {
+			t.Errorf("detail footer missing %q; got:\n%s", want, pushed)
+		}
+	}
+
+	m = drive(t, m, key("esc"))
+	if len(m.stack) != 0 {
+		t.Fatalf("stack depth = %d after esc, want 0 (esc must pop back to the tab)", len(m.stack))
+	}
+	if restored := plain(m.View().Content); !strings.Contains(restored, "Conflicts") {
+		t.Errorf("view missing the Conflicts tab after esc popped back; got:\n%s", restored)
+	}
+}
+
+// TestConflictDetailAvailabilityTracksMapping pins the availability gate the
+// detail footer renders from: a mapped fact record with a resolvable editor
+// lights both read and edit, while an unmapped record strikes both (the brief's
+// "offers nothing"). The wiring is flowTarget's *views.ConflictDetail case plus
+// the read/edit entries in available().
+func TestConflictDetailAvailabilityTracksMapping(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{Data: &fakeData{}, Registry: registry, Settings: terminalEditorSettings()})
+	m.getenv = func(string) string { return "" }
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "acme/claude/notes.md", Mode: "fact"}})
+	if !m.available("conflictdetail-read") {
+		t.Error("read unavailable over a mapped record, want available")
+	}
+	if !m.available("conflictdetail-edit") {
+		t.Error("edit unavailable over a mapped fact record with a resolvable editor, want available")
+	}
+
+	m = m.popScreen()
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "ghost/claude/gone.md", Mode: "fact"}})
+	if m.available("conflictdetail-read") {
+		t.Error("read available over an unmapped record, want struck")
+	}
+	if m.available("conflictdetail-edit") {
+		t.Error("edit available over an unmapped record, want struck")
+	}
+}
+
 // TestStackForwardsTick pins that the shared 2s poll keeps a pushed screen
 // live: RefreshMsg reaches the top of the stack on every tick (proved here
 // by a List call count that only a forwarded refresh can advance beyond
