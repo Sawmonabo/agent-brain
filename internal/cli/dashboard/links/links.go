@@ -7,7 +7,9 @@
 package links
 
 import (
+	"cmp"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -174,8 +176,13 @@ func (ix *Index) Resolve(target string) (memoryfs.Memory, bool) {
 }
 
 // Backlinks returns every memory with at least one link resolving to m,
-// sorted by Name. A memory linking to m more than once still appears only
-// once. Returns nil if nothing links to m or m is unknown to the Index.
+// sorted by Name and, to break ties between memories that share a Name
+// (e.g. two projects each with their own memory frontmatter-named "notes"),
+// by RepoPath. RepoPath is unique per memory, so this is a total order:
+// the result never depends on the backlink set's map iteration order, which
+// varies from call to call. A memory linking to m more than once still
+// appears only once. Returns nil if nothing links to m or m is unknown to
+// the Index.
 func (ix *Index) Backlinks(m memoryfs.Memory) []memoryfs.Memory {
 	set := ix.backlinks[m.RepoPath]
 	if len(set) == 0 {
@@ -185,7 +192,12 @@ func (ix *Index) Backlinks(m memoryfs.Memory) []memoryfs.Memory {
 	for repoPath := range set {
 		out = append(out, ix.memories[repoPath])
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b memoryfs.Memory) int {
+		if c := cmp.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.RepoPath, b.RepoPath)
+	})
 	return out
 }
 

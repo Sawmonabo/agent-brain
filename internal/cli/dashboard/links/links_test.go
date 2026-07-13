@@ -111,6 +111,11 @@ func TestParse(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "closing brackets with no preceding opener are inert",
+			body: "]] no opener precedes this",
+			want: nil,
+		},
+		{
 			name: "unicode target",
 			body: "[[café]]",
 			want: []links.Link{{Target: "café", Start: 0, End: len("[[café]]")}},
@@ -319,6 +324,35 @@ func TestIndexStemCollisionResolvesDeterministically(t *testing.T) {
 	}
 }
 
+// TestIndexNameCollisionResolvesDeterministically pins the tie-break when
+// two memories share a frontmatter Name case-insensitively but have
+// different filename stems — the byName-registration counterpart to
+// TestIndexStemCollisionResolvesDeterministically above, which exercises
+// the same rule for byStem. BuildIndex must resolve this the same way
+// regardless of input order, so the test feeds both orderings and requires
+// the same winner from each.
+func TestIndexNameCollisionResolvesDeterministically(t *testing.T) {
+	t.Parallel()
+	claudeNotes := memory("claude/notes.md", "notes.md", "shared-name")
+	codexJournal := memory("codex/journal.md", "journal.md", "shared-name")
+	noBody := func(memoryfs.Memory) (string, error) { return "", nil }
+
+	orderings := [][]memoryfs.Memory{
+		{claudeNotes, codexJournal},
+		{codexJournal, claudeNotes},
+	}
+	for _, order := range orderings {
+		ix := links.BuildIndex(order, noBody)
+		got, ok := ix.Resolve("SHARED-NAME")
+		if !ok {
+			t.Fatalf("Resolve(SHARED-NAME) ok = false, want true (order %v)", order)
+		}
+		if diff := cmp.Diff(claudeNotes, got); diff != "" {
+			t.Errorf("Resolve(SHARED-NAME) diff (-want +got) for order %v:\n%s", order, diff)
+		}
+	}
+}
+
 // TestIndexBacklinksSortedByName pins the documented ordering: multiple
 // referrers come back sorted by their own Name, not by discovery order.
 func TestIndexBacklinksSortedByName(t *testing.T) {
@@ -341,6 +375,41 @@ func TestIndexBacklinksSortedByName(t *testing.T) {
 	want := []memoryfs.Memory{alpha, middle, zebra}
 	if diff := cmp.Diff(want, ix.Backlinks(target)); diff != "" {
 		t.Errorf("Backlinks(target) diff (-want +got):\n%s", diff)
+	}
+}
+
+// TestIndexBacklinksOrdersNameTiesByRepoPath pins the tie-break Backlinks
+// uses when two referrers share a Name: RepoPath, not discovery or map
+// order. Two memories with a byte-identical Name is realistic — e.g. two
+// projects each frontmatter-naming their own memory "notes" — and
+// Backlinks aggregates referrers through a map, so the test also calls it
+// repeatedly on the same Index and requires an identical result every
+// time; a comparator keyed on Name alone would leave same-Name entries in
+// whatever order that call's map iteration happened to produce.
+func TestIndexBacklinksOrdersNameTiesByRepoPath(t *testing.T) {
+	t.Parallel()
+	target := memory("claude/target.md", "target.md", "target")
+	// Both referrers share the Name "notes" but differ in RepoPath.
+	notesB := memory("project-b/notes.md", "notes.md", "notes")
+	notesA := memory("project-a/notes.md", "notes.md", "notes")
+
+	readBody := func(m memoryfs.Memory) (string, error) {
+		if m.RepoPath == target.RepoPath {
+			return "", nil
+		}
+		return "[[target]]", nil
+	}
+	// Registered "B before A" — Backlinks must still come back ordered by
+	// RepoPath ("project-a" before "project-b") since Name cannot break
+	// the tie on its own.
+	ix := links.BuildIndex([]memoryfs.Memory{target, notesB, notesA}, readBody)
+
+	want := []memoryfs.Memory{notesA, notesB}
+	for i := range 20 {
+		got := ix.Backlinks(target)
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("Backlinks(target) call #%d diff (-want +got):\n%s", i, diff)
+		}
 	}
 }
 
