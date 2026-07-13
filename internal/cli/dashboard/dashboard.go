@@ -143,6 +143,11 @@ type Config struct {
 	// disposable copy outside every watched provider tree (ADR 20 D2).
 	// "" falls back to os.UserCacheDir() itself inside editorx.
 	CacheRoot string
+	// Version is the build's own version string (cli.Version), rendered in the
+	// Projects fleet header (spec §9). The "vs latest" comparison joins in Task
+	// 18 once the release check exists; until then this is shown plain, no
+	// placeholder. Empty in tests that do not set it.
+	Version string
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -173,6 +178,10 @@ type Model struct {
 	// value-semantics Model can hold a closure with private mutable
 	// memoization state safely.
 	renderMarkdown func(markdown string, width int) string
+	// version is the build's own version string (Config.Version), rendered in
+	// the Projects fleet header (spec §9) — static for the process lifetime, so
+	// it is seeded once in New and never re-derived.
+	version string
 
 	active tab
 	width  int
@@ -246,6 +255,7 @@ func New(cfg Config) Model {
 		actions:      views.TrackActions{Discover: cfg.Discover, Identify: cfg.Identify},
 		registry:     cfg.Registry,
 		settings:     cfg.Settings,
+		version:      cfg.Version,
 		getenv:       os.Getenv,
 		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
@@ -278,29 +288,36 @@ func (m Model) withStyles(styles theme.Styles, isDark bool) Model {
 	return m
 }
 
-// themedScreen is the optional seam a stack screen exposes so a theme swap
-// can reach it after construction: both *views.Browser and *views.Reading
-// satisfy it, and a later screen that renders styled markdown (History)
-// joins by implementing the same two setters — no per-type case to forget
-// here.
-type themedScreen interface {
+// styledScreen is the seam a stack screen exposes so a theme swap can reach it
+// after construction: Browser/Reading/History/ConflictDetail/Insights all
+// satisfy it. renderedScreen is the ADDITIONAL seam a screen that renders
+// markdown exposes to also receive the theme-matched glamour renderer. The two
+// are split because Insights renders no markdown — it re-themes through
+// SetStyles alone, so it implements styledScreen without carrying a dead
+// SetRender just to be reachable here. A markdown screen implements both.
+type styledScreen interface {
 	SetStyles(theme.Styles)
+}
+
+type renderedScreen interface {
 	SetRender(func(md string, width int) string)
 }
 
-// applyStackTheme pushes the CURRENT styles and markdown renderer into
-// every themedScreen on the navigation stack. SetStyles/SetRender are
-// deliberately not part of the Screen interface (Update/View/Title only,
-// so the stack's own push/pop/forward plumbing never needs to know a
-// screen's concrete type) — this is the one place that steps outside that
-// abstraction, the same way withStyles already does for the four tab
-// views, and for the identical reason: a background-color swap must reach
-// state that already exists, not just state constructed after the swap.
+// applyStackTheme pushes the CURRENT styles into every stack screen, and the
+// CURRENT markdown renderer into the ones that render markdown. SetStyles/
+// SetRender are deliberately not part of the Screen interface (Update/View/
+// Title only, so the stack's own push/pop/forward plumbing never needs to know
+// a screen's concrete type) — this is the one place that steps outside that
+// abstraction, the same way withStyles already does for the four tab views, and
+// for the identical reason: a background-color swap must reach state that
+// already exists, not just state constructed after the swap.
 func (m Model) applyStackTheme() {
 	for _, screen := range m.stack {
-		if themed, ok := screen.(themedScreen); ok {
-			themed.SetStyles(m.styles)
-			themed.SetRender(m.renderMarkdown)
+		if styled, ok := screen.(styledScreen); ok {
+			styled.SetStyles(m.styles)
+		}
+		if rendered, ok := screen.(renderedScreen); ok {
+			rendered.SetRender(m.renderMarkdown)
 		}
 	}
 }
@@ -579,12 +596,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.popScreen()
 		return m, nil
 
-	case views.HistoryVersionsMsg, views.HistoryBlobMsg:
+	case views.HistoryVersionsMsg, views.HistoryBlobMsg, views.InsightsDataMsg:
 		// The History screen's async fetches (and the browser's folder-wide
-		// deleted scan) resolve as Cmds whose results the root forwards to the
-		// stack top, exactly like the tick's RefreshMsg — the top screen matches
-		// each on Folder/RepoPath and drops any not its own, so a fetch that
-		// outlived its screen never lands anywhere it does not belong.
+		// deleted scan), plus the Insights screen's one folder-wide history
+		// fetch, resolve as Cmds whose results the root forwards to the stack
+		// top, exactly like the tick's RefreshMsg — the top screen matches each
+		// on its own keys (Folder/RepoPath, or Folder for insights) and drops any
+		// not its own, so a fetch that outlived its screen never lands anywhere
+		// it does not belong. InsightsDataMsg is a distinct type from
+		// HistoryVersionsMsg precisely so the browser's folder-wide deleted scan
+		// and the insights fetch — both path "" — can never adopt each other's
+		// result.
 		m, cmd := m.forwardToStack(msg)
 		return m, cmd
 
@@ -1172,6 +1194,8 @@ func (m Model) stackScope(screen views.Screen) actions.Scope {
 		return actions.ScopeReading
 	case *views.History:
 		return actions.ScopeHistory
+	case *views.Insights:
+		return actions.ScopeInsights
 	case *views.ConflictDetail:
 		return actions.ScopeConflictDetail
 	default:
@@ -1435,10 +1459,11 @@ func (m *Model) available(id string) bool {
 	switch id {
 	case "switch-tabs", "select", "help", "search",
 		"open-browser", "browser-read", "browser-order", "browser-filter",
-		"browser-history", "browser-show-deleted", "browser-back",
+		"browser-history", "browser-show-deleted", "browser-insights", "browser-back",
 		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
+		"insights-back",
 		"conflicts-select", "conflicts-open", "conflictdetail-back":
 		return true
 	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit", "conflictdetail-edit":
@@ -1588,7 +1613,7 @@ func (m Model) View() tea.View {
 func (m Model) activeBody() string {
 	switch m.active {
 	case tabProjects:
-		return m.projects.View()
+		return m.projects.View(m.fleetHeaderLine())
 	case tabConflicts:
 		return m.conflicts.View()
 	case tabActivity:
@@ -1717,6 +1742,69 @@ func watchState(status api.StatusResponse, now time.Time) string {
 		return "—"
 	default:
 		return status.State
+	}
+}
+
+// fleetHeaderLine renders the Projects tab's one-line fleet summary (spec §9):
+// "N units · watching M/N · last sync <outcome+relative> · vX.Y.Z". The count
+// and watching tally read the current fleet snapshot; the outcome reuses
+// lastCycle — the exact verdict the status header shows — with the cycle's
+// relative age appended when there has been one; the version is the build's own
+// (Config.Version). The "vs latest" comparison joins in Task 18 once the release
+// check exists; until then the version is shown plain, with no placeholder.
+func (m Model) fleetHeaderLine() string {
+	units := m.projects.Units
+	total := len(units)
+	watching := 0
+	for _, unit := range units {
+		if unit.WatchState == "watching" {
+			watching++
+		}
+	}
+	return fmt.Sprintf("%s · watching %d/%d · last sync %s · %s",
+		unitsLabel(total), watching, total, m.lastSyncLabel(), m.version)
+}
+
+// unitsLabel pluralises the fleet's unit count ("1 unit", "2 units", "0 units").
+func unitsLabel(total int) string {
+	if total == 1 {
+		return "1 unit"
+	}
+	return fmt.Sprintf("%d units", total)
+}
+
+// lastSyncLabel is the fleet header's "<outcome+relative>" segment: the same
+// lastCycle verdict the status header renders ("ok"/"error"/"degraded"/…) with
+// the cycle's relative age appended, or a bare "never" before the fleet has
+// ever cycled (lastCycle's own nil-LastSync verdict, so the two never diverge).
+func (m Model) lastSyncLabel() string {
+	outcome := lastCycle(m.status)
+	if m.status.LastSync == nil {
+		return outcome // "never" — no cycle to age
+	}
+	return outcome + " " + relativeAgo(m.status.LastSync.At, m.now)
+}
+
+// relativeAgo renders t as a coarse "X ago" relative to now — the fleet
+// header's age suffix. It mirrors views.relativeTime across the package
+// boundary (that helper is unexported): a stable, generic formatter small
+// enough that duplicating it beats exporting a views helper for this one
+// caller, the same duplication-over-coupling call browser.go's isSubsequence
+// documents. A t at or after now (clock skew on a just-recorded cycle) falls in
+// the sub-minute arm as "just now" rather than a negative age.
+func relativeAgo(t, now time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	switch d := now.Sub(t); {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
 	}
 }
 

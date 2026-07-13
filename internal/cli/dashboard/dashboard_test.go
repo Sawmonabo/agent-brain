@@ -689,7 +689,7 @@ func TestFooterAndDispatchGateAddOnBothClosures(t *testing.T) {
 	if m.projects.Adding != views.AddNone {
 		t.Errorf("Adding = %v, want AddNone: a must be dead with identify unwired", m.projects.Adding)
 	}
-	if got := plain(m.projects.View()); !strings.Contains(got, "add is unavailable") {
+	if got := plain(m.projects.View("")); !strings.Contains(got, "add is unavailable") {
 		t.Errorf("view = %q, want the 'add is unavailable' notice", got)
 	}
 	if len(fake.trackCalls) != 0 {
@@ -757,7 +757,7 @@ func TestProjectsAddTrackFailureSurfacesAndSkipsSync(t *testing.T) {
 	if len(fake.syncCalls) != 0 {
 		t.Fatalf("a failed track must not fire a fleet sync: %v", fake.syncCalls)
 	}
-	if got := plain(m.projects.View()); !strings.Contains(got, "track failed") ||
+	if got := plain(m.projects.View("")); !strings.Contains(got, "track failed") ||
 		!strings.Contains(got, "quiesced") {
 		t.Fatalf("view = %q, want a 'track failed' notice carrying the reason", got)
 	}
@@ -797,7 +797,7 @@ func TestProjectsStaleTrackResultKeepsNewFlow(t *testing.T) {
 	if next.projects.Adding != views.AddPicking {
 		t.Fatalf("Adding = %v, want AddPicking (a stale result must not reset the new flow)", next.projects.Adding)
 	}
-	if got := plain(next.projects.View()); !strings.Contains(got, "tracked agent-brain") {
+	if got := plain(next.projects.View("")); !strings.Contains(got, "tracked agent-brain") {
 		t.Fatalf("view = %q, want the stale enrollment's notice still set", got)
 	}
 	drain(cmd)
@@ -1365,6 +1365,132 @@ func (s fixedHeightScreen) View(_, height int) string {
 
 func (s fixedHeightScreen) Title() string { return s.title }
 
+// TestFleetHeaderLine pins the Projects fleet-header string (spec §9):
+// "N units · watching M/N · last sync <outcome+relative> · vX.Y.Z". The unit
+// count and watching tally come from the fleet snapshot; the last-sync outcome
+// reuses the same lastCycle verdict the status header renders, with the
+// relative age of the cycle appended; the version comes from Config. A mixed
+// watching/failed fleet reads truthfully, and the never-synced and empty-fleet
+// edges stay well-formed (singular "unit", "watching 0/0", "last sync never").
+func TestFleetHeaderLine(t *testing.T) {
+	t.Parallel()
+	synced := readyStatus() // LastSync.At = 2026-07-09 11:00, outcome ok
+	neverSynced := api.StatusResponse{State: "ready"}
+	tests := []struct {
+		name    string
+		status  api.StatusResponse
+		now     time.Time
+		version string
+		units   []api.UnitInfo
+		want    string
+	}{
+		{
+			name:    "mixed watching and failed, synced two hours ago",
+			status:  synced,
+			now:     time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC),
+			version: "v1.2.3",
+			units: []api.UnitInfo{
+				{Provider: "claude", Folder: "agent-brain", WatchState: "watching"},
+				{Provider: "codex", Folder: "_global", WatchState: "failed: watch /x: too many open files"},
+			},
+			want: "2 units · watching 1/2 · last sync ok 2h ago · v1.2.3",
+		},
+		{
+			name:    "single watching unit never synced",
+			status:  neverSynced,
+			now:     time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC),
+			version: "v9",
+			units:   []api.UnitInfo{{Provider: "claude", Folder: "solo", WatchState: "watching"}},
+			want:    "1 unit · watching 1/1 · last sync never · v9",
+		},
+		{
+			name:    "empty fleet",
+			status:  neverSynced,
+			now:     time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC),
+			version: "vdev",
+			units:   nil,
+			want:    "0 units · watching 0/0 · last sync never · vdev",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m.version = testCase.version
+			m.status = testCase.status
+			m.now = testCase.now
+			m.projects.SetUnits(testCase.units)
+			if got := m.fleetHeaderLine(); got != testCase.want {
+				t.Errorf("fleetHeaderLine() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// TestProjectsTabFrameExactFillWithFleetHeader pins the Projects TAB frame's
+// chrome reservation EXACTLY, in both directions, now that the fleet header
+// (spec §9) adds one row above the table. ProjectsView.SetSize reserves for
+// every non-table line the frame carries at full chrome — status header, both
+// toast slots, tab bar, section title, fleet header, action notice, footer, and
+// the blank separators between them — and the table space-fills the remainder,
+// so the composed frame's line count is a pure function of that reservation. At
+// full chrome (both toasts + a notice) the frame fills the terminal exactly;
+// fewer toasts leave it short. Asserting == at the max makes BOTH an
+// under-reservation (the table a row too tall, a real row shoved off the bottom)
+// and an over-reservation (the header eating a table row's height, the frame
+// never reaching the bottom) fail here — the both-directions discipline the
+// toast-tiers stack-frame pin established, extended to the tab that gained the
+// header.
+func TestProjectsTabFrameExactFillWithFleetHeader(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	tests := []struct {
+		name      string
+		sticky    string
+		info      string
+		wantLines int
+	}{
+		{name: "zero toasts", wantLines: height - 4},
+		{name: "info only", info: "path: /home/u/x.md", wantLines: height - 2},
+		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md", wantLines: height - 2},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{status: readyStatus(), syncResp: api.SyncResponse{Status: "completed"}})
+			m.version = "vtest"
+			m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+			m.status = readyStatus()
+			m.now = time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)
+			m.projects.SetUnits([]api.UnitInfo{
+				{Provider: "claude", Folder: "agent-brain", LocalDir: "/l/a", WatchState: "watching"},
+				{Provider: "codex", Folder: "_global", LocalDir: "/l/c", WatchState: "failed: x"},
+			})
+			m, _ = step(m, key("s")) // an action notice — the reservation's last chrome line
+			if testCase.sticky != "" {
+				m.pushStickyToast(testCase.sticky)
+			}
+			if testCase.info != "" {
+				m.pushToast(testCase.info)
+			}
+
+			body := plain(m.View().Content)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
+				t.Errorf("projects tab frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, testCase.wantLines)
+			}
+			// The fleet header renders above the table, not buried inside it.
+			header := "2 units · watching 1/2 · last sync ok 2h ago · vtest"
+			if !strings.Contains(body, header) {
+				t.Errorf("fleet header %q missing from the Projects frame:\n%s", header, body)
+			}
+			if headerIdx, tableIdx := strings.Index(body, header), strings.Index(body, "PROVIDER"); headerIdx < 0 || tableIdx < 0 || headerIdx > tableIdx {
+				t.Errorf("fleet header not rendered above the table (header index %d, table index %d)", headerIdx, tableIdx)
+			}
+		})
+	}
+}
+
 // TestHelpOpensAndAnyKeyCloses pins the ? overlay's own tiny lifecycle: it
 // replaces the whole body while open, and any key — not just esc — closes
 // it, per spec §14's "any-key closes".
@@ -1849,6 +1975,49 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 		if strings.Contains(got, deadHint) {
 			t.Errorf("stack footer %q leaks a tab-level or global hint %q; a pushed screen owns the whole keyboard", got, deadHint)
 		}
+	}
+}
+
+// TestInsightsScreenWiring pins the root plumbing the insights screen depends on
+// that lives in this package, not views: stackScope must map a pushed *Insights
+// to ScopeInsights (so its footer names esc-back and nothing tab-level), and the
+// root must forward an InsightsDataMsg to the stack top (so the screen's one
+// folder-wide fetch actually reaches it). The machine tally the injected message
+// produces is a fact no filesystem section could fabricate, so its appearance
+// proves the forward landed.
+func TestInsightsScreenWiring(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	insights := views.NewInsights(views.InsightsDeps{
+		Folder:   "acme",
+		Memories: []memoryfs.Memory{{Provider: "claude", Folder: "acme", RepoPath: "claude/a.md", ModTime: base.Add(-time.Hour), Size: 100}},
+		Now:      base,
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: insights})
+
+	footer := plain(m.footer())
+	if !strings.Contains(footer, "esc back") {
+		t.Errorf("insights footer missing 'esc back'; got %q", footer)
+	}
+	for _, dead := range []string{"tab/1–4", "ctrl+k palette", "? help", "o order"} {
+		if strings.Contains(footer, dead) {
+			t.Errorf("insights footer leaks %q; a pushed screen owns the keyboard", dead)
+		}
+	}
+
+	captured := base.Add(-30 * time.Minute)
+	m, _ = step(m, views.InsightsDataMsg{
+		Folder:   "acme",
+		Versions: []api.HistoryVersion{{Rev: "r1", Host: "workstation", Timestamp: &captured, Paths: []string{"claude/a.md"}}},
+	})
+	top, ok := m.stack[len(m.stack)-1].(*views.Insights)
+	if !ok {
+		t.Fatalf("stack top is %T, want *views.Insights", m.stack[len(m.stack)-1])
+	}
+	if body := plain(top.View(m.width, m.stackBodyHeight())); !strings.Contains(body, "workstation  1") {
+		t.Errorf("InsightsDataMsg was not forwarded to the pushed screen; got:\n%s", body)
 	}
 }
 
@@ -2530,7 +2699,7 @@ func TestSlashWhileProjectsModalOpenTypesIntoModalInput(t *testing.T) {
 	if m.projects.Adding != views.AddConfirmPath {
 		t.Fatalf("Adding = %v after /, want the confirm-path input still open", m.projects.Adding)
 	}
-	if got := plain(m.projects.View()); !strings.Contains(got, "/home/u/dev/acme/") {
+	if got := plain(m.projects.View("")); !strings.Contains(got, "/home/u/dev/acme/") {
 		t.Errorf("the modal's path input did not receive the literal /; view:\n%s", got)
 	}
 }

@@ -247,7 +247,7 @@ func TestProjectsTableRenders(t *testing.T) {
 	// The table carries per-unit columns, now including the genuine per-unit
 	// watch state and last-cycle the API serves (Task 6.5): claude/agent-brain is
 	// watching + ok, codex/_global is a failed watch + degraded.
-	table := plain(view.View())
+	table := plain(view.View(""))
 	for _, want := range []string{
 		"PROVIDER", "FOLDER", "HEALTH", "WATCH", "LAST CYCLE",
 		"claude", "agent-brain", "codex", "_global", "degraded",
@@ -297,7 +297,7 @@ func TestProjectsTelemetryColumnsRenderEmptyAndError(t *testing.T) {
 	}}
 	data := &fakeData{status: readyStatus(), projects: units}
 	view := loadedProjectsView(data)
-	table := plain(view.View())
+	table := plain(view.View(""))
 	for _, want := range []string{"error", "—"} {
 		if !strings.Contains(table, want) {
 			t.Errorf("projects table missing %q; got:\n%s", want, table)
@@ -312,13 +312,13 @@ func TestProjectsWideTableShowsLocalDir(t *testing.T) {
 
 	// LOCAL DIR is the optional roomy-terminal column; it stays hidden until the
 	// terminal is wide enough to carry the full path beside the essentials.
-	narrow := plain(view.View())
+	narrow := plain(view.View(""))
 	if strings.Contains(narrow, "LOCAL DIR") {
 		t.Errorf("LOCAL DIR shown at the narrow 110-col size; got:\n%s", narrow)
 	}
 
 	view.SetSize(130, 40)
-	wide := plain(view.View())
+	wide := plain(view.View(""))
 	for _, want := range []string{"LOCAL DIR", "/home/u/.claude/projects/agent-brain/memory"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("wide projects table missing %q; got:\n%s", want, wide)
@@ -330,7 +330,7 @@ func TestProjectsEmptyState(t *testing.T) {
 	t.Parallel()
 	data := &fakeData{status: readyStatus(), projects: api.ProjectsResponse{}}
 	view := loadedProjectsView(data)
-	body := plain(view.View())
+	body := plain(view.View(""))
 	if !strings.Contains(body, "no projects enrolled") {
 		t.Errorf("empty projects view missing guidance; got:\n%s", body)
 	}
@@ -356,8 +356,8 @@ func TestProjectsSyncKey(t *testing.T) {
 			view.OnSyncResult(result)
 		}
 	}
-	if !strings.Contains(plain(view.View()), "synced agent-brain") {
-		t.Errorf("sync notice not shown; got:\n%s", plain(view.View()))
+	if !strings.Contains(plain(view.View("")), "synced agent-brain") {
+		t.Errorf("sync notice not shown; got:\n%s", plain(view.View("")))
 	}
 }
 
@@ -371,8 +371,8 @@ func TestProjectsUntrackToggleConfirmsThenCalls(t *testing.T) {
 	if cmd != nil {
 		t.Error("u should not act before confirmation")
 	}
-	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
-		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View()))
+	if !strings.Contains(plain(view.View("")), "untrack agent-brain? (y/N)") {
+		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View("")))
 	}
 	if len(data.untrackCalls) != 0 {
 		t.Fatalf("Untrack called before confirmation: %+v", data.untrackCalls)
@@ -406,8 +406,8 @@ func TestProjectsUntrackToggleCancels(t *testing.T) {
 	if view.Confirming {
 		t.Error("confirm state not cleared after cancel")
 	}
-	if !strings.Contains(plain(view.View()), "untrack cancelled") {
-		t.Errorf("cancel notice not shown; got:\n%s", plain(view.View()))
+	if !strings.Contains(plain(view.View("")), "untrack cancelled") {
+		t.Errorf("cancel notice not shown; got:\n%s", plain(view.View("")))
 	}
 }
 
@@ -425,8 +425,8 @@ func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
 
 	// Open the confirm on the highlighted unit X.
 	view.Update(key("u"), data, TrackActions{})
-	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
-		t.Fatalf("confirm did not open on agent-brain; got:\n%s", plain(view.View()))
+	if !strings.Contains(plain(view.View("")), "untrack agent-brain? (y/N)") {
+		t.Fatalf("confirm did not open on agent-brain; got:\n%s", plain(view.View("")))
 	}
 
 	// A poll lands mid-confirm and reorders the fleet, so cursor index 0 now
@@ -472,8 +472,8 @@ func TestUntrackRebindToU(t *testing.T) {
 	if !view.Confirming {
 		t.Fatal("u did not open the untrack confirm")
 	}
-	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
-		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View()))
+	if !strings.Contains(plain(view.View("")), "untrack agent-brain? (y/N)") {
+		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View("")))
 	}
 }
 
@@ -484,7 +484,7 @@ func TestProjectsLoadError(t *testing.T) {
 	view := NewProjectsView()
 	view.SetLoadErr(errors.New("dial unix: connection refused"))
 
-	body := plain(view.View())
+	body := plain(view.View(""))
 	for _, want := range []string{"projects unavailable", "connection refused"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("projects load-error view missing %q; got:\n%s", want, body)
@@ -500,7 +500,7 @@ func TestProjectsLoadingBeforeFirstLoad(t *testing.T) {
 	view := NewProjectsView()
 	view.SetSize(110, 40)
 
-	body := plain(view.View())
+	body := plain(view.View(""))
 	if strings.Contains(body, "no projects enrolled") {
 		t.Errorf("empty-state guidance flashed before the first load; got:\n%s", body)
 	}
@@ -516,7 +516,7 @@ func TestProjectsAddDiscoverEmpty(t *testing.T) {
 	view := NewProjectsView()
 
 	drive(t, &view, fake, actions, key("a"))
-	if got := plain(view.View()); !strings.Contains(got, "no new memory roots") {
+	if got := plain(view.View("")); !strings.Contains(got, "no new memory roots") {
 		t.Fatalf("empty discovery view = %q, want a 'no new memory roots' notice", got)
 	}
 	if len(fake.trackCalls) != 0 {
@@ -539,7 +539,7 @@ func TestProjectsAddRemoteProjectFlow(t *testing.T) {
 
 	drive(t, &view, fake, actions, key("a"))     // discover → picker
 	drive(t, &view, fake, actions, key("enter")) // pick → path-confirm input, prefilled with PathGuess
-	if got := plain(view.View()); !strings.Contains(got, "/g/myrepo") {
+	if got := plain(view.View("")); !strings.Contains(got, "/g/myrepo") {
 		t.Fatalf("path-confirm view = %q, want the PathGuess prefill visible", got)
 	}
 	drive(t, &view, fake, actions, key("enter")) // accept path → identify → track → fleet sync
@@ -616,7 +616,7 @@ func TestProjectsAddIdentifyFailureAborts(t *testing.T) {
 	if len(fake.trackCalls) != 0 {
 		t.Fatalf("identify failure still reached the daemon: %v", fake.trackCalls)
 	}
-	if got := plain(view.View()); !strings.Contains(got, "identify failed") {
+	if got := plain(view.View("")); !strings.Contains(got, "identify failed") {
 		t.Fatalf("view = %q, want an 'identify failed' notice", got)
 	}
 }
@@ -645,7 +645,7 @@ func TestProjectsAddDiscoverFailureAborts(t *testing.T) {
 	if view.Adding != AddNone {
 		t.Fatalf("Adding = %v, want AddNone after a discover failure", view.Adding)
 	}
-	if got := plain(view.View()); !strings.Contains(got, "discover failed") ||
+	if got := plain(view.View("")); !strings.Contains(got, "discover failed") ||
 		!strings.Contains(got, "permission denied") {
 		t.Fatalf("view = %q, want a 'discover failed' notice carrying the reason", got)
 	}
@@ -782,7 +782,7 @@ func TestAddViewHintsRenderFromModalBindings(t *testing.T) {
 			}
 
 			want := HelpLine(DashboardKeys.ForModal(false, testCase.stage))
-			if got := plain(view.View()); !strings.Contains(got, want) {
+			if got := plain(view.View("")); !strings.Contains(got, want) {
 				t.Errorf("addView = %q, want it to contain the shared hint %q", got, want)
 			}
 		})

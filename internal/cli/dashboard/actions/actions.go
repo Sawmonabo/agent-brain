@@ -34,6 +34,7 @@ const (
 	ScopeBrowser                     // memory browser (Task 11+)
 	ScopeReading                     // reading view (Task 12+)
 	ScopeHistory                     // history view (Task 14+)
+	ScopeInsights                    // project insights screen, pushed from the browser (Task 16+)
 	ScopeConflicts                   // conflicts tab
 	ScopeConflictDetail              // conflict detail screen (pushed from the tab)
 )
@@ -53,6 +54,8 @@ func (s Scope) String() string {
 		return "Reading"
 	case ScopeHistory:
 		return "History"
+	case ScopeInsights:
+		return "Insights"
 	case ScopeConflicts:
 		return "Conflicts"
 	case ScopeConflictDetail:
@@ -67,7 +70,7 @@ func (s Scope) String() string {
 // overlay's group ordering does not depend on ScopeConflicts happening to be
 // the last constant — a scope inserted later stays correct by construction.
 func AllScopes() []Scope {
-	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeConflicts, ScopeConflictDetail}
+	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeInsights, ScopeConflicts, ScopeConflictDetail}
 }
 
 // Action is one user-invokable operation. The SAME rows drive the palette
@@ -124,6 +127,10 @@ var registry = []Action{
 	// toggles the list into deleted-memory recovery mode (spec §6).
 	{ID: "browser-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeBrowser},
 	{ID: "browser-show-deleted", Title: "show deleted", Keys: []string{"x"}, KeyHint: "x", Scope: ScopeBrowser},
+	// i opens the project insights screen (Task 16, spec §9) — a read surface
+	// matched directly by Browser.updateKey like read/history/show-deleted: no
+	// root runner, never Mutates.
+	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.
@@ -150,6 +157,12 @@ var registry = []Action{
 	{ID: "history-diff-older", Title: "diff older", Keys: []string{"D"}, KeyHint: "D", Scope: ScopeHistory},
 	{ID: "history-restore", Title: "restore", Keys: []string{"R"}, KeyHint: "R", Scope: ScopeHistory, Mutates: true},
 	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory},
+	// ScopeInsights row (Task 16, spec §9): the pushed insights screen scrolls
+	// its stat sections through the reading viewport's own keymap (table-stakes
+	// scroll keys, not registry actions, like every other screen's viewport), so
+	// esc is its only registry row — matched directly by Insights.updateKey, no
+	// root runner.
+	{ID: "insights-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeInsights},
 	// ScopeConflicts rows: the Conflicts tab's own list cursor + drill-in,
 	// matched directly by ConflictsView.Update exactly as Projects' select/open
 	// are — no root runner, unconditionally available so the tab footer keeps

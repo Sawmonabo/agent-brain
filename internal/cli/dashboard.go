@@ -98,6 +98,9 @@ func launchHub(cmd *cobra.Command) error {
 		Registry:  deps.registry,
 		Settings:  settings,
 		CacheRoot: cacheRoot,
+		// The build version stamped into cli.Version (-ldflags), rendered in the
+		// Projects fleet header (spec §9). "dev" for an unstamped local build.
+		Version: Version,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting

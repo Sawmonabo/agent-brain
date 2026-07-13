@@ -126,8 +126,15 @@ func (v *ProjectsView) SetSize(width, height int) {
 			v.rebuild()
 		}
 	}
-	// Leave room for the status header, tab bar, section title, footer, notice.
-	if bodyHeight := height - 13; bodyHeight > 3 {
+	// Reserve every non-table line the composed Projects frame carries at full
+	// chrome, so the space-filled table never pushes a real row off the bottom
+	// (spec §9): 8 content lines — the status header, both toast slots (sticky +
+	// info), the tab bar, this tab's section title, the fleet header (one row
+	// above the table), the action notice, and the footer — plus the 6 blank
+	// separators between those blocks. 14 total; the fleet header is the row that
+	// took it from 13 to 14. Fewer toasts (or no notice) simply leave the frame
+	// short, never over it.
+	if bodyHeight := height - 14; bodyHeight > 3 {
 		v.table.SetHeight(bodyHeight)
 	}
 }
@@ -298,10 +305,15 @@ func (v ProjectsView) ModalOpen() bool {
 	return v.Confirming || v.Adding != AddNone
 }
 
-// View renders the Projects tab: the add flow (if active), else the table
-// or an empty/loading/error state, followed by the confirm prompt or the
-// last action's notice.
-func (v ProjectsView) View() string {
+// View renders the Projects tab: the add flow (if active), else the fleet
+// header above the table or an empty/loading/error state, followed by the
+// confirm prompt or the last action's notice. fleetHeader is the root-composed
+// one-line fleet summary (spec §9) — rendered only above a populated table
+// (the empty/loading/error/add states carry their own guidance and would only
+// be crowded by a "0 units" line above them); "" suppresses it (the row the
+// header would occupy is always reserved in SetSize, so a suppressed header
+// leaves the frame short, never overflowing).
+func (v ProjectsView) View(fleetHeader string) string {
 	var b strings.Builder
 	b.WriteString(sectionTitle(v.styles, "Projects"))
 	b.WriteString("\n\n")
@@ -317,6 +329,10 @@ func (v ProjectsView) View() string {
 	case len(v.Units) == 0:
 		b.WriteString(v.styles.Dim.Render("no projects enrolled — run `agent-brain track` or press a"))
 	default:
+		if fleetHeader != "" {
+			b.WriteString(v.styles.Dim.Render(fleetHeader))
+			b.WriteString("\n")
+		}
 		b.WriteString(v.table.View())
 	}
 	b.WriteString("\n")

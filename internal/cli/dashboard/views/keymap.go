@@ -59,7 +59,10 @@ type DashboardKeymap struct {
 	BrowserDelete      keybinding.Binding
 	BrowserHistory     keybinding.Binding
 	BrowserShowDeleted keybinding.Binding
-	BrowserBack        keybinding.Binding
+	// BrowserInsights (i) opens the project insights screen (Task 16), matched
+	// directly by Browser.updateKey like the other browser read surfaces.
+	BrowserInsights keybinding.Binding
+	BrowserBack     keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
 	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
 	// one hint; Reading.updateKey matches it for membership, then picks the
@@ -84,6 +87,11 @@ type DashboardKeymap struct {
 	HistoryDiffOlder keybinding.Binding
 	HistoryRestore   keybinding.Binding
 	HistoryBack      keybinding.Binding
+	// InsightsBack owns the pushed insights screen's esc (Task 16). The screen's
+	// stat sections scroll through the viewport's own keys (not registry
+	// actions, like every screen's table-stakes scroll set), so esc is its only
+	// binding here, matched directly by Insights.updateKey.
+	InsightsBack keybinding.Binding
 	// ConflictsSelect/ConflictsOpen own the Conflicts tab's flat list cursor
 	// and its drill-in to a detail screen; ConflictsSelect reuses the same
 	// ↑/↓/k/j keys as Select, kept a distinct binding so its footer row scopes
@@ -130,6 +138,7 @@ var DashboardKeys = DashboardKeymap{
 	BrowserDelete:         bindingFor("browser-delete"),
 	BrowserHistory:        bindingFor("browser-history"),
 	BrowserShowDeleted:    bindingFor("browser-show-deleted"),
+	BrowserInsights:       bindingFor("browser-insights"),
 	BrowserBack:           bindingFor("browser-back"),
 	ReadingCycleLinks:     bindingFor("reading-links"),
 	ReadingFollow:         bindingFor("reading-follow"),
@@ -143,6 +152,7 @@ var DashboardKeys = DashboardKeymap{
 	HistoryDiffOlder:      bindingFor("history-diff-older"),
 	HistoryRestore:        bindingFor("history-restore"),
 	HistoryBack:           bindingFor("history-back"),
+	InsightsBack:          bindingFor("insights-back"),
 	ConflictsSelect:       bindingFor("conflicts-select"),
 	ConflictsOpen:         bindingFor("conflicts-open"),
 	ConflictDetailRead:    bindingFor("conflictdetail-read"),

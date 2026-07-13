@@ -123,6 +123,11 @@ type Browser struct {
 	// scanned from lint.Check's own []Result on every row render.
 	lintFlags       map[string]bool
 	lintFingerprint string // last (memories, StaleAfterDays, now-day-bucket) set the lint scan ran over
+	// lintResults retains the full lint.Check output the badge flags are derived
+	// from, not just the RepoPath set: the insights screen (i) tallies issues
+	// per rule from it (spec §9), handed the browser's current results rather
+	// than re-scanning. Refreshed on the same fingerprint gate as lintFlags.
+	lintResults []lint.Result
 
 	// preview memoizes the last glamour-rendered preview: View runs on every
 	// keypress and every RefreshMsg (roughly every 2s while idle), and
@@ -238,6 +243,7 @@ func (b *Browser) refresh() {
 	if fingerprint := lintFingerprint(memories, b.deps.StaleAfterDays, b.now); fingerprint != b.lintFingerprint {
 		b.index = links.BuildIndex(memories, b.deps.ReadBody)
 		results := lint.Check(memories, b.index, b.deps.ReadBody, b.deps.StaleAfterDays, b.now)
+		b.lintResults = results
 		b.lintFlags = make(map[string]bool, len(results))
 		for _, result := range results {
 			b.lintFlags[result.Memory.RepoPath] = true
@@ -344,6 +350,8 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		return b, b.openHistory()
 	case keybinding.Matches(msg, DashboardKeys.BrowserShowDeleted):
 		return b, b.enterDeleted()
+	case keybinding.Matches(msg, DashboardKeys.BrowserInsights):
+		return b, b.openInsights()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
 		b.filtering = true
 		return b, b.filter.Focus()
@@ -459,6 +467,25 @@ func (b *Browser) openHistory() tea.Cmd {
 		Now:      b.now,
 	})
 	return func() tea.Msg { return PushScreenMsg{Screen: history} }
+}
+
+// openInsights pushes the project's insights screen (spec §9's i): fleet-wide
+// stats over this one folder. It hands the browser's OWN current listing and
+// lint results (the brief's "pass, don't re-walk" — the browser stays the live
+// view of the tree, the insights a snapshot of it) plus the version seam the
+// activity stats derive from. No I/O here: the one folder-wide history fetch
+// runs later as the root-issued InitCmd. Unlike openHistory it needs no
+// selection — insights summarise the whole folder, even an empty one.
+func (b *Browser) openInsights() tea.Cmd {
+	insights := NewInsights(InsightsDeps{
+		Folder:   b.deps.Folder,
+		Memories: b.memories,
+		Lint:     b.lintResults,
+		Data:     b.deps.Data,
+		Styles:   b.deps.Styles,
+		Now:      b.now,
+	})
+	return func() tea.Msg { return PushScreenMsg{Screen: insights} }
 }
 
 // updateFiltering handles a keypress while the in-browser filter owns
