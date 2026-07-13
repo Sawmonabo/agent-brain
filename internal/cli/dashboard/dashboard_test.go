@@ -13,6 +13,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
@@ -1088,6 +1089,237 @@ func TestToastRendersInStatusHeaderRegion(t *testing.T) {
 			headerIdx, toastIdx, tabBarIdx, body)
 	}
 }
+
+// TestStickyToastPersistsAcrossTicks pins the sticky slot's defining
+// property: an error/action-required toast outlives the info TTL. Both slots
+// are pushed, then ticks are driven well past toastTTL — the info line
+// expires on schedule, the sticky line stays until it is dismissed.
+func TestStickyToastPersistsAcrossTicks(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	start := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	m.now = start
+	m.pushStickyToast("save failed — your edit is kept at /scratch/x.md")
+	m.pushToast("path: /home/u/.claude/x.md")
+	if m.stickyToast == nil || m.toast == nil {
+		t.Fatal("setup: both toast slots should be populated")
+	}
+
+	m, _ = step(m, tickMsg(start.Add(2*time.Second)))
+	m, _ = step(m, tickMsg(start.Add(8*time.Second))) // past the 5s info TTL
+
+	if m.toast != nil {
+		t.Errorf("info toast survived past its TTL: %+v", m.toast)
+	}
+	if m.stickyToast == nil {
+		t.Fatal("sticky toast expired on a tick; it must persist until dismissed")
+	}
+	if got := plain(m.toastLine()); !strings.Contains(got, "save failed") {
+		t.Errorf("toastLine = %q, want the sticky line still rendered", got)
+	}
+}
+
+// TestEscAtRootDismissesStickyBeforeQuitPrompt pins the esc ordering: esc
+// consumes internal state first, so a present sticky toast is dismissed
+// before esc escalates to the quit prompt; only a second esc (no sticky
+// left) opens the prompt. q still quits directly regardless — a sticky
+// informs, it never traps.
+func TestEscAtRootDismissesStickyBeforeQuitPrompt(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.pushStickyToast("capture failed: push: remote hung up")
+
+	m, _ = step(m, key("esc"))
+	if m.stickyToast != nil {
+		t.Error("esc did not dismiss the sticky toast")
+	}
+	if m.quitPrompt {
+		t.Error("esc opened the quit prompt while a sticky toast was present; it must dismiss the sticky first")
+	}
+
+	m, _ = step(m, key("esc"))
+	if !m.quitPrompt {
+		t.Error("esc with no sticky present did not open the quit prompt")
+	}
+
+	// q quits directly even with a sticky toast present.
+	q := newTestModel(&fakeData{status: readyStatus()})
+	q, _ = step(q, tea.WindowSizeMsg{Width: 110, Height: 40})
+	q.pushStickyToast("save failed — your edit is kept at /scratch/x.md")
+	q, cmd := step(q, key("q"))
+	if !q.quitting {
+		t.Error("q did not quit while a sticky toast was present")
+	}
+	if cmd == nil {
+		t.Fatal("q produced no Cmd; want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("q's Cmd did not produce a QuitMsg")
+	}
+}
+
+// TestInfoToastTTLMeasuresVisibility pins the visibility-measured TTL: an
+// info toast pushed while chrome covers the status area does not start its
+// clock until the chrome closes, so it can never expire unseen. The mirror
+// case (no chrome at push) behaves exactly like the pre-two-slot toast —
+// stamped at push, expiring five seconds later.
+func TestInfoToastTTLMeasuresVisibility(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	t.Run("hidden under chrome does not expire", func(t *testing.T) {
+		t.Parallel()
+		m := newTestModel(&fakeData{status: readyStatus()})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+		m.now = start
+		m.openSearchOverlay() // chrome now covers the status area
+		m.pushToast("path: /home/u/x.md")
+		if m.toast == nil || !m.toast.visibleSince.IsZero() {
+			t.Fatalf("info toast pushed under chrome must have a zero visibleSince, got %+v", m.toast)
+		}
+
+		// Ticks well past the TTL while still covered: no stamp, no expiry.
+		m, _ = step(m, tickMsg(start.Add(3*time.Second)))
+		m, _ = step(m, tickMsg(start.Add(9*time.Second)))
+		if m.toast == nil {
+			t.Fatal("info toast expired while hidden under chrome; the TTL must measure visibility, not age")
+		}
+		if !m.toast.visibleSince.IsZero() {
+			t.Errorf("visibleSince stamped while chrome still covered the status area: %+v", m.toast)
+		}
+
+		// Close the overlay; the next tick stamps visibleSince from m.now.
+		m.searchOverlay = nil
+		stampAt := start.Add(10 * time.Second)
+		m, _ = step(m, tickMsg(stampAt))
+		if m.toast == nil || m.toast.visibleSince != stampAt {
+			t.Fatalf("first uncovered tick did not stamp visibleSince=%v: %+v", stampAt, m.toast)
+		}
+
+		// Survives until stampAt+TTL, gone after — measured from the stamp.
+		m, _ = step(m, tickMsg(stampAt.Add(toastTTL-time.Second)))
+		if m.toast == nil {
+			t.Error("info toast expired before its visible TTL elapsed")
+		}
+		m, _ = step(m, tickMsg(stampAt.Add(toastTTL)))
+		if m.toast != nil {
+			t.Errorf("info toast survived past visibleSince+TTL: %+v", m.toast)
+		}
+	})
+
+	t.Run("no chrome behaves like today", func(t *testing.T) {
+		t.Parallel()
+		m := newTestModel(&fakeData{status: readyStatus()})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+		m.now = start
+		m.pushToast("path: /home/u/x.md")
+		if m.toast == nil || m.toast.visibleSince != start {
+			t.Fatalf("info toast pushed with no chrome must stamp visibleSince at push: %+v", m.toast)
+		}
+		m, _ = step(m, tickMsg(start.Add(toastTTL-time.Second)))
+		if m.toast == nil {
+			t.Error("info toast expired before its TTL")
+		}
+		m, _ = step(m, tickMsg(start.Add(toastTTL)))
+		if m.toast != nil {
+			t.Errorf("info toast survived past its TTL: %+v", m.toast)
+		}
+	})
+}
+
+// TestStickyAndInfoRenderTogether pins the two-line render: both slots
+// populated render two lines, sticky first, and the sticky line goes through
+// the ToastSticky style. A sentinel-Render theme (ToastSticky wraps its
+// output in a marker) makes the style routing observable through the CSI
+// strip.
+func TestStickyAndInfoRenderTogether(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	const stickySentinel = "<<STICKY>>"
+	m.styles.ToastSticky = lipgloss.NewStyle().Transform(func(s string) string { return stickySentinel + s })
+	m.pushStickyToast("capture failed: push: remote hung up")
+	m.pushToast("path: /home/u/x.md")
+
+	line := m.toastLine()
+	plainLine := plain(line)
+	stickyIdx := strings.Index(plainLine, "capture failed")
+	infoIdx := strings.Index(plainLine, "path: /home/u/x.md")
+	if stickyIdx == -1 || infoIdx == -1 {
+		t.Fatalf("toastLine is missing a slot: %q", plainLine)
+	}
+	if stickyIdx >= infoIdx {
+		t.Errorf("sticky line not rendered before info line: sticky@%d info@%d in %q", stickyIdx, infoIdx, plainLine)
+	}
+	if count := strings.Count(line, stickySentinel); count != 1 {
+		t.Errorf("ToastSticky style applied to %d lines, want exactly the sticky one: %q", count, line)
+	}
+}
+
+// TestNewStickyReplacesOldSticky pins replace-only, newest-wins semantics for
+// the sticky slot: a second push discards the first (two slots, never a
+// queue).
+func TestNewStickyReplacesOldSticky(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.pushStickyToast("first sticky")
+	m.pushStickyToast("second sticky")
+	if m.stickyToast == nil {
+		t.Fatal("no sticky toast after two pushes")
+	}
+	if m.stickyToast.text != "second sticky" {
+		t.Errorf("sticky text = %q, want the newest %q", m.stickyToast.text, "second sticky")
+	}
+	if got := plain(m.toastLine()); strings.Contains(got, "first sticky") {
+		t.Errorf("toastLine still shows the replaced sticky: %q", got)
+	}
+}
+
+// TestStackFrameFitsBothToastLines pins the layout-honesty fix: a pushed
+// screen fills stackBodyHeight, and the header above it absorbs up to two
+// toast lines. With both slots full the composed frame must stay within the
+// terminal height, or the footer is pushed off-screen. A fixed-height stub
+// screen fills its whole budget deterministically (a real Browser windows
+// its content and may under-fill), so this isolates the root's own chrome
+// reservation.
+func TestStackFrameFitsBothToastLines(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+	m.status = readyStatus()
+	m = m.pushScreen(fixedHeightScreen{title: "stub"})
+	m.pushStickyToast("save failed — your edit is kept at /scratch/x.md")
+	m.pushToast("path: /home/u/x.md")
+
+	body := plain(m.View().Content)
+	if lineCount := strings.Count(body, "\n") + 1; lineCount > height {
+		t.Errorf("stack frame with two toast lines is %d lines, want <= %d (footer pushed off-screen)", lineCount, height)
+	}
+	if want := plain(m.footer()); want != "" && !strings.Contains(body, want) {
+		t.Errorf("stack footer missing from the composed frame — clipped off the bottom:\n%s", body)
+	}
+}
+
+// fixedHeightScreen is a test double for views.Screen that fills exactly the
+// height it is handed (unlike a real Browser, whose fill depends on content),
+// so a layout test can assert the root's frame arithmetic deterministically.
+type fixedHeightScreen struct{ title string }
+
+func (s fixedHeightScreen) Update(tea.Msg) (views.Screen, tea.Cmd) { return s, nil }
+
+func (s fixedHeightScreen) View(_, height int) string {
+	lines := make([]string, max(height, 1))
+	for i := range lines {
+		lines[i] = "x"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (s fixedHeightScreen) Title() string { return s.title }
 
 // TestHelpOpensAndAnyKeyCloses pins the ? overlay's own tiny lifecycle: it
 // replaces the whole body while open, and any key — not just esc — closes

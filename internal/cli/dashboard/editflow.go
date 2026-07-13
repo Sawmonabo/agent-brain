@@ -376,7 +376,10 @@ func (m Model) finishEdit(finished editorFinishedMsg) Model {
 	}
 	changed, edited, err := editorx.Changed(session.original, session.scratchPath)
 	if err != nil {
-		m.pushToast("edit not landed: " + err.Error() + " — scratch kept at " + session.scratchPath)
+		// The scratch is preserved and named — a durable artifact the user
+		// must rescue, so it goes to the sticky slot, not an info toast that
+		// would evaporate in 5s (or under an overlay, unseen).
+		m.pushStickyToast("edit not landed: " + err.Error() + " — scratch kept at " + session.scratchPath)
 		return m
 	}
 	if !changed {
@@ -385,7 +388,10 @@ func (m Model) finishEdit(finished editorFinishedMsg) Model {
 		return m
 	}
 	if err := memoryfs.WriteFileAtomic(session.targetDir, session.targetRel, edited); err != nil {
-		m.pushToast("save failed: " + err.Error() + " — your edit is kept at " + session.scratchPath)
+		// The scratch is now the only copy of the user's edit — a durable
+		// artifact to rescue, so the sticky slot names where it is until the
+		// user acts, never a 5s info toast.
+		m.pushStickyToast("save failed: " + err.Error() + " — your edit is kept at " + session.scratchPath)
 		return m
 	}
 	session.cleanup()
@@ -606,13 +612,18 @@ func (m *Model) checkPendingCapture() {
 			return
 		}
 		if lastSync.Error != "" {
-			m.pushToast("capture failed: " + lastSync.Error)
+			// An unresolved capture failure (the user's landed edit is not
+			// safely captured) is action-required — sticky, not a transient
+			// info toast.
+			m.pushStickyToast("capture failed: " + lastSync.Error)
 			m.pendingCapture = nil
 			return
 		}
 	}
 	if !m.now.Before(pending.since.Add(pendingCaptureDeadline)) {
-		m.pushToast("capture not yet confirmed — daemon may be quiesced or offline (see Activity)")
+		// An unconfirmed capture past its deadline is an unresolved state the
+		// user should act on (check Activity) — sticky, not a 5s info toast.
+		m.pushStickyToast("capture not yet confirmed — daemon may be quiesced or offline (see Activity)")
 		m.pendingCapture = nil
 	}
 }

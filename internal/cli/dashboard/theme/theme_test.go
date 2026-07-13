@@ -48,6 +48,7 @@ func TestDefaultStylesRenderPlainText(t *testing.T) {
 			{"InactiveTab", styles.InactiveTab},
 			{"Badge", styles.Badge},
 			{"Toast", styles.Toast},
+			{"ToastSticky", styles.ToastSticky},
 			{"Selected", styles.Selected},
 		}
 		for _, testCase := range tests {
@@ -91,6 +92,7 @@ func TestDefaultDiffersByBackground(t *testing.T) {
 		{"InactiveTab", dark.InactiveTab, light.InactiveTab},
 		{"Badge", dark.Badge, light.Badge},
 		{"Toast", dark.Toast, light.Toast},
+		{"ToastSticky", dark.ToastSticky, light.ToastSticky},
 		// Selected carries no palette-derived color (Reverse(true) only), so
 		// it is identical by construction in both flavours — deliberately
 		// excluded, since including it would assert a false invariant.

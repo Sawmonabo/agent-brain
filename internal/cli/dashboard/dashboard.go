@@ -89,13 +89,27 @@ type (
 )
 
 // toast is a transient status-area notification (spec §2's "status bar: …
-// toasts"). expiresAt is computed from the model's current now at push time,
-// so tests control expiry deterministically the same way they already
-// control tickMsg — no wall-clock dependency in either the push or the
-// expiry check.
+// toasts"). The info slot expires on toastTTL; the sticky slot (error /
+// action-required) never does. The TTL measures VISIBILITY, not age:
+// visibleSince is when the toast first had a clear status area (no chrome
+// overlay covering it) and stays zero until then, so a toast pushed under an
+// open overlay cannot expire unseen behind it. Expiry is derived from
+// visibleSince rather than stored alongside it, so the two can never
+// disagree; the model clock (m.now) drives both the stamp and the check, so
+// tests control the whole lifecycle deterministically with no wall-clock
+// dependency.
 type toast struct {
-	text      string
-	expiresAt time.Time
+	text         string
+	visibleSince time.Time
+}
+
+// expired reports whether an info-slot toast has exhausted its visible TTL:
+// visibleSince must be set (the toast has actually been on screen) AND
+// toastTTL must have elapsed since. A zero visibleSince (still hidden under
+// chrome) is never expired. The sticky slot never calls this — it does not
+// expire on time.
+func (t *toast) expired(now time.Time) bool {
+	return !t.visibleSince.IsZero() && !now.Before(t.visibleSince.Add(toastTTL))
 }
 
 // Config is what the cli root command supplies to build the root model.
@@ -187,13 +201,19 @@ type Model struct {
 
 	// Root chrome (spec §14/§2/§7): the palette, help, and search overlays
 	// each own the whole screen and the keyboard while open; the quit prompt
-	// is an inline footer state, not a full overlay. toast is the persistent
-	// status-area notification dispatch uses to explain a local refusal.
+	// is an inline footer state, not a full overlay. The status area carries
+	// two toast slots: toast is the info slot (transient feedback, TTL-expired)
+	// and stickyToast is the error/action-required slot (a preserved scratch,
+	// an unresolved failure) that persists until esc dismisses it or a newer
+	// sticky replaces it. Both follow the replace-only pointer discipline — a
+	// handler installs a fresh pointer (or nil), never mutating through a
+	// stored one.
 	paletteOpen bool
 	palette     views.PaletteModel
 	helpOpen    bool
 	quitPrompt  bool
 	toast       *toast
+	stickyToast *toast
 
 	// Edit-flow state (spec §5, editflow.go). All three pointer fields
 	// follow the toast field's replace-only discipline under Model's value
@@ -468,9 +488,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.now = time.Time(msg)
-		if m.toast != nil && !m.now.Before(m.toast.expiresAt) {
-			m.toast = nil
-		}
+		m.advanceToasts()
 		cmds := []tea.Cmd{m.reloadCmd(), m.tickCmd()}
 		if _, ok := m.stackTop(); ok {
 			var stackCmd tea.Cmd
@@ -744,6 +762,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.switchCmd()
 	case msg.String() == "esc":
+		// esc consumes internal state first, the rule used everywhere else
+		// (flow modal, screen stack, chrome all consume esc before it can
+		// reach here): a sticky error toast is dismissed before esc escalates
+		// to the quit prompt. q still quits directly regardless — a sticky
+		// informs, it never traps.
+		if m.stickyToast != nil {
+			m.stickyToast = nil
+			return m, nil
+		}
 		m.quitPrompt = true
 		return m, nil
 	}
@@ -829,23 +856,85 @@ func (m *Model) refuseIfQuiesced(action actions.Action) bool {
 	return true
 }
 
-// pushToast surfaces text in the persistent status area for toastTTL, expiry
-// checked on the existing 2s poll tick rather than a dedicated timer.
-// pointer receiver: every caller already holds an addressable *Model mid-
-// mutation (dispatch, quiesceGate) and wants this folded in as one more
-// field write, not a value threaded back out and reassigned.
+// pushToast surfaces text in the INFO slot of the status area for toastTTL of
+// on-screen visibility. visibleSince is stamped now only if the status area
+// is currently clear; pushed under chrome it stays zero and the tick handler
+// stamps it once the chrome closes, so the TTL measures visibility rather
+// than age. pointer receiver: every caller already holds an addressable
+// *Model mid-mutation (dispatch, quiesceGate) and folds this in as one field
+// write, not a value threaded back out and reassigned.
 func (m *Model) pushToast(text string) {
-	m.toast = &toast{text: text, expiresAt: m.now.Add(toastTTL)}
+	m.toast = &toast{text: text, visibleSince: m.visibilityStamp()}
 }
 
-// toastLine renders the active toast, if any and not yet expired. This is a
-// belt-and-suspenders check alongside the tick-driven expiry in Update, so a
-// View call between ticks never shows text past its TTL.
-func (m Model) toastLine() string {
-	if m.toast == nil || !m.now.Before(m.toast.expiresAt) {
-		return ""
+// pushStickyToast replaces the STICKY (error / action-required) slot; the
+// newest sticky wins. It carries the same visibility stamp as pushToast so a
+// future visibility-gated behaviour reads a truthful value, but the sticky
+// slot never expires on time regardless — it clears only on esc (handleKey)
+// or when a newer sticky replaces it.
+func (m *Model) pushStickyToast(text string) {
+	m.stickyToast = &toast{text: text, visibleSince: m.visibilityStamp()}
+}
+
+// visibilityStamp is m.now when the status area is currently clear, else the
+// zero time — the one place the push-time stamp rule for both slots lives.
+func (m *Model) visibilityStamp() time.Time {
+	if m.chromeCoversStatus() {
+		return time.Time{}
 	}
-	return m.styles.Toast.Render(m.toast.text)
+	return m.now
+}
+
+// chromeCoversStatus reports whether an open chrome overlay is covering the
+// status area, so a toast's visible TTL must not run (it is not actually on
+// screen). The set is exactly the View branches that render something other
+// than the status-header region — the daemon-down screen, the help overlay,
+// the palette, and the search overlay each own the whole body and never
+// render toastLine — so this predicate and View's branch list state the same
+// truth once.
+func (m Model) chromeCoversStatus() bool {
+	return m.daemonDown || m.helpOpen || m.paletteOpen || m.searchOverlay != nil
+}
+
+// advanceToasts runs the visibility-measured toast lifecycle on each tick: it
+// stamps a slot's visibleSince the first tick the status area is clear (so a
+// toast pushed under chrome starts its TTL only once the chrome closes), then
+// expires the INFO slot once its visible TTL elapses. The sticky slot is
+// stamped the same way but never expires on time. Both writes replace the
+// slot pointer with an updated copy rather than mutating through it — the
+// Model-wide replace-only pointer discipline, so a retained earlier Model
+// copy never sees its toast rewritten underneath it.
+func (m *Model) advanceToasts() {
+	covered := m.chromeCoversStatus()
+	if m.stickyToast != nil && m.stickyToast.visibleSince.IsZero() && !covered {
+		m.stickyToast = &toast{text: m.stickyToast.text, visibleSince: m.now}
+	}
+	if m.toast == nil {
+		return
+	}
+	if m.toast.visibleSince.IsZero() && !covered {
+		m.toast = &toast{text: m.toast.text, visibleSince: m.now}
+	}
+	if m.toast.expired(m.now) {
+		m.toast = nil
+	}
+}
+
+// toastLine renders the populated toast slots for the status area: the sticky
+// (error) line first, then the info line, joined the same way the header
+// joins the toast block. The info line carries a belt-and-suspenders expiry
+// check so a View between ticks never shows it past its visible TTL; the
+// sticky line renders whenever present (it has no TTL). Empty when both slots
+// are clear.
+func (m Model) toastLine() string {
+	var lines []string
+	if m.stickyToast != nil {
+		lines = append(lines, m.styles.ToastSticky.Render(m.stickyToast.text))
+	}
+	if m.toast != nil && !m.toast.expired(m.now) {
+		lines = append(lines, m.styles.Toast.Render(m.toast.text))
+	}
+	return strings.Join(lines, "\n\n")
 }
 
 // withStack replaces m.stack with stack. It is the SOLE place that assigns
@@ -1027,13 +1116,22 @@ func (m Model) breadcrumb() string {
 	return m.styles.Title.Render(strings.Join(segments, " ▸ "))
 }
 
-// stackBodyHeight computes a pushed screen's content budget: terminal
-// height minus the header, breadcrumb, and footer chrome around it —
-// mirroring the tab-level budget ProjectsView.SetSize already computes for
-// the same chrome (status header, toast slot, footer), minus the one line
-// the breadcrumb costs in place of the tab bar it replaces.
+// stackBodyHeight computes a pushed screen's content budget: terminal height
+// minus the header, breadcrumb, and footer chrome around it — mirroring the
+// tab-level budget ProjectsView.SetSize reserves for the same chrome (status
+// header, BOTH toast slots, footer), minus the one line the breadcrumb costs
+// in place of the tab bar it replaces. Ten chrome lines: the status header,
+// the sticky toast, the info toast, and the breadcrumb each cost their line
+// plus a trailing blank, and the footer its line plus a leading blank. The
+// header absorbs up to two toast lines (sticky over info); reserving both
+// here keeps the composed frame within the terminal with both slots full,
+// rather than letting the second line push the footer off-screen. When
+// fewer slots are populated the frame simply runs short (blank rows at the
+// bottom), the same posture the tab-level budget already takes. Below the
+// floor the screen still gets 3 lines — a terminal that small overflows
+// regardless, and a readable screen beats an empty one.
 func (m Model) stackBodyHeight() int {
-	const chromeLines = 8
+	const chromeLines = 10
 	if height := m.height - chromeLines; height > 3 {
 		return height
 	}

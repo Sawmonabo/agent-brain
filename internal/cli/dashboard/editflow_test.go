@@ -497,6 +497,7 @@ func TestPendingCaptureToasts(t *testing.T) {
 		tickTo      time.Time
 		lastSync    *api.SyncSummary
 		wantToast   string
+		sticky      bool // the notice is an unresolved failure → sticky slot
 		wantCleared bool
 	}{
 		{
@@ -518,6 +519,7 @@ func TestPendingCaptureToasts(t *testing.T) {
 			tickTo:      flowT0.Add(12 * time.Second),
 			lastSync:    &api.SyncSummary{At: captureAt, Error: "push: remote hung up"},
 			wantToast:   "capture failed: push: remote hung up",
+			sticky:      true,
 			wantCleared: true,
 		},
 		{
@@ -525,6 +527,7 @@ func TestPendingCaptureToasts(t *testing.T) {
 			tickTo:      flowT0.Add(91 * time.Second),
 			lastSync:    nil,
 			wantToast:   "capture not yet confirmed — daemon may be quiesced or offline (see Activity)",
+			sticky:      true,
 			wantCleared: true,
 		},
 		{
@@ -591,8 +594,29 @@ func TestPendingCaptureToasts(t *testing.T) {
 			m, _ = step(m, tickMsg(testCase.tickTo))
 			m, _ = step(m, statusMsg{resp: api.StatusResponse{State: "ready", LastSync: testCase.lastSync}})
 
-			if got := plain(m.toastLine()); got != testCase.wantToast {
-				t.Errorf("toast = %q, want %q", got, testCase.wantToast)
+			// Assert the SLOT, not just the rendered line: toastLine renders
+			// both slots, so checking it alone would pass whichever slot the
+			// notice used — the retrofit contract (capture FAILURES are sticky,
+			// confirmations are info) needs the slot pinned directly.
+			switch {
+			case testCase.wantToast == "":
+				if m.toast != nil || m.stickyToast != nil {
+					t.Errorf("toast set, want none: info=%+v sticky=%+v", m.toast, m.stickyToast)
+				}
+			case testCase.sticky:
+				if m.stickyToast == nil || m.stickyToast.text != testCase.wantToast {
+					t.Errorf("sticky toast = %+v, want text %q", m.stickyToast, testCase.wantToast)
+				}
+				if m.toast != nil {
+					t.Errorf("a capture failure also landed in the info slot: %+v", m.toast)
+				}
+			default:
+				if m.toast == nil || m.toast.text != testCase.wantToast {
+					t.Errorf("info toast = %+v, want text %q", m.toast, testCase.wantToast)
+				}
+				if m.stickyToast != nil {
+					t.Errorf("a capture confirmation landed in the sticky slot: %+v", m.stickyToast)
+				}
 			}
 			if cleared := m.pendingCapture == nil; cleared != testCase.wantCleared {
 				t.Errorf("pendingCapture cleared = %v, want %v", cleared, testCase.wantCleared)
@@ -1010,8 +1034,13 @@ func TestEditorFailureCleansUpAndToasts(t *testing.T) {
 
 	m, _ = step(m, editorFinishedMsg{err: errors.New("exit status 1")})
 
-	if got := plain(m.toastLine()); !strings.Contains(got, "editor failed") {
-		t.Errorf("toast = %q, want the editor failure surfaced", got)
+	// The scratch is cleaned on this path (asserted below), so nothing
+	// survives for the user to rescue — the notice is info, not sticky.
+	if m.toast == nil || !strings.Contains(m.toast.text, "editor failed") {
+		t.Errorf("info toast = %+v, want the editor failure surfaced", m.toast)
+	}
+	if m.stickyToast != nil {
+		t.Errorf("editor failure landed in the sticky slot: %+v — its scratch is cleaned, so it is info", m.stickyToast)
 	}
 	content, err := os.ReadFile(filepath.Join(unitDir, "note.md"))
 	if err != nil {
@@ -1050,8 +1079,13 @@ func TestScratchMissingKeepsTargetAndPreservesDir(t *testing.T) {
 
 	m, _ = step(m, editorFinishedMsg{})
 
-	if got := plain(m.toastLine()); !strings.Contains(got, "edit not landed") {
-		t.Errorf("toast = %q, want the not-landed notice", got)
+	// A preserved scratch the user must rescue is a sticky (action-required)
+	// notice, not an info toast that evaporates in 5s.
+	if m.stickyToast == nil || !strings.Contains(m.stickyToast.text, "edit not landed") || !strings.Contains(m.stickyToast.text, "scratch kept at") {
+		t.Errorf("sticky toast = %+v, want the not-landed notice naming the kept scratch", m.stickyToast)
+	}
+	if m.toast != nil {
+		t.Errorf("not-landed notice also landed in the info slot: %+v", m.toast)
 	}
 	content, err := os.ReadFile(filepath.Join(unitDir, "note.md"))
 	if err != nil {
@@ -1092,8 +1126,13 @@ func TestWriteFailureKeepsScratch(t *testing.T) {
 
 	m, _ = step(m, editorFinishedMsg{})
 
-	if got := plain(m.toastLine()); !strings.Contains(got, "save failed") || !strings.Contains(got, scratchPath) {
-		t.Errorf("toast = %q, want a save failure naming the preserved scratch path", got)
+	// The scratch is now the only copy of the user's edit — a sticky
+	// (action-required) notice naming where it is, not an evaporating info toast.
+	if m.stickyToast == nil || !strings.Contains(m.stickyToast.text, "save failed") || !strings.Contains(m.stickyToast.text, scratchPath) {
+		t.Errorf("sticky toast = %+v, want a save failure naming the preserved scratch path %q", m.stickyToast, scratchPath)
+	}
+	if m.toast != nil {
+		t.Errorf("save failure also landed in the info slot: %+v", m.toast)
 	}
 	edited, err := os.ReadFile(scratchPath)
 	if err != nil {

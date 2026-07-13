@@ -23,10 +23,13 @@ import (
 // Styles is the dashboard's full named style set. Title/Header/Dim are
 // structural (section headers, de-emphasized text); OK/Warn/Fail/Info are
 // the doctor battery's and status glyphs' semantic colors; ActiveTab/
-// InactiveTab render the tab bar. Badge/Toast/Selected are consumed by later
-// screens in the dashboard-hub wave (spec plan Phase 5) — they carry a
-// palette-derived color today so that wave's screens inherit the swap for
-// free instead of inventing their own colors later.
+// InactiveTab render the tab bar. Toast renders the status-area info toast
+// and ToastSticky its sticky error/action-required sibling (error-red, so it
+// reads as a failure that needs attention rather than transient feedback).
+// Badge/Selected are consumed by later screens in the dashboard-hub wave
+// (spec plan Phase 5) — they carry a palette-derived color today so that
+// wave's screens inherit the swap for free instead of inventing their own
+// colors later.
 type Styles struct {
 	Title       lipgloss.Style
 	Header      lipgloss.Style
@@ -39,6 +42,7 @@ type Styles struct {
 	InactiveTab lipgloss.Style
 	Badge       lipgloss.Style
 	Toast       lipgloss.Style
+	ToastSticky lipgloss.Style
 	Selected    lipgloss.Style
 }
 
@@ -64,6 +68,7 @@ func Default(isDark bool) Styles {
 		InactiveTab: lipgloss.NewStyle().Faint(true).Foreground(hex(flavour.Overlay0())),
 		Badge:       lipgloss.NewStyle().Bold(true).Foreground(hex(flavour.Mauve())),
 		Toast:       lipgloss.NewStyle().Italic(true).Foreground(hex(flavour.Teal())),
+		ToastSticky: lipgloss.NewStyle().Italic(true).Foreground(hex(flavour.Red())),
 		Selected:    lipgloss.NewStyle().Reverse(true),
 	}
 }
