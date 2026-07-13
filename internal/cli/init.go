@@ -58,6 +58,10 @@ func newInitCmd() *cobra.Command {
 
 			accessible := isAccessible()
 
+			// guidedInitState (below) mirrors these defaults for the hub's
+			// guided first run; TestGuidedInitStateMatchesInitFlagDefaults
+			// holds the two together — a new flag here must be mirrored
+			// there or consciously recorded in that pin.
 			state := &initState{
 				out:            cmd.OutOrStdout(),
 				nonInteractive: nonInteractive,
@@ -97,7 +101,7 @@ func newInitCmd() *cobra.Command {
 // flag-driven construction of initState unchanged alongside this — the two
 // are independent callers of the same underlying steps (gh client,
 // wireEnrollmentCallbacks, runInit), one fed by flags and one fed by these
-// fixed defaults, never one delegating to the other.
+// fixed defaults (guidedInitState), never one delegating to the other.
 func runInteractiveInitFlow(cmd *cobra.Command) error {
 	gh, err := ghx.NewClient()
 	if err != nil {
@@ -106,14 +110,25 @@ func runInteractiveInitFlow(cmd *cobra.Command) error {
 
 	accessible := isAccessible()
 
-	state := &initState{
-		out:      cmd.OutOrStdout(),
-		repoName: defaultRepoName,
-		gh:       gh,
-	}
+	state := guidedInitState(cmd.OutOrStdout(), gh)
 	wireEnrollmentCallbacks(state, accessible)
 
 	return runInit(cmd.Context(), state, accessible)
+}
+
+// guidedInitState is the hub's fixed-defaults twin of newInitCmd's
+// flag-driven literal: every field holds the value an unflagged interactive
+// `agent-brain init` would produce — zero values for the flag booleans and
+// enrollMode (interactive picker), defaultRepoName for the repo.
+// TestGuidedInitStateMatchesInitFlagDefaults pins each field to the
+// corresponding registered flag default so the two literals cannot drift
+// silently.
+func guidedInitState(out io.Writer, gh *ghx.Client) *initState {
+	return &initState{
+		out:      out,
+		repoName: defaultRepoName,
+		gh:       gh,
+	}
 }
 
 // runInit runs every step in order, with two huh-only decision points

@@ -1,6 +1,12 @@
 package cli
 
-import "testing"
+import (
+	"io"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/spf13/pflag"
+)
 
 // TestDecideHubEntryMatrix pins spec §1's bare-invocation matrix (ADR 20
 // decision 1) as a pure function: all 8 (initialized × tty × agentEnv)
@@ -103,4 +109,80 @@ func TestAgentEnvDetected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAgentEnvVarsExactList pins the fingerprint list against the spec §1
+// roster by value: the matrix and detection tests range over agentEnvVars
+// itself, so without this pin an accidental drop or addition would stay
+// self-consistently green.
+func TestAgentEnvVarsExactList(t *testing.T) {
+	t.Parallel()
+	want := []string{
+		"CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX", "CODEX_THREAD_ID",
+		"CODEX_CI", "GEMINI_CLI", "CLINE_ACTIVE", "OPENCODE",
+		"OPENCLAW_SHELL", "ANTIGRAVITY_CLI_ALIAS",
+	}
+	if diff := cmp.Diff(want, agentEnvVars); diff != "" {
+		t.Fatalf("agentEnvVars drifted from the spec §1 fingerprint roster (-want +got):\n%s", diff)
+	}
+}
+
+// TestGuidedInitStateMatchesInitFlagDefaults holds guidedInitState and
+// newInitCmd's flag-driven literal together: the hub's guided first run
+// must behave exactly like unflagged `agent-brain init`, and the two are
+// deliberately independent literals (neither delegates to the other), so
+// every registered flag default is compared against the guided state's
+// corresponding field, and a completeness guard forces any FUTURE init
+// flag to be either mirrored into guidedInitState or consciously recorded
+// here.
+func TestGuidedInitStateMatchesInitFlagDefaults(t *testing.T) {
+	t.Parallel()
+	state := guidedInitState(io.Discard, nil)
+	flags := newInitCmd().Flags()
+
+	defaultOf := func(name string) string {
+		flag := flags.Lookup(name)
+		if flag == nil {
+			t.Fatalf("init flag --%s no longer exists — update the guided-init equivalence pin", name)
+		}
+		return flag.DefValue
+	}
+
+	boolPins := []struct {
+		flag string
+		got  bool
+	}{
+		{"non-interactive", state.nonInteractive},
+		{"generate-key", state.generateKey},
+		{"import-key", state.importKey},
+		{"skip-service", state.skipService},
+	}
+	for _, pin := range boolPins {
+		if want := defaultOf(pin.flag) == "true"; pin.got != want {
+			t.Errorf("guidedInitState.%s = %v, but --%s defaults to %q", pin.flag, pin.got, pin.flag, defaultOf(pin.flag))
+		}
+	}
+	if state.enrollMode != defaultOf("enroll") {
+		t.Errorf("guidedInitState.enrollMode = %q, but --enroll defaults to %q", state.enrollMode, defaultOf("enroll"))
+	}
+	if state.repoName != defaultOf("repo-name") {
+		t.Errorf("guidedInitState.repoName = %q, but --repo-name defaults to %q", state.repoName, defaultOf("repo-name"))
+	}
+	if state.importArmored != "" {
+		t.Errorf("guidedInitState.importArmored = %q, want empty (import-key is flag-only)", state.importArmored)
+	}
+
+	handled := map[string]bool{
+		"non-interactive": true,
+		"generate-key":    true,
+		"import-key":      true,
+		"skip-service":    true,
+		"enroll":          true,
+		"repo-name":       true,
+	}
+	flags.VisitAll(func(flag *pflag.Flag) {
+		if !handled[flag.Name] {
+			t.Errorf("init flag --%s is not covered by the guided-init equivalence pin — mirror its default into guidedInitState or record it here", flag.Name)
+		}
+	})
 }

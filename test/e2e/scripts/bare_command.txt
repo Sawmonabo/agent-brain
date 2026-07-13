@@ -28,6 +28,12 @@ env CLAUDECODE=
 ! exec agent-brain nonsense
 stderr '(?i)unknown command'
 
+# Cobra's flag handling stays ahead of the hub RunE: --help and --version
+# exit 0 with no TTY, no pointer, and no prompt.
+exec agent-brain --help
+stdout '(?i)usage'
+exec agent-brain --version
+
 # Initialized machine (provision non-interactively), still non-TTY: the
 # dashboard's interactive-terminal refusal, naming the scriptable equivalents.
 exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
