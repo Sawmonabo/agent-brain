@@ -204,22 +204,37 @@ func checkIndexDrift(acc *accumulator, memories []memoryfs.Memory, readBody func
 	}
 }
 
-// parseIndexLinks extracts every markdown-link target from body, mirroring
-// claude/reconcile.go's exact rendered shape: each index line reads
-// "- [title](file.md)" or "- [title](file.md) — hook", so the linked
-// filename is the substring between the first "](" on a line and the next
-// ")". Lines with neither (the "# Memory index" header, blank lines) are
-// skipped naturally: strings.Cut reports no match, not a bogus zero-length
-// target.
+// parseIndexLinks extracts every file target from body's index lines,
+// mirroring claude/reconcile.go's exact rendered shape and nothing looser.
+// reconcile.go (its ReconcileIndex/extractTitleAndHook pair) emits ONLY
+// "- [title](file.md)\n" or "- [title](file.md) — hook\n" — one bullet
+// immediately followed by its link, every time. A line only counts as an
+// index entry when BOTH hold: after trimming surrounding whitespace it
+// starts with "- [" (the bullet-plus-link-open reconcile.go always
+// emits), AND the extracted link target ends in ".md" (the only kind of
+// file reconcile.go ever links). A line failing either guard is silently
+// skipped rather than misread as a claimed or missing file — MEMORY.md is
+// user-editable in $EDITOR, so prose containing an unrelated markdown
+// link (an external doc reference, a non-bulleted mention) is a normal,
+// healthy state, not drift. Within a qualifying line, the target is still
+// the substring between the first "](" and the next ")", matching
+// reconcile.go's own one-link-per-line contract.
 func parseIndexLinks(body string) []string {
 	var files []string
 	for line := range strings.SplitSeq(body, "\n") {
-		_, rest, ok := strings.Cut(line, "](")
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- [") {
+			continue
+		}
+		_, rest, ok := strings.Cut(trimmed, "](")
 		if !ok {
 			continue
 		}
 		file, _, ok := strings.Cut(rest, ")")
 		if !ok {
+			continue
+		}
+		if !strings.HasSuffix(file, ".md") {
 			continue
 		}
 		files = append(files, file)

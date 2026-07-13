@@ -1,6 +1,7 @@
 package lint_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -282,6 +283,112 @@ func TestCheckIndexDriftRuleIsClaudeOnly(t *testing.T) {
 
 	if len(results) != 0 {
 		t.Fatalf("Check() = %+v, want no issues (codex is exempt from index-drift)", results)
+	}
+}
+
+// TestCheckIndexDriftRuleIgnoresNonIndexLines pins parseIndexLinks' two
+// guards — a line must start with "- [" (after trimming) AND its link
+// target must end in ".md" — against lines MEMORY.md's own $EDITOR-driven
+// hand-editing can introduce that are not index entries at all.
+// claude/reconcile.go (the sole emitter — see parseIndexLinks' own doc
+// comment in lint.go) never emits anything but "- [title](file.md)" or
+// "- [title](file.md) — hook"; every negative row below is a shape that
+// isn't that, and must be silently skipped rather than misread as a
+// claimed or missing file. The last subtest is the positive control: the
+// " — hook" suffix variant must still correctly claim its file.
+func TestCheckIndexDriftRuleIgnoresNonIndexLines(t *testing.T) {
+	t.Parallel()
+	negativeRows := []struct {
+		name      string
+		indexLine string
+	}{
+		{
+			name:      "prose line with an external https link",
+			indexLine: "Also see [Anthropic's docs](https://docs.anthropic.com) for background.",
+		},
+		{
+			name:      "bulleted link whose target lacks .md",
+			indexLine: "- [docs](https://example.com)",
+		},
+		{
+			name:      "non-bulleted line containing a .md link",
+			indexLine: "See the [ghost](ghost.md) reference.",
+		},
+	}
+	for _, tt := range negativeRows {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeMemoryFile(t, dir, "present.md", "---\nname: present\ndescription: a hook\n---\nbody")
+			indexBody := "# Memory index\n\n" +
+				"- [present](present.md)\n" +
+				tt.indexLine + "\n"
+			writeMemoryFile(t, dir, "MEMORY.md", indexBody)
+
+			indexMemory := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "MEMORY.md", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex}
+			present := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "present.md", RepoPath: "claude/present.md", Name: "present", Class: provider.ClassFact}
+			memories := []memoryfs.Memory{indexMemory, present}
+
+			results := lint.Check(memories, links.BuildIndex(memories, memoryfs.ReadBody), memoryfs.ReadBody, 0, time.Now())
+
+			if len(results) != 0 {
+				t.Fatalf("Check() = %+v, want no issues (non-index line must be silently skipped)", results)
+			}
+		})
+	}
+
+	t.Run("hook-suffixed index line still claims its file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeMemoryFile(t, dir, "present.md", "---\nname: present\ndescription: a hook\n---\nbody")
+		writeMemoryFile(t, dir, "MEMORY.md", "# Memory index\n\n- [present](present.md) — a hook\n")
+
+		indexMemory := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "MEMORY.md", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex}
+		present := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "present.md", RepoPath: "claude/present.md", Name: "present", Class: provider.ClassFact}
+		memories := []memoryfs.Memory{indexMemory, present}
+
+		results := lint.Check(memories, links.BuildIndex(memories, memoryfs.ReadBody), memoryfs.ReadBody, 0, time.Now())
+
+		if len(results) != 0 {
+			t.Fatalf("Check() = %+v, want no issues (the hook suffix must not prevent recognizing present.md as claimed)", results)
+		}
+	})
+}
+
+// TestCheckIndexDriftRuleReadBodyErrorIsFailSoft pins that a readBody error
+// for one unit's MEMORY.md skips only that unit's index-drift check — it
+// must never abort Check entirely, and every other rule on that same
+// unit's memories still runs normally. bad.md is deliberately both
+// frontmatter-incomplete AND correctly listed in the (unreadable) index
+// body: if the fail-soft skip were broken (e.g. silently treating the
+// unreadable body as empty instead of skipping the unit), bad.md would
+// pick up a spurious second "absent from MEMORY.md" issue alongside its
+// legitimate frontmatter one.
+func TestCheckIndexDriftRuleReadBodyErrorIsFailSoft(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeMemoryFile(t, dir, "bad.md", "no frontmatter here")
+	writeMemoryFile(t, dir, "MEMORY.md", "# Memory index\n\n- [bad](bad.md)\n")
+
+	indexMemory := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "MEMORY.md", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex}
+	bad := memoryfs.Memory{Provider: "claude", LocalDir: dir, RelPath: "bad.md", RepoPath: "claude/bad.md", Name: "bad", Class: provider.ClassFact}
+	memories := []memoryfs.Memory{indexMemory, bad}
+
+	readErr := errors.New("simulated read failure")
+	readBody := func(m memoryfs.Memory) (string, error) {
+		if m.RepoPath == indexMemory.RepoPath {
+			return "", readErr
+		}
+		return memoryfs.ReadBody(m)
+	}
+
+	results := lint.Check(memories, links.BuildIndex(memories, readBody), readBody, 0, time.Now())
+
+	if diff := cmp.Diff([]lint.Issue{{Rule: "frontmatter", Detail: "missing frontmatter"}}, issuesFor(results, bad)); diff != "" {
+		t.Errorf("bad.md issues diff (-want +got):\n%s", diff)
+	}
+	if got := issuesFor(results, indexMemory); got != nil {
+		t.Errorf("MEMORY.md issues = %+v, want nil (readBody failed, index-drift must skip silently)", got)
 	}
 }
 
