@@ -10,6 +10,7 @@ import (
 	keybinding "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
@@ -22,6 +23,12 @@ import (
 // idiomatic bubbletea pattern for a local daemon: no push channel exists, and
 // inventing one would violate the no-new-seams rule (spec §7 / task brief).
 const pollInterval = 2 * time.Second
+
+// toastTTL is how long a pushed toast stays visible. Expiry is checked on
+// the existing 2s poll tick (tickMsg) rather than a dedicated timer — one
+// fewer moving part, and toasts are never so time-critical that a sub-2s
+// clear matters.
+const toastTTL = 5 * time.Second
 
 // tab identifies the active view, in tab-bar order (spec §7).
 type tab int
@@ -75,6 +82,16 @@ type (
 	serviceStartedMsg struct{ err error }
 )
 
+// toast is a transient status-area notification (spec §2's "status bar: …
+// toasts"). expiresAt is computed from the model's current now at push time,
+// so tests control expiry deterministically the same way they already
+// control tickMsg — no wall-clock dependency in either the push or the
+// expiry check.
+type toast struct {
+	text      string
+	expiresAt time.Time
+}
+
 // Config is what the cli root command supplies to build the root model.
 type Config struct {
 	Data views.DataSource
@@ -117,6 +134,16 @@ type Model struct {
 	activity  views.ActivityView
 	doctor    views.DoctorView
 
+	// Root chrome (spec §14/§2): the palette and help overlays each own the
+	// whole screen and the keyboard while open; the quit prompt is an inline
+	// footer state, not a full overlay. toast is the persistent status-area
+	// notification dispatch uses to explain a local refusal.
+	paletteOpen bool
+	palette     views.PaletteModel
+	helpOpen    bool
+	quitPrompt  bool
+	toast       *toast
+
 	quitting bool
 }
 
@@ -134,13 +161,17 @@ func New(cfg Config) Model {
 
 // withStyles installs styles on the root and propagates them to every view
 // in one call — construction and every tea.BackgroundColorMsg both route
-// through here, so a palette swap is one place, not four.
+// through here, so a palette swap is one place, not five. The root palette
+// is included even before it is ever opened (a zero-value PaletteModel's
+// SetStyles is harmless) so a background swap while it happens to be open
+// is never missed.
 func (m Model) withStyles(styles theme.Styles) Model {
 	m.styles = styles
 	m.projects.SetStyles(styles)
 	m.conflicts.SetStyles(styles)
 	m.activity.SetStyles(styles)
 	m.doctor.SetStyles(styles)
+	m.palette.SetStyles(styles)
 	return m
 }
 
@@ -266,6 +297,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.now = time.Time(msg)
+		if m.toast != nil && !m.now.Before(m.toast.expiresAt) {
+			m.toast = nil
+		}
 		return m, tea.Batch(m.reloadCmd(), m.tickCmd())
 
 	case statusMsg:
@@ -316,6 +350,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// visible here rather than landing silently later.
 		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), views.SyncCmd(m.data, ""))
 
+	case views.PaletteChoiceMsg:
+		return m, m.dispatch(msg.ID)
+
 	case serviceStartedMsg:
 		m.starting = false
 		m.serviceErr = msg.err
@@ -349,16 +386,61 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The help overlay owns the keyboard while open: any key closes it
+	// (spec §14) — it has no other state to react to.
+	if m.helpOpen {
+		m.helpOpen = false
+		return m, nil
+	}
+
+	// The palette owns the keyboard while open.
+	if m.paletteOpen {
+		next, cmd := m.palette.Update(msg)
+		m.palette = next
+		if next.Closed {
+			m.paletteOpen = false
+		}
+		return m, cmd
+	}
+
+	// The quit prompt owns the keyboard while open (spec §2): y/Y actually
+	// quits, n/N/esc dismiss it and the model keeps running. q still quits
+	// immediately regardless (handled below, unchanged).
+	if m.quitPrompt {
+		switch {
+		case keybinding.Matches(msg, views.DashboardKeys.ConfirmDecision):
+			switch msg.String() {
+			case "y", "Y":
+				m.quitting = true
+				return m, tea.Quit
+			default:
+				m.quitPrompt = false
+				return m, nil
+			}
+		case keybinding.Matches(msg, views.DashboardKeys.Cancel):
+			m.quitPrompt = false
+			return m, nil
+		}
+		return m, nil
+	}
+
 	// A modal confirm on the Projects view consumes keys before the globals,
-	// so a `y`/`n` answer is never mistaken for a tab jump.
+	// so a `y`/`n` answer is never mistaken for a tab jump, and so the
+	// quiesce gate below never fires on a key a text input would otherwise
+	// have swallowed as a literal character.
 	if m.active == tabProjects && m.projects.ModalOpen() {
 		return m, m.projects.Update(msg, m.data, m.actions)
 	}
 
+	// A Mutates action reachable from here is refused locally while
+	// quiesced (spec §15) — before it ever reaches ProjectsView.Update, so
+	// e.g. pressing u never even opens the untrack confirm if the answer is
+	// already no.
+	if m.quiesceGate(msg) {
+		return m, nil
+	}
+
 	switch {
-	case keybinding.Matches(msg, views.DashboardKeys.Quit):
-		m.quitting = true
-		return m, tea.Quit
 	case keybinding.Matches(msg, views.DashboardKeys.TabSwitch):
 		// The binding is the membership gate; the concrete key picks the
 		// direction. "1"–"4" are the only single-rune members left after the
@@ -372,13 +454,198 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.active = tab(msg.String()[0] - '1')
 		}
 		return m, m.switchCmd()
+	case msg.String() == "esc":
+		m.quitPrompt = true
+		return m, nil
 	}
 
-	// Everything else belongs to the active view (table nav, s/t on Projects).
+	// Every other global action (quit, ctrl+k, ?, and — once Task 15 wires
+	// it — /) shares the one dispatch a palette choice also runs through, so
+	// a direct keypress and picking the same action from the palette can
+	// never behave differently.
+	for _, candidate := range actions.ForScope(actions.ScopeGlobal) {
+		if keybinding.Matches(msg, actions.Binding(candidate)) {
+			return m, m.dispatch(candidate.ID)
+		}
+	}
+
+	// Everything else belongs to the active view (table nav, s/u/a on Projects).
 	if m.active == tabProjects {
 		return m, m.projects.Update(msg, m.data, m.actions)
 	}
 	return m, nil
+}
+
+// quiesced reports whether a quiesce hold is currently active.
+func (m Model) quiesced() bool {
+	return m.status.QuiescedUntil != nil && m.status.QuiescedUntil.After(m.now)
+}
+
+// quiesceGate refuses — before it reaches ProjectsView.Update or any runner
+// — a bare-tab keypress that maps to a Mutates action while the daemon is
+// quiesced, toasting the same refusal dispatch uses for the palette path
+// (refuseIfQuiesced is the one function both call). It is scope-aware: a
+// Projects-scoped action's key is only a real refusal when the Projects tab
+// is actually active — off that tab the key was already a no-op, and
+// quiescing must not start toasting about something that was never going to
+// happen anyway.
+func (m *Model) quiesceGate(msg tea.KeyPressMsg) bool {
+	if !m.quiesced() {
+		return false
+	}
+	for _, candidate := range actions.Registry() {
+		if !candidate.Mutates || !keybinding.Matches(msg, actions.Binding(candidate)) {
+			continue
+		}
+		if candidate.Scope == actions.ScopeProjects && m.active != tabProjects {
+			continue // dead key off the Projects tab; nothing to refuse
+		}
+		return m.refuseIfQuiesced(candidate)
+	}
+	return false
+}
+
+// refuseIfQuiesced toasts and refuses action if it Mutates and the daemon is
+// currently quiesced. It is the one place that decides a mutation is
+// refused — called from quiesceGate (a direct keypress) and dispatch (a
+// palette choice) alike, so the refusal itself cannot diverge between them.
+func (m *Model) refuseIfQuiesced(action actions.Action) bool {
+	if !action.Mutates || !m.quiesced() {
+		return false
+	}
+	m.pushToast(fmt.Sprintf("daemon quiesced until %s — retry after", m.status.QuiescedUntil.Format("15:04:05")))
+	return true
+}
+
+// pushToast surfaces text in the persistent status area for toastTTL, expiry
+// checked on the existing 2s poll tick rather than a dedicated timer.
+// pointer receiver: every caller already holds an addressable *Model mid-
+// mutation (dispatch, quiesceGate) and wants this folded in as one more
+// field write, not a value threaded back out and reassigned.
+func (m *Model) pushToast(text string) {
+	m.toast = &toast{text: text, expiresAt: m.now.Add(toastTTL)}
+}
+
+// toastLine renders the active toast, if any and not yet expired. This is a
+// belt-and-suspenders check alongside the tick-driven expiry in Update, so a
+// View call between ticks never shows text past its TTL.
+func (m Model) toastLine() string {
+	if m.toast == nil || !m.now.Before(m.toast.expiresAt) {
+		return ""
+	}
+	return m.styles.Toast.Render(m.toast.text)
+}
+
+// findAction looks up a registry row by ID. Registry() is a handful of
+// entries, so a linear scan costs nothing next to a keypress or a render.
+func findAction(id string) (actions.Action, bool) {
+	for _, a := range actions.Registry() {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return actions.Action{}, false
+}
+
+// dispatch is the single entry point a matched key press and a chosen
+// palette row both funnel through (spec §14): it resolves the action's
+// metadata, applies the identical quiesce refusal a direct keypress gets,
+// and otherwise runs the action's registered runner. help is handled
+// directly here rather than through runners(): it is the one action that is
+// a pure Model state flip with no async work to schedule, so it has no
+// tea.Cmd to produce — forcing it into runners()'s func() tea.Cmd shape just
+// to return a constant nil is exactly the dead-weight-result smell the
+// unparam linter exists to catch. An unknown id, or one with no registered
+// runner (available's gate), does nothing — the registry stays honest about
+// what actually works right now.
+func (m *Model) dispatch(id string) tea.Cmd {
+	action, ok := findAction(id)
+	if !ok || !m.available(id) {
+		return nil
+	}
+	if m.refuseIfQuiesced(action) {
+		return nil
+	}
+	if id == "help" {
+		m.helpOpen = true
+		return nil
+	}
+	runner, ok := m.runners()[id]
+	if !ok {
+		return nil
+	}
+	return runner()
+}
+
+// available reports whether action id can actually do something right now.
+// switch-tabs, select, and help are structural — help in particular has no
+// wiring precondition and is never hidden — so all three are unconditionally
+// available; add-project additionally needs both track closures wired (the
+// existing AddAvailable contract, unchanged by this task); every other
+// action is available exactly when it has a registered runner — the
+// mechanism that keeps a not-yet-built feature's registry row (search, until
+// Task 15) invisible in the footer and the palette while the help overlay
+// still documents it.
+func (m *Model) available(id string) bool {
+	switch id {
+	case "switch-tabs", "select", "help":
+		return true
+	case "add-project":
+		return m.actions.AddAvailable()
+	default:
+		_, ok := m.runners()[id]
+		return ok
+	}
+}
+
+// runners maps a registered action ID to the Cmd-producing function that
+// performs it, rebuilt fresh on every call (never cached on Model) so each
+// closure closes over the CURRENT model state — the selected unit, the
+// current tab — rather than a stale snapshot from some earlier point.
+// sync-project/untrack/add-project replay the exact keypress
+// ProjectsView.Update already handles (switching to the Projects tab first,
+// so a palette choice made from elsewhere lands somewhere the user can
+// actually see it happen) — the palette and a direct keypress run through
+// the identical view-level code, not a second copy of "what s/u/a do." help
+// is deliberately absent: dispatch handles it directly (see above) since it
+// never produces a Cmd.
+func (m *Model) runners() map[string]func() tea.Cmd {
+	return map[string]func() tea.Cmd{
+		"sync-project": func() tea.Cmd {
+			m.active = tabProjects
+			return m.projects.Update(replayKey('s'), m.data, m.actions)
+		},
+		"untrack": func() tea.Cmd {
+			m.active = tabProjects
+			return m.projects.Update(replayKey('u'), m.data, m.actions)
+		},
+		"add-project": func() tea.Cmd {
+			m.active = tabProjects
+			return m.projects.Update(replayKey('a'), m.data, m.actions)
+		},
+		"sync-fleet": func() tea.Cmd {
+			return views.SyncCmd(m.data, "")
+		},
+		"open-palette": func() tea.Cmd {
+			m.paletteOpen = true
+			palette, cmd := views.NewPaletteModel(m.styles, m.available, m.quiesced())
+			m.palette = palette
+			return cmd
+		},
+		"quit": func() tea.Cmd {
+			m.quitting = true
+			return tea.Quit
+		},
+	}
+}
+
+// replayKey builds the KeyPressMsg a real keyboard produces for a single
+// printable-rune shortcut, so a palette-invoked Projects action runs through
+// the exact same ProjectsView.Update path a direct keypress does — that view
+// is unaware of, and indifferent to, whether its caller was the keyboard or
+// the palette.
+func replayKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
 // View composes the tab bar and the active view, or the full-screen daemon-down
@@ -386,10 +653,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // terminal's scrollback.
 func (m Model) View() tea.View {
 	var body string
-	if m.daemonDown {
+	switch {
+	case m.daemonDown:
 		body = m.daemonDownView()
-	} else {
-		body = strings.Join([]string{m.statusHeader(), m.tabBar(), m.activeBody(), m.footer()}, "\n\n")
+	case m.helpOpen:
+		body = views.NewHelpModel(m.styles).View()
+	case m.paletteOpen:
+		body = m.palette.View()
+	default:
+		parts := []string{m.statusHeader(), m.tabBar(), m.activeBody()}
+		if toastLine := m.toastLine(); toastLine != "" {
+			parts = append(parts, toastLine)
+		}
+		parts = append(parts, m.footer())
+		body = strings.Join(parts, "\n\n")
 	}
 	view := tea.NewView(body)
 	view.AltScreen = true
@@ -425,19 +702,62 @@ func (m Model) tabBar() string {
 	return strings.Join(parts, " ")
 }
 
-// footer advertises exactly the keys that dispatch on the active surface,
-// rendered from the same bindings handleKey and the Projects modals match
-// (views.DashboardKeys): the tab-level set on a bare tab, or the active
-// modal's subset while an untrack confirm or the add flow owns the keyboard —
-// never the tab-level keys the modal would swallow or type into its input.
+// footer advertises exactly the keys that dispatch on the active surface:
+// the quit prompt while it owns the keyboard, the active Projects modal's
+// live subset while it owns the keyboard (unchanged — a modal is an input-
+// owned state machine, not a set of dispatchable actions), or otherwise the
+// registry-driven rows for the current scope (spec §14's single source, so
+// this can never advertise a key the active surface actually ignores).
 func (m Model) footer() string {
-	var bindings []keybinding.Binding
-	if m.projects.ModalOpen() {
-		bindings = views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
-	} else {
-		bindings = views.DashboardKeys.ForTab(m.active == tabProjects, m.actions.AddAvailable())
+	switch {
+	case m.quitPrompt:
+		return m.styles.Warn.Render("quit agent-brain? (y/n)")
+	case m.projects.ModalOpen():
+		bindings := views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
+		return m.styles.Dim.Render(views.HelpLine(bindings))
+	default:
+		return m.styles.Dim.Render(views.HelpLine(m.footerBindings()))
 	}
-	return m.styles.Dim.Render(views.HelpLine(bindings))
+}
+
+// footerBindings renders the active scope's live keys straight from the
+// action registry, in registry order: every global action plus the active
+// tab's own scope, filtered to rows that both have a real key to advertise
+// (sync-fleet does not — palette/help only) and are actually available
+// right now (search is not, until Task 15) — the same availability rule the
+// palette applies to its own listing.
+func (m Model) footerBindings() []keybinding.Binding {
+	scope := m.activeScope()
+	var bindings []keybinding.Binding
+	for _, action := range actions.Registry() {
+		if len(action.Keys) == 0 {
+			continue
+		}
+		if action.Scope != actions.ScopeGlobal && action.Scope != scope {
+			continue
+		}
+		if !m.available(action.ID) {
+			continue
+		}
+		bindings = append(bindings, actions.Binding(action))
+	}
+	return bindings
+}
+
+// activeScope maps the active tab to its actions.Scope. Activity has no
+// tab-specific actions of its own yet, so it falls back to Global — its
+// footer advertises exactly the always-on rows.
+func (m Model) activeScope() actions.Scope {
+	switch m.active {
+	case tabProjects:
+		return actions.ScopeProjects
+	case tabDoctor:
+		return actions.ScopeDoctor
+	case tabConflicts:
+		return actions.ScopeConflicts
+	default:
+		return actions.ScopeGlobal
+	}
 }
 
 // statusHeader renders the fleet-level facts once, persistently above the tab
@@ -450,8 +770,8 @@ func (m Model) statusHeader() string {
 		return m.styles.Dim.Render("daemon status unavailable")
 	}
 	segments := []string{"daemon: " + watchState(m.status, m.now)}
-	if quiesce := m.status.QuiescedUntil; quiesce != nil && quiesce.After(m.now) {
-		segments = append(segments, "quiesced until "+quiesce.Format("15:04:05"))
+	if m.quiesced() {
+		segments = append(segments, "quiesced until "+m.status.QuiescedUntil.Format("15:04:05"))
 	}
 	segments = append(segments, "last cycle: "+lastCycle(m.status))
 	return m.styles.Dim.Render(strings.Join(segments, " · "))

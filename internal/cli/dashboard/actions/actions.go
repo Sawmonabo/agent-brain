@@ -1,0 +1,208 @@
+// Package actions is the dashboard's single source of truth for every
+// user-invocable operation (spec §14): one Action row backs the ctrl+k
+// command palette, the active view's footer, and the ? help overlay, so a
+// key can never mean one thing in the footer and another in the palette —
+// they render from the identical Registry(), never their own copies.
+//
+// This package knows nothing about the daemon, runners, or quiesce state —
+// that is root-private (internal/cli/dashboard), which is why Action has no
+// "is this wired yet" field of its own. A row with no registered runner is
+// still declared here (documentation of the eventual surface, which is why
+// the help overlay lists every row unconditionally); the root's own
+// available(id) gate is what makes an unbuilt feature's row inert in the
+// footer and the palette until its task lands.
+package actions
+
+import (
+	"sort"
+	"strings"
+
+	keybinding "charm.land/bubbles/v2/key"
+)
+
+// Scope names where an Action applies. The root's footer renders a view's
+// own scope plus ScopeGlobal; the palette ignores Scope entirely (a command
+// palette reaches every action regardless of what is on screen, spec §14).
+type Scope int
+
+// Scopes in declaration order — AllScopes and the help overlay's group
+// ordering both depend on this exact sequence.
+const (
+	ScopeGlobal    Scope = iota // any root view
+	ScopeProjects               // Projects tab
+	ScopeDoctor                 // Doctor tab
+	ScopeBrowser                // memory browser (Task 11+)
+	ScopeReading                // reading view (Task 12+)
+	ScopeHistory                // history view (Task 14+)
+	ScopeConflicts              // conflicts tab/detail
+)
+
+// String names a Scope for the help overlay's group headers.
+func (s Scope) String() string {
+	switch s {
+	case ScopeGlobal:
+		return "Global"
+	case ScopeProjects:
+		return "Projects"
+	case ScopeDoctor:
+		return "Doctor"
+	case ScopeBrowser:
+		return "Memory browser"
+	case ScopeReading:
+		return "Reading"
+	case ScopeHistory:
+		return "History"
+	case ScopeConflicts:
+		return "Conflicts"
+	default:
+		return "Unknown"
+	}
+}
+
+// AllScopes lists every Scope in declaration order. Exported rather than
+// left as an implicit "iterate the iota range" contract, so the help
+// overlay's group ordering does not depend on ScopeConflicts happening to be
+// the last constant — a scope inserted later stays correct by construction.
+func AllScopes() []Scope {
+	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeConflicts}
+}
+
+// Action is one user-invokable operation. The SAME rows drive the palette
+// list, the per-view footer, and the help overlay (spec §14's single
+// source).
+type Action struct {
+	ID      string // stable identifier ("sync-project", "quit", …)
+	Title   string // palette/help/footer label ("sync")
+	Keys    []string
+	KeyHint string // footer/help key column ("s")
+	Scope   Scope
+	Mutates bool // greyed in the palette + refused while the daemon is quiesced (spec §15)
+}
+
+// registry is the full static table, in the order every surface renders it.
+// Seed rows land with this task; later tasks append theirs as their screens
+// land (spec plan). sync-fleet has no Keys — palette/help-only for now, no
+// direct keyboard shortcut — so Binding builds it a disabled binding that
+// can never match a keypress. search's row exists with a real key reserved,
+// but its handler arrives in Task 15; until then the root's available(id)
+// gate (keyed on whether a runner is registered) keeps it out of the footer
+// and palette even though it is declared here.
+var registry = []Action{
+	{ID: "switch-tabs", Title: "switch", Keys: []string{"tab", "shift+tab", "right", "left", "l", "h", "1", "2", "3", "4"}, KeyHint: "tab/1–4", Scope: ScopeGlobal},
+	{ID: "select", Title: "select", Keys: []string{"up", "down", "k", "j"}, KeyHint: "↑/↓", Scope: ScopeProjects},
+	{ID: "sync-project", Title: "sync", Keys: []string{"s"}, KeyHint: "s", Scope: ScopeProjects, Mutates: true},
+	{ID: "untrack", Title: "untrack", Keys: []string{"u"}, KeyHint: "u", Scope: ScopeProjects, Mutates: true},
+	{ID: "add-project", Title: "add", Keys: []string{"a"}, KeyHint: "a", Scope: ScopeProjects, Mutates: true},
+	{ID: "sync-fleet", Title: "sync fleet", Scope: ScopeGlobal, Mutates: true},
+	{ID: "search", Title: "search", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeGlobal},
+	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},
+	{ID: "help", Title: "help", Keys: []string{"?"}, KeyHint: "?", Scope: ScopeGlobal},
+	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal},
+}
+
+// Registry returns the full static table, defensively copied so a caller
+// mutating its slice (e.g. sorting it in place) can never corrupt the
+// package's own copy.
+func Registry() []Action {
+	out := make([]Action, len(registry))
+	copy(out, registry)
+	return out
+}
+
+// ForScope returns the Registry() rows whose Scope matches s, render order
+// preserved.
+func ForScope(s Scope) []Action {
+	var out []Action
+	for _, a := range registry {
+		if a.Scope == s {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// Binding builds the bubbles key.Binding a real keypress is matched against
+// and a footer/help row is rendered from — the sole translation from Action
+// to key.Binding, so every surface derives from one function. An Action with
+// no Keys (sync-fleet) yields a binding whose Enabled() is false: bubbles'
+// own key.Binding.Enabled() requires non-nil keys, so it can never match a
+// keypress and a rendering loop can skip it with the same check it already
+// uses for every other disabled binding.
+func Binding(a Action) keybinding.Binding {
+	return keybinding.NewBinding(keybinding.WithKeys(a.Keys...), keybinding.WithHelp(a.KeyHint, a.Title))
+}
+
+// Fuzzy filters Registry() to actions whose Title or ID contains query
+// case-insensitively, ranked prefix > substring > subsequence, stable within
+// a rank so ties preserve registry order. An empty query matches everything
+// at the same (lowest) rank, so the whole registry comes back in declared
+// order — the palette's "nothing typed yet" state falls out of this for
+// free rather than needing a separate branch.
+func Fuzzy(query string) []Action {
+	query = strings.ToLower(strings.TrimSpace(query))
+
+	type ranked struct {
+		action Action
+		rank   int
+	}
+	matches := make([]ranked, 0, len(registry))
+	for _, a := range registry {
+		if rank, ok := matchRank(query, a); ok {
+			matches = append(matches, ranked{action: a, rank: rank})
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool { return matches[i].rank < matches[j].rank })
+
+	out := make([]Action, len(matches))
+	for i, m := range matches {
+		out[i] = m.action
+	}
+	return out
+}
+
+// Rank tiers Fuzzy sorts by — lower is a better match.
+const (
+	rankPrefix = iota
+	rankSubstring
+	rankSubsequence
+)
+
+// matchRank reports the best rank at which query matches a's Title or ID, or
+// ok=false if neither matches at all. An empty query matches everything at
+// rankSubsequence — the weakest tier, but since every row ties there, the
+// caller's stable sort leaves registry order untouched.
+func matchRank(query string, a Action) (int, bool) {
+	if query == "" {
+		return rankSubsequence, true
+	}
+	found := false
+	best := rankSubsequence
+	for _, haystack := range [...]string{strings.ToLower(a.Title), strings.ToLower(a.ID)} {
+		switch {
+		case strings.HasPrefix(haystack, query):
+			return rankPrefix, true // best possible rank for this action; no need to check the other haystack
+		case strings.Contains(haystack, query):
+			found = true
+			best = min(best, rankSubstring)
+		case isSubsequence(query, haystack):
+			found = true
+		}
+	}
+	return best, found
+}
+
+// isSubsequence reports whether every byte of query appears in haystack in
+// order (not necessarily adjacent). Action titles/IDs are plain ASCII, so a
+// byte-wise scan is exact — no need for rune-aware matching in this domain.
+func isSubsequence(query, haystack string) bool {
+	i := 0
+	for j := range len(haystack) {
+		if i == len(query) {
+			return true
+		}
+		if haystack[j] == query[i] {
+			i++
+		}
+	}
+	return i == len(query)
+}

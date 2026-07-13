@@ -11,15 +11,18 @@ import (
 	// renaming the widely-used test helper — keeps the collision fix local to
 	// the files that reference the key package.
 	keybinding "charm.land/bubbles/v2/key"
+
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
 )
 
-// DashboardKeymap is the dashboard's single keymap: every key the root
-// reducer and the views dispatch, with the help text the footer advertises.
-// ProjectsView.Update and updateAdd MATCH against these bindings, and the
-// root's footer() RENDERS them through ForTab (tab-level) or ForModal (while
-// a Projects modal owns the keyboard) — so an advertised key the active
-// surface ignores is structurally impossible, and the inverse (a working key
-// left unadvertised) is pinned by TestProjectsKeysStayDeadOffProjectsTab.
+// DashboardKeymap is the dashboard's keymap: every key ProjectsView.Update
+// and updateAdd MATCH against, resolved from the actions registry (spec
+// §14's single source of truth) rather than declared by hand — so the
+// keymap can never silently drift from what the footer, the ctrl+k palette,
+// and the ? help overlay advertise for the same action ID. Cancel/Accept/
+// ConfirmDecision are modal-input controls, not dispatchable actions (a
+// modal owns the keyboard for itself, not through the registry), so those
+// three stay hand-declared below, same as before this task.
 type DashboardKeymap struct {
 	// TabSwitch bundles every tab-navigation key under one advertised hint.
 	// The root's handleKey matches the binding for membership, then picks the
@@ -31,7 +34,7 @@ type DashboardKeymap struct {
 	// passthrough. The add picker reuses it (same keys) to move its cursor.
 	Select  keybinding.Binding
 	Sync    keybinding.Binding // Projects tab only
-	Untrack keybinding.Binding // Projects tab only
+	Untrack keybinding.Binding // Projects tab only — spec §13 rebind: u, not t
 	Add     keybinding.Binding // Projects tab only
 	Quit    keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
@@ -48,52 +51,44 @@ type DashboardKeymap struct {
 }
 
 // DashboardKeys is package-level because the keymap is static configuration —
-// bindings never change at runtime; per-tab availability is ForTab's job.
+// bindings never change at runtime; per-tab, per-quiesce availability is the
+// root's footer/palette job, not this package's.
 var DashboardKeys = DashboardKeymap{
-	TabSwitch: keybinding.NewBinding(
-		keybinding.WithKeys("tab", "shift+tab", "right", "left", "l", "h", "1", "2", "3", "4"),
-		keybinding.WithHelp("tab/1–4", "switch"),
-	),
-	Select:  keybinding.NewBinding(keybinding.WithKeys("up", "down", "k", "j"), keybinding.WithHelp("↑/↓", "select")),
-	Sync:    keybinding.NewBinding(keybinding.WithKeys("s"), keybinding.WithHelp("s", "sync")),
-	Untrack: keybinding.NewBinding(keybinding.WithKeys("t"), keybinding.WithHelp("t", "untrack")),
-	Add:     keybinding.NewBinding(keybinding.WithKeys("a"), keybinding.WithHelp("a", "add")),
-	Quit:    keybinding.NewBinding(keybinding.WithKeys("q"), keybinding.WithHelp("q", "quit")),
-	Cancel:  keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
-	Accept:  keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	TabSwitch: bindingFor("switch-tabs"),
+	Select:    bindingFor("select"),
+	Sync:      bindingFor("sync-project"),
+	Untrack:   bindingFor("untrack"),
+	Add:       bindingFor("add-project"),
+	Quit:      bindingFor("quit"),
+	Cancel:    keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:    keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),
 	),
 }
 
-// ForTab returns the bindings the root's footer advertises on the active
-// tab, in render order — the SAME availability rule the root's handleKey
-// enforces. isProjectsTab takes a bool rather than the root's tab enum
-// because that type is root-private (views must not import the dashboard
-// root package, spec §15); the root passes `m.active == tabProjects`.
-// addAvailable gates the Add binding: a build missing either add closure
-// (discovery or identity) must not advertise a key that answers
-// "unavailable". (DashboardKeys is shared package state — never toggle
-// availability by mutating a binding's Enabled flag; filter here instead.)
-func (k DashboardKeymap) ForTab(isProjectsTab, addAvailable bool) []keybinding.Binding {
-	bindings := []keybinding.Binding{k.TabSwitch}
-	if isProjectsTab {
-		bindings = append(bindings, k.Select, k.Sync, k.Untrack)
-		if addAvailable {
-			bindings = append(bindings, k.Add)
+// bindingFor resolves a registry action's key.Binding by ID. A miss panics
+// at package init — the only way to hit it is a typo in the id literal
+// above, a programming error that should never reach a running binary,
+// rather than silently building a dead, keyless binding.
+func bindingFor(id string) keybinding.Binding {
+	for _, a := range actions.Registry() {
+		if a.ID == id {
+			return actions.Binding(a)
 		}
 	}
-	return append(bindings, k.Quit)
+	panic("views: no registered action " + id)
 }
 
 // ForModal returns the bindings the footer advertises while a Projects modal
 // owns the keyboard, in render order — the SAME subset the confirm handler
 // and updateAdd honor at each stage, so the modal footer can never name a key
-// its state ignores. It is the modal-state analogue of ForTab: the root's
-// footer() calls one or the other, never both, so the tab-level set never
-// leaks into a modal. Text-input runes (a typed path or folder name) are the
-// input's, not advertised keys, so the input stages surface only their
+// its state ignores. Unlike the bare-tab footer (which the root now renders
+// straight from the action registry), a modal is an input-owned state
+// machine, not a set of dispatchable actions, so it keeps its own hand-
+// declared bindings here. Text-input runes (a typed path or folder name) are
+// the input's, not advertised keys, so the input stages surface only their
 // control keys (Accept, Cancel).
 func (k DashboardKeymap) ForModal(confirming bool, stage AddStage) []keybinding.Binding {
 	if confirming {
@@ -110,9 +105,10 @@ func (k DashboardKeymap) ForModal(confirming bool, stage AddStage) []keybinding.
 }
 
 // HelpLine renders bindings as the footer/help string ("↑/↓ select · enter
-// confirm · esc cancel"). Both the root's global footer and the add flow's
-// inline hints render through it from the same ForModal bindings, so the two
-// surfaces cannot drift apart. Styling stays with the caller.
+// confirm · esc cancel"). The root's registry-driven footer, its modal
+// footer, and the add flow's inline hints all render through it, so no
+// surface can drift from any other in how a binding's help text reads.
+// Styling stays with the caller.
 func HelpLine(bindings []keybinding.Binding) string {
 	parts := make([]string, len(bindings))
 	for i, binding := range bindings {

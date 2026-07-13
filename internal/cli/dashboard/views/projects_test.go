@@ -99,6 +99,10 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	default:
 		return tea.KeyPressMsg{Code: []rune(name)[0], Text: name}
 	}
@@ -350,10 +354,10 @@ func TestProjectsUntrackToggleConfirmsThenCalls(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits(), untrackResp: api.UntrackResponse{Removed: true}}
 	view := loadedProjectsView(data)
 
-	// t opens the confirm; no call yet.
-	cmd := view.Update(key("t"), data, TrackActions{})
+	// u opens the confirm; no call yet.
+	cmd := view.Update(key("u"), data, TrackActions{})
 	if cmd != nil {
-		t.Error("t should not act before confirmation")
+		t.Error("u should not act before confirmation")
 	}
 	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
 		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View()))
@@ -379,7 +383,7 @@ func TestProjectsUntrackToggleCancels(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	view := loadedProjectsView(data)
 
-	view.Update(key("t"), data, TrackActions{})
+	view.Update(key("u"), data, TrackActions{})
 	cmd := view.Update(key("n"), data, TrackActions{})
 	if cmd != nil {
 		t.Error("cancelling the confirm should issue no Cmd")
@@ -408,7 +412,7 @@ func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
 	view := loadedProjectsView(data) // cursor seats on row 0 = claude/agent-brain (unit X)
 
 	// Open the confirm on the highlighted unit X.
-	view.Update(key("t"), data, TrackActions{})
+	view.Update(key("u"), data, TrackActions{})
 	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
 		t.Fatalf("confirm did not open on agent-brain; got:\n%s", plain(view.View()))
 	}
@@ -428,6 +432,36 @@ func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
 	wantX := []api.UntrackRequest{{Provider: "claude", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Purge: false}}
 	if diff := cmp.Diff(wantX, data.untrackCalls); diff != "" {
 		t.Errorf("untrack hit the wrong unit after a mid-confirm fleet reorder (-want +got):\n%s", diff)
+	}
+}
+
+// TestUntrackRebindToU pins the spec §13 rebind: u opens the untrack confirm
+// and t is now a plain dead key on the Projects tab — not just "u also
+// works," but "t specifically no longer does," since a stale binding still
+// working would silently resurrect the old key the palette/footer no longer
+// advertise.
+func TestUntrackRebindToU(t *testing.T) {
+	t.Parallel()
+	data := &fakeData{status: readyStatus(), projects: twoUnits()}
+	view := loadedProjectsView(data)
+
+	cmd := view.Update(key("t"), data, TrackActions{})
+	if cmd != nil {
+		t.Error("t produced a Cmd; want a dead key now that untrack is rebound to u")
+	}
+	if view.Confirming {
+		t.Fatal("t opened the untrack confirm; want it dead post-rebind")
+	}
+
+	cmd = view.Update(key("u"), data, TrackActions{})
+	if cmd != nil {
+		t.Error("u should not act before confirmation")
+	}
+	if !view.Confirming {
+		t.Fatal("u did not open the untrack confirm")
+	}
+	if !strings.Contains(plain(view.View()), "untrack agent-brain? (y/N)") {
+		t.Errorf("confirm prompt not shown; got:\n%s", plain(view.View()))
 	}
 }
 

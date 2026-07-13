@@ -94,7 +94,10 @@ func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 
 // key builds a KeyPressMsg for a key name ("q", "s", "tab", "esc", …). Verified
 // forms against bubbletea v2.0.8: printable runes carry Text, specials carry a
-// Code constant (2026-07-09).
+// Code constant (2026-07-09). A "ctrl+x" name builds the modifier form
+// (needed for ctrl+k, the open-palette shortcut) the same way msg.String()
+// reports it back — verified against the ctrl+c quit path this suite already
+// exercises.
 func key(name string) tea.KeyPressMsg {
 	switch name {
 	case "tab":
@@ -103,7 +106,14 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	default:
+		if rest, ok := strings.CutPrefix(name, "ctrl+"); ok {
+			return tea.KeyPressMsg{Code: rune(rest[0]), Mod: tea.ModCtrl}
+		}
 		return tea.KeyPressMsg{Code: []rune(name)[0], Text: name}
 	}
 }
@@ -441,7 +451,7 @@ func TestFooterAdvertisesOnlyActiveTabKeys(t *testing.T) {
 
 	m.active = tabProjects
 	projectsFooter := plain(m.footer())
-	for _, want := range []string{"tab/1–4 switch", "↑/↓ select", "s sync", "t untrack", "q quit"} {
+	for _, want := range []string{"tab/1–4 switch", "↑/↓ select", "s sync", "u untrack", "ctrl+k palette", "? help", "q quit"} {
 		if !strings.Contains(projectsFooter, want) {
 			t.Errorf("Projects footer %q missing %q", projectsFooter, want)
 		}
@@ -453,7 +463,7 @@ func TestFooterAdvertisesOnlyActiveTabKeys(t *testing.T) {
 		if strings.Contains(otherFooter, "sync") || strings.Contains(otherFooter, "untrack") {
 			t.Errorf("%s footer advertises Projects-only keys: %q", other.title(), otherFooter)
 		}
-		for _, want := range []string{"tab/1–4 switch", "q quit"} {
+		for _, want := range []string{"tab/1–4 switch", "ctrl+k palette", "? help", "q quit"} {
 			if !strings.Contains(otherFooter, want) {
 				t.Errorf("%s footer %q missing %q", other.title(), otherFooter, want)
 			}
@@ -462,7 +472,7 @@ func TestFooterAdvertisesOnlyActiveTabKeys(t *testing.T) {
 }
 
 // TestProjectsKeysStayDeadOffProjectsTab pins the behavior the old footer
-// lied about: s/t on a non-Projects tab dispatch nothing and mutate nothing.
+// lied about: s/u on a non-Projects tab dispatch nothing and mutate nothing.
 func TestProjectsKeysStayDeadOffProjectsTab(t *testing.T) {
 	t.Parallel()
 	fake := &fakeData{}
@@ -473,9 +483,9 @@ func TestProjectsKeysStayDeadOffProjectsTab(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("s on Conflicts produced a Cmd; want none")
 	}
-	_, cmd = step(m2, key("t"))
+	_, cmd = step(m2, key("u"))
 	if cmd != nil {
-		t.Fatal("t on Conflicts produced a Cmd; want none")
+		t.Fatal("u on Conflicts produced a Cmd; want none")
 	}
 	if len(fake.syncCalls) != 0 || len(fake.untrackCalls) != 0 {
 		t.Fatalf("keys off the Projects tab reached the daemon: sync=%v untrack=%v",
@@ -487,14 +497,17 @@ func TestProjectsKeysStayDeadOffProjectsTab(t *testing.T) {
 // honesty to a modal owning the keyboard. While an untrack confirm or any
 // add-flow stage is open, the footer must advertise EXACTLY that state's live
 // keys in render order and none of the tab-level hints — a footer that named
-// s/t/a/tab while the modal swallowed them (or routed them into a text input,
+// s/u/a/tab while the modal swallowed them (or routed them into a text input,
 // so `q` typed a "q") is precisely the dead-key class the keymap contract
-// exists to make impossible. The exact-equality check pins both the live set
-// (render order included) and the absence of every other binding; the explicit
-// tab-hint sweep documents the second half of the contract.
+// exists to make impossible. ctrl+k and ? are genuinely dead here too — the
+// modal-open check in handleKey runs before either global dispatch, so they
+// must not leak into the modal footer any more than the tab-level keys do.
+// The exact-equality check pins both the live set (render order included)
+// and the absence of every other binding; the explicit tab-hint sweep
+// documents the second half of the contract.
 func TestFooterInModalStatesAdvertisesOnlyLiveKeys(t *testing.T) {
 	t.Parallel()
-	tabHints := []string{"s sync", "t untrack", "a add", "tab/1–4"}
+	tabHints := []string{"s sync", "u untrack", "a add", "tab/1–4", "ctrl+k palette", "? help"}
 	tests := []struct {
 		name       string
 		confirming bool
@@ -771,5 +784,201 @@ func TestProjectsStaleTrackResultKeepsNewFlow(t *testing.T) {
 	drain(cmd)
 	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
 		t.Fatalf("a stale success did not fire the whole-fleet sync (-want +got):\n%s", diff)
+	}
+}
+
+// TestCtrlKOpensPaletteAndDispatches proves the palette and a direct
+// keypress share one dispatch: ctrl+k opens the palette, typing "fleet"
+// narrows to the sync-fleet action alone (its Title and ID are the only
+// registry entries containing "fleet"), and enter both closes the palette
+// and fires the exact same views.SyncCmd(data, "") a root-level fleet sync
+// would use — recorded in the fake as a single call with an empty folder.
+func TestCtrlKOpensPaletteAndDispatches(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{status: readyStatus(), syncResp: api.SyncResponse{Status: "completed"}}
+	m := newTestModel(fake)
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	m = drive(t, m, key("ctrl+k"))
+	if !m.paletteOpen {
+		t.Fatal("ctrl+k did not open the palette")
+	}
+
+	for _, r := range "fleet" {
+		m, _ = step(m, key(string(r)))
+	}
+	m = drive(t, m, key("enter"))
+
+	if m.paletteOpen {
+		t.Error("palette still open after choosing an action")
+	}
+	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
+		t.Fatalf("sync-fleet via the palette did not fire a whole-fleet sync (-want +got):\n%s", diff)
+	}
+}
+
+// TestCtrlKPaletteEscClosesWithoutDispatch proves esc inside the palette
+// closes it without invoking anything — the negative half of "share one
+// dispatch": a cancelled palette session must reach the daemon zero times.
+func TestCtrlKPaletteEscClosesWithoutDispatch(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{status: readyStatus()}
+	m := newTestModel(fake)
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	m = drive(t, m, key("ctrl+k"))
+	m = drive(t, m, key("esc"))
+
+	if m.paletteOpen {
+		t.Error("esc did not close the palette")
+	}
+	if len(fake.syncCalls) != 0 || len(fake.untrackCalls) != 0 || len(fake.trackCalls) != 0 {
+		t.Errorf("esc in the palette reached the daemon: sync=%v untrack=%v track=%v",
+			fake.syncCalls, fake.untrackCalls, fake.trackCalls)
+	}
+}
+
+// TestEscAtRootPromptsBeforeQuit pins spec §2's root chrome: esc with
+// nothing else owning the keyboard asks before quitting rather than quitting
+// outright (that stays q's job, still immediate); n dismisses the prompt and
+// the model keeps running; esc again reopens the SAME prompt, and y then
+// actually quits.
+func TestEscAtRootPromptsBeforeQuit(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	m, cmd := step(m, key("esc"))
+	if !m.quitPrompt {
+		t.Fatal("esc at root did not open the quit prompt")
+	}
+	if cmd != nil {
+		t.Error("opening the quit prompt produced a Cmd; want none")
+	}
+	if got := plain(m.footer()); !strings.Contains(got, "quit agent-brain? (y/n)") {
+		t.Errorf("footer %q does not show the quit prompt", got)
+	}
+
+	m, _ = step(m, key("n"))
+	if m.quitPrompt {
+		t.Error("n did not dismiss the quit prompt")
+	}
+	if m.quitting {
+		t.Error("n must not quit")
+	}
+
+	m, _ = step(m, key("esc"))
+	if !m.quitPrompt {
+		t.Fatal("esc did not reopen the quit prompt")
+	}
+	m, cmd = step(m, key("y"))
+	if !m.quitting {
+		t.Error("y at the quit prompt did not quit")
+	}
+	if cmd == nil {
+		t.Fatal("expected a tea.Quit Cmd")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("Cmd did not produce a QuitMsg")
+	}
+}
+
+// TestQuiescedMutationRefusedLocally pins spec §15's functional half of the
+// Mutates gate: pressing u while the daemon is quiesced must refuse LOCALLY,
+// before the untrack confirm even opens — never reaching the daemon and
+// never leaving a confirm dialog open that a subsequent y would act on — and
+// must toast the refusal so the user learns why nothing happened.
+func TestQuiescedMutationRefusedLocally(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	fake := &fakeData{}
+	m := newTestModel(fake)
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.now = now
+	m.status = api.StatusResponse{State: "ready", QuiescedUntil: &future}
+	m.active = tabProjects
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "agent-brain", LocalDir: "/home/u/.claude/projects/agent-brain/memory"}})
+
+	next, cmd := step(m, key("u"))
+	drain(cmd)
+
+	if len(fake.untrackCalls) != 0 {
+		t.Fatalf("untrack reached the daemon while quiesced: %v", fake.untrackCalls)
+	}
+	if next.projects.Confirming {
+		t.Error("untrack confirm opened while quiesced; the refusal must happen before it")
+	}
+	if next.toast == nil {
+		t.Fatal("no toast pushed for the refused mutation")
+	}
+	if !strings.Contains(next.toast.text, "quiesced") {
+		t.Errorf("toast text = %q, want it to name the quiesce refusal", next.toast.text)
+	}
+}
+
+// TestQuiescedMutationOffProjectsTabStaysSilent guards the false-positive
+// side of the same gate: u is already a dead key off the Projects tab
+// (TestProjectsKeysStayDeadOffProjectsTab), and quiescing must not start
+// toasting a refusal for a key that was never going to do anything anyway.
+func TestQuiescedMutationOffProjectsTabStaysSilent(t *testing.T) {
+	t.Parallel()
+	future := time.Now().Add(time.Hour)
+	m := newTestModel(&fakeData{})
+	m.status = api.StatusResponse{State: "ready", QuiescedUntil: &future}
+	m.active = tabConflicts
+
+	next, cmd := step(m, key("u"))
+	if cmd != nil {
+		t.Error("u off the Projects tab produced a Cmd")
+	}
+	if next.toast != nil {
+		t.Errorf("toast = %+v, want none — u does nothing on this tab regardless of quiesce", next.toast)
+	}
+}
+
+// TestToastExpiresOnTick pins the toast lifecycle the brief specifies: a 5s
+// TTL checked on the existing 2s poll tick, no extra timer. A tick well
+// inside the window leaves it up; a tick past it clears it.
+func TestToastExpiresOnTick(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	start := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	m.now = start
+	m.pushToast("test toast")
+	if m.toast == nil {
+		t.Fatal("pushToast did not set a toast")
+	}
+
+	m, _ = step(m, tickMsg(start.Add(2*time.Second)))
+	if m.toast == nil {
+		t.Fatal("toast cleared before its 5s TTL elapsed")
+	}
+
+	m, _ = step(m, tickMsg(start.Add(6*time.Second)))
+	if m.toast != nil {
+		t.Errorf("toast still set after its TTL elapsed: %+v", m.toast)
+	}
+}
+
+// TestHelpOpensAndAnyKeyCloses pins the ? overlay's own tiny lifecycle: it
+// replaces the whole body while open, and any key — not just esc — closes
+// it, per spec §14's "any-key closes".
+func TestHelpOpensAndAnyKeyCloses(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	m, _ = step(m, key("?"))
+	if !m.helpOpen {
+		t.Fatal("? did not open the help overlay")
+	}
+	if got := plain(m.View().Content); !strings.Contains(got, "Keymap") {
+		t.Errorf("help view %q missing its title", got)
+	}
+
+	m, _ = step(m, key("x"))
+	if m.helpOpen {
+		t.Error("an arbitrary key did not close the help overlay")
 	}
 }
