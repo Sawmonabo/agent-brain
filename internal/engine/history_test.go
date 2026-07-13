@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/keys"
+	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
 
 // TestHistoryPathModeListsNewestFirstWithLiveFlag pins path-mode History
@@ -172,6 +173,70 @@ func TestHistoryHonorsLimitClamp(t *testing.T) {
 				t.Fatalf("len(versions) = %d, want %d", len(versions), tt.want)
 			}
 		})
+	}
+}
+
+// TestClampHistoryLimitBounds pins the clamp helper directly: the 500
+// ceiling cannot be distinguished from an unclamped pass-through by the
+// end-to-end tests (nobody builds 501 commits), so the pure function
+// carries its own regression pin.
+func TestClampHistoryLimitBounds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"negative falls back to the default", -1, historyDefaultLimit},
+		{"zero falls back to the default", 0, historyDefaultLimit},
+		{"in-range passes through", 3, 3},
+		{"the ceiling itself passes through", historyMaxLimit, historyMaxLimit},
+		{"past the ceiling clamps to it", historyMaxLimit + 9499, historyMaxLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := clampHistoryLimit(tt.limit); got != tt.want {
+				t.Fatalf("clampHistoryLimit(%d) = %d, want %d", tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHistoryAndBlobAcceptGlobalFolder positively pins the GlobalFolder
+// carve-out in validateHistoryInputs: repo.ValidateFolderName rejects
+// "_global" by design (reserved for the on-disk global-scope directory),
+// so without the carve-out both lookups would refuse the one folder
+// global-scope providers actually live in.
+func TestHistoryAndBlobAcceptGlobalFolder(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	const content = "global memory\n"
+	writeCheckout(t, checkout, repo.GlobalFolder+"/codex/memories/global.md", content)
+	if _, err := engine.commitProjects(ctx, fixedStamp); err != nil {
+		t.Fatal(err)
+	}
+
+	versions, err := engine.History(ctx, repo.GlobalFolder, "codex/memories/global.md", 0)
+	if err != nil {
+		t.Fatalf("History(%q) = %v, want success", repo.GlobalFolder, err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("len(versions) = %d, want 1", len(versions))
+	}
+	if versions[0].Host != "host-a" {
+		t.Errorf("versions[0].Host = %q, want host-a", versions[0].Host)
+	}
+
+	blob, err := engine.BlobAt(ctx, repo.GlobalFolder, "codex/memories/global.md", versions[0].Rev)
+	if err != nil {
+		t.Fatalf("BlobAt(%q) = %v, want success", repo.GlobalFolder, err)
+	}
+	if string(blob) != content {
+		t.Errorf("BlobAt content = %q, want %q", blob, content)
 	}
 }
 

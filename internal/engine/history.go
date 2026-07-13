@@ -237,10 +237,12 @@ func validateHistoryInputs(folder, path, rev string) error {
 // rendering the subject verbatim — foreign commits are data, not errors.
 // The convention is `memory: <host> <folder> <timestamp>`: exactly four
 // space-separated fields, the first literally "memory:", the last parsed
-// as time.RFC3339. Manifest commits ("memory: <host> manifest <stamp>"),
-// integrate merges, and hand-made or hostile subjects all fail one of
-// these checks and render as ok=false — never a panic, never a partial
-// parse.
+// as time.RFC3339. Integrate merges and hand-made or hostile subjects fail
+// one of these checks and render as ok=false — never a panic, never a
+// partial parse. Manifest commits ("memory: <host> manifest <stamp>")
+// WOULD parse — same shape, folder position reading "manifest" — but they
+// never reach this parser through History: they touch only .agent-brain/
+// paths, so the folder pathspec filters them out of every log query.
 func parseCaptureSubject(subject string) (host string, stamp time.Time, ok bool) {
 	fields := strings.Split(subject, " ")
 	if len(fields) != 4 || fields[0] != "memory:" {
