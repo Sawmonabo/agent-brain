@@ -11,12 +11,14 @@ package memoryfs
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/renameio/v2"
@@ -33,6 +35,10 @@ const maxBodyBytes = 1 << 20
 
 // ErrTooLarge is returned by ReadBody when the file exceeds maxBodyBytes.
 var ErrTooLarge = errors.New("memory file exceeds the read cap")
+
+// ErrTargetExists is returned by Rename when newRel already names an
+// existing file — a rename must never silently clobber another memory.
+var ErrTargetExists = errors.New("rename target already exists")
 
 // Memory is one file under an enrolled unit's provider dir.
 type Memory struct {
@@ -163,19 +169,25 @@ func repoPath(providerName, repoSubdir, rel string) string {
 	return path.Join(providerName, repoSubdir, rel)
 }
 
-// ReadBody returns the file's content, capped at maxBodyBytes.
+// ReadBody returns the file's content, capped at maxBodyBytes. The cap is
+// enforced strictly against the bytes actually read (via io.LimitReader),
+// not a Stat size checked ahead of a separate ReadFile call — a file that
+// grows between those two calls would otherwise let a stale size check pass
+// while the real read exceeds the cap.
 func ReadBody(m Memory) (string, error) {
 	fullPath := m.fullPath()
-	info, err := os.Stat(fullPath)
+	f, err := os.Open(fullPath) //nolint:gosec // G304: fullPath is composed from an enrolled unit's LocalDir + a RelPath this package's own List produced, not untrusted input
 	if err != nil {
-		return "", fmt.Errorf("memoryfs: stat %s: %w", fullPath, err)
+		return "", fmt.Errorf("memoryfs: open %s: %w", fullPath, err)
 	}
-	if info.Size() > maxBodyBytes {
-		return "", fmt.Errorf("%s: %w", fullPath, ErrTooLarge)
-	}
-	content, err := os.ReadFile(fullPath) //nolint:gosec // G304: fullPath is composed from an enrolled unit's LocalDir + a RelPath this package's own List produced, not untrusted input
+	defer func() { _ = f.Close() }()
+
+	content, err := io.ReadAll(io.LimitReader(f, maxBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("memoryfs: read %s: %w", fullPath, err)
+	}
+	if len(content) > maxBodyBytes {
+		return "", fmt.Errorf("%s: %w", fullPath, ErrTooLarge)
 	}
 	return string(content), nil
 }
@@ -187,7 +199,14 @@ func ReadBody(m Memory) (string, error) {
 // the daemon's fsnotify watcher already expects from mirror-out (ADR 20
 // D2). Creates parent dirs 0o700 as needed — a codex RepoSubdir root or a
 // nested new-memory path a skeleton first touches.
+//
+// rel must validate via repo.ValidateRelPath (rejecting traversal, absolute
+// paths, and non-clean forms) — the same guard Rename applies to its own
+// target, so a user-typed name can never land a write outside dir.
 func WriteFileAtomic(dir, rel string, content []byte) error {
+	if err := repo.ValidateRelPath(rel); err != nil {
+		return fmt.Errorf("memoryfs: write target %q: %w", rel, err)
+	}
 	fullPath := localPath(dir, rel)
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
 		return fmt.Errorf("memoryfs: create parent dir for %s: %w", fullPath, err)
@@ -208,13 +227,15 @@ func Delete(m Memory) error {
 	return nil
 }
 
-// Rename moves m.RelPath to newRel inside the same LocalDir (os.Rename —
-// atomic same-volume: both paths share LocalDir, so this never crosses a
-// filesystem boundary). newRel must validate via repo.ValidateRelPath
-// (rejecting traversal, absolute paths, and non-clean forms) and keep the
-// same extension — the hub's rename flow only ever renames a memory, never
-// changes its kind. Missing intermediate directories for a nested newRel
-// are created, mirroring WriteFileAtomic's own parent-dir handling.
+// Rename moves m.RelPath to newRel inside the same LocalDir. newRel must
+// validate via repo.ValidateRelPath (rejecting traversal, absolute paths,
+// and non-clean forms) and keep the same extension — the hub's rename flow
+// only ever renames a memory, never changes its kind. Missing intermediate
+// directories for a nested newRel are created, mirroring WriteFileAtomic's
+// own parent-dir handling.
+//
+// The move itself never clobbers an existing file at newRel: renameNoClobber
+// returns ErrTargetExists instead of silently overwriting another memory.
 func Rename(m Memory, newRel string) error {
 	if err := repo.ValidateRelPath(newRel); err != nil {
 		return fmt.Errorf("memoryfs: rename target %q: %w", newRel, err)
@@ -227,10 +248,64 @@ func Rename(m Memory, newRel string) error {
 	if err := os.MkdirAll(filepath.Dir(newFull), 0o700); err != nil {
 		return fmt.Errorf("memoryfs: create parent dir for %s: %w", newFull, err)
 	}
-	if err := os.Rename(oldFull, newFull); err != nil {
+	if err := renameNoClobber(oldFull, newFull); err != nil {
 		return fmt.Errorf("memoryfs: rename %s to %s: %w", oldFull, newFull, err)
 	}
 	return nil
+}
+
+// renameNoClobber moves oldPath to newPath without ever overwriting an
+// existing file at newPath, all-or-nothing: either oldPath ends up at
+// newPath with oldPath gone, or nothing on disk changes.
+//
+// The primary path is link-then-remove: os.Link fails with an
+// fs.ErrExist-mappable error if newPath is already taken — checked and
+// created in one atomic kernel operation, unlike a separate Lstat-then-Rename
+// which would race a concurrent writer between the check and the move. If
+// the subsequent Remove of oldPath fails, the newly created link is removed
+// so the operation never leaves two copies of the content behind.
+//
+// Some mounted filesystems (network shares, certain container overlay
+// mounts) reject hard links outright (EPERM/ENOTSUP) despite otherwise
+// behaving like an ordinary POSIX filesystem; every local filesystem this
+// repo targets (APFS, ext4, NTFS via WSL2's drvfs) supports them, so the
+// fallback below only matters for such exotic mounts.
+func renameNoClobber(oldPath, newPath string) error {
+	linkErr := os.Link(oldPath, newPath)
+	switch {
+	case linkErr == nil:
+		if err := os.Remove(oldPath); err != nil {
+			_ = os.Remove(newPath) // undo the link: keep the operation all-or-nothing
+			return err
+		}
+		return nil
+	case errors.Is(linkErr, fs.ErrExist):
+		return ErrTargetExists
+	case errors.Is(linkErr, syscall.EPERM), errors.Is(linkErr, syscall.ENOTSUP):
+		return renameNoClobberFallback(oldPath, newPath)
+	default:
+		return linkErr
+	}
+}
+
+// renameNoClobberFallback is renameNoClobber's non-hardlink path. It
+// reintroduces a check-then-act race against a concurrent writer creating
+// newPath between the Lstat and the Rename — acceptable here because every
+// caller in this codebase renames within a same-UID local provider tree
+// (never a multi-writer or adversarial one); the alternative would be
+// refusing every rename outright on a filesystem that can't hard-link.
+// Lstat (not Stat) matches this package's existing symlink-averse posture
+// (List skips symlinks entirely) — a foreign or dangling symlink already
+// occupying newPath still counts as "target exists", not something to
+// dereference through.
+func renameNoClobberFallback(oldPath, newPath string) error {
+	switch _, err := os.Lstat(newPath); {
+	case err == nil:
+		return ErrTargetExists
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	return os.Rename(oldPath, newPath)
 }
 
 // LocalTarget maps a repo path (as /v0/history reports it: <provider>[/

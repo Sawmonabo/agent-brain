@@ -71,6 +71,13 @@ func TestMeta(t *testing.T) {
 			content:      "---\n---\nbody\n",
 			wantHasFront: true,
 		},
+		{
+			name:            "byte order mark before fences is stripped",
+			content:         "\ufeff---\nname: Topic\ndescription: A hook\n---\nbody\n",
+			wantName:        "Topic",
+			wantDescription: "A hook",
+			wantHasFront:    true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

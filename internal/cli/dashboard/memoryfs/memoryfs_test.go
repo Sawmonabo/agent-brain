@@ -175,6 +175,7 @@ func TestReadBodyCapsOversize(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "well under cap", size: 1024, wantErr: false},
+		{name: "exactly at cap", size: 1 << 20, wantErr: false},
 		{name: "one byte over cap", size: 1<<20 + 1, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -269,6 +270,70 @@ func TestWriteFileAtomicCreatesParentDirs(t *testing.T) {
 	}
 }
 
+// TestWriteFileAtomicValidatesTarget pins the symmetric guard Rename already
+// had: a traversal, absolute, or "."-segment rel is refused before any
+// filesystem effect, the same repo.ValidateRelPath contract Rename applies
+// to its own target. Each rejected row asserts the parent directory (one
+// level above the unit dir passed as dir) gains no file at all — not just
+// that the write lands somewhere unexpected, but that nothing happens
+// outside dir.
+func TestWriteFileAtomicValidatesTarget(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		rel     string
+		wantErr bool
+	}{
+		{name: "path traversal rejected", rel: "../escape.md", wantErr: true},
+		{name: "absolute path rejected", rel: "/escape.md", wantErr: true},
+		{name: "dot segment rejected", rel: ".", wantErr: true},
+		{name: "clean relative path succeeds", rel: "notes.md", wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			dir := filepath.Join(parent, "unit")
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			err := memoryfs.WriteFileAtomic(dir, tt.rel, []byte("content"))
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("WriteFileAtomic(%q) = nil, want error", tt.rel)
+				}
+				parentEntries, readErr := os.ReadDir(parent)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(parentEntries) != 1 || parentEntries[0].Name() != "unit" {
+					t.Fatalf("parent dir contents = %v, want only the untouched unit dir", parentEntries)
+				}
+				unitEntries, readErr := os.ReadDir(dir)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if len(unitEntries) != 0 {
+					t.Fatalf("unit dir contents = %v, want empty (rejected write had no effect)", unitEntries)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("WriteFileAtomic(%q) error = %v, want nil", tt.rel, err)
+			}
+			got, readErr := os.ReadFile(filepath.Join(dir, tt.rel))
+			if readErr != nil {
+				t.Fatalf("read written file: %v", readErr)
+			}
+			if string(got) != "content" {
+				t.Fatalf("content = %q, want %q", got, "content")
+			}
+		})
+	}
+}
+
 // TestDeleteRemovesFile pins Delete's plain-remove contract.
 func TestDeleteRemovesFile(t *testing.T) {
 	t.Parallel()
@@ -335,6 +400,55 @@ func TestRenameValidatesTarget(t *testing.T) {
 				t.Fatalf("renamed content = %q, want %q", data, "content")
 			}
 		})
+	}
+}
+
+// TestRenameRefusesClobber pins Rename's no-clobber contract: renaming onto
+// an existing target is refused with ErrTargetExists, and both the source
+// and the pre-existing target's content are left completely intact — silent
+// data loss for a user's memory file is never acceptable.
+func TestRenameRefusesClobber(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFile(t, dir, "source.md", "source content")
+	writeFile(t, dir, "target.md", "target content")
+	m := memoryfs.Memory{LocalDir: dir, RelPath: "source.md"}
+
+	err := memoryfs.Rename(m, "target.md")
+	if !errors.Is(err, memoryfs.ErrTargetExists) {
+		t.Fatalf("Rename() error = %v, want ErrTargetExists", err)
+	}
+
+	gotSource, readErr := os.ReadFile(filepath.Join(dir, "source.md"))
+	if readErr != nil {
+		t.Fatalf("source file missing after refused rename: %v", readErr)
+	}
+	if string(gotSource) != "source content" {
+		t.Fatalf("source content = %q, want unchanged %q", gotSource, "source content")
+	}
+	gotTarget, readErr := os.ReadFile(filepath.Join(dir, "target.md"))
+	if readErr != nil {
+		t.Fatalf("target file missing after refused rename: %v", readErr)
+	}
+	if string(gotTarget) != "target content" {
+		t.Fatalf("target content = %q, want unchanged %q", gotTarget, "target content")
+	}
+}
+
+// TestRenameMissingSourceErrors pins Rename's behavior when the source no
+// longer exists: an ordinary error, distinct from ErrTargetExists, the same
+// way os.Rename behaved before the link-then-remove rework.
+func TestRenameMissingSourceErrors(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	m := memoryfs.Memory{LocalDir: dir, RelPath: "missing.md"}
+
+	err := memoryfs.Rename(m, "renamed.md")
+	if err == nil {
+		t.Fatal("Rename() with a missing source = nil error, want error")
+	}
+	if errors.Is(err, memoryfs.ErrTargetExists) {
+		t.Fatalf("Rename() with a missing source = ErrTargetExists, want a plain not-exist error")
 	}
 }
 

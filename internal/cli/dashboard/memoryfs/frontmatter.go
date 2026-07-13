@@ -36,7 +36,12 @@ func Meta(path string) (name, description string, hasFrontmatter bool) {
 	if err != nil {
 		return "", "", false
 	}
-	lines := strings.Split(string(data), "\n")
+	// A leading UTF-8 byte order mark (U+FEFF), left by some editors on
+	// save, is not whitespace — strings.TrimSpace does not strip it — so an
+	// un-stripped BOM would shift line 1 just enough to miss the "---" fence
+	// match below and degrade the whole file to stem-name metadata.
+	text := strings.TrimPrefix(string(data), "\ufeff")
+	lines := strings.Split(text, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return "", "", false
 	}
