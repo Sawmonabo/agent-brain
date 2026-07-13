@@ -962,11 +962,15 @@ func (m Model) collectFleetMemories() ([]memoryfs.Memory, error) {
 // NewBrowser above (screen.go's Screen.Update doc). A List failure degrades
 // to a nil Index — every link renders dangling, the posture Reading already
 // documents for a missing index — rather than refusing to open a memory
-// whose body is perfectly readable.
+// whose body is perfectly readable; the degrade is SAID, though: a toast
+// names why links won't resolve, instead of leaving the user to discover it
+// link by dangling link.
 func (m Model) openSearchChoice(memory memoryfs.Memory) Model {
 	var index *links.Index
 	if memories, err := memoryfs.List(m.registry, unitsForFolder(m.projects.Units, memory.Folder)); err == nil {
 		index = links.BuildIndex(memories, memoryfs.ReadBody)
+	} else {
+		m.pushToast(fmt.Sprintf("link index unavailable: %v", err))
 	}
 	return m.pushScreen(views.NewReading(views.ReadingDeps{
 		Memory:   memory,

@@ -1956,3 +1956,124 @@ func TestSearchOverlayOwnsGlobalKeys(t *testing.T) {
 		t.Error("? inside the overlay closed it")
 	}
 }
+
+// TestSearchFindsProjectTrackedWhileOverlayOpen pins the freshness half of
+// the overlay's Collect seam: the fleet can change while the overlay is
+// open (a background projects refresh lands, an enrollment completes), and
+// the NEXT query must see it. The overlay's deps were bound over the root's
+// value-semantics Model at open time — a frozen snapshot — so this only
+// holds because forwardToSearchOverlay re-binds Collect from the live model
+// on every forwarded message; a query still bound to open-time state would
+// be searching the old fleet and miss the new folder entirely.
+func TestSearchFindsProjectTrackedWhileOverlayOpen(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	acmeDir, zenithDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(acmeDir, "apple.md"), []byte("alpha line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zenithDir, "zebra.md"), []byte("stripes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: acmeDir}})
+
+	m = drive(t, m, key("/"))
+	if m.searchOverlay == nil {
+		t.Fatal("setup: / did not open the search overlay")
+	}
+
+	// zenith joins the fleet only AFTER the overlay is already open — the
+	// same mutation a projectsMsg refresh performs on the live model.
+	m.projects.SetUnits([]api.UnitInfo{
+		{Provider: "claude", Folder: "acme", LocalDir: acmeDir},
+		{Provider: "claude", Folder: "zenith", LocalDir: zenithDir},
+	})
+
+	m = drive(t, m, key("z")) // real debounce; only zebra (zenith) matches "z"
+
+	view := plain(m.View().Content)
+	for _, want := range []string{"zenith", "zebra"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("a query after the fleet grew misses %q — the overlay searched a stale fleet snapshot; view:\n%s", want, view)
+		}
+	}
+}
+
+// TestSearchChoiceLinkIndexFailureToastsAndStillOpens pins the degraded
+// half of the choice→Reading push: when enumerating the chosen memory's
+// folder for the link index fails, the reading still opens — the chosen
+// memory itself is in hand and readable, so refusing the open over link
+// decoration would be worse — but the failure is SAID, as a toast, never
+// swallowed: the user who later hits a dangling [[link]] deserves to know
+// links were never going to resolve.
+func TestSearchChoiceLinkIndexFailureToastsAndStillOpens(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	folderDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(folderDir, "alpha.md"), []byte("see [[beta]]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	// The chosen memory's folder holds a unit whose provider the registry
+	// does not know — memoryfs.List's registry-miss failure, at choice time.
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "ghost", Folder: "acme", LocalDir: folderDir}})
+
+	chosen := memoryfs.Memory{
+		Provider: "claude",
+		Folder:   "acme",
+		LocalDir: folderDir,
+		RelPath:  "alpha.md",
+		RepoPath: "claude/alpha.md",
+		Name:     "alpha",
+	}
+	m = drive(t, m, views.SearchChoiceMsg{Memory: chosen})
+
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d, want 1 — a link-index failure must not block opening the memory itself", len(m.stack))
+	}
+	view := plain(m.View().Content)
+	if !strings.Contains(view, "link index unavailable") {
+		t.Errorf("view carries no toast for the failed link-index build; got:\n%s", view)
+	}
+}
+
+// TestSlashWhileProjectsModalOpenTypesIntoModalInput pins the loser's side
+// of the `/` priority race INSIDE the root's own chrome (the stacked-Screen
+// side has its own pin above): a Projects modal — here the add flow's
+// path-confirm input — owns the keyboard before the global dispatch loop
+// runs, so `/` is a literal path character, exactly what typing a Unix path
+// needs, and the search overlay stays closed.
+func TestSlashWhileProjectsModalOpenTypesIntoModalInput(t *testing.T) {
+	t.Parallel()
+	candidates := []views.TrackCandidate{{
+		Provider:  "claude",
+		Label:     "claude  ~/dev/acme",
+		PathGuess: "/home/u/dev/acme",
+		Roots:     []views.TrackRoot{{LocalDir: "/home/u/dev/acme/.claude"}},
+	}}
+	m := New(addConfig(&fakeData{}, candidates))
+	m.active = tabProjects
+
+	m = drive(t, m, key("a"))     // discover → picker
+	m = drive(t, m, key("enter")) // per-project candidate → confirm-path input
+	if m.projects.Adding != views.AddConfirmPath {
+		t.Fatalf("setup: Adding = %v, want the confirm-path stage", m.projects.Adding)
+	}
+
+	m = drive(t, m, key("/"))
+
+	if m.searchOverlay != nil {
+		t.Fatal("/ inside a Projects modal opened the search overlay; the modal owns the key")
+	}
+	if m.projects.Adding != views.AddConfirmPath {
+		t.Fatalf("Adding = %v after /, want the confirm-path input still open", m.projects.Adding)
+	}
+	if got := plain(m.projects.View()); !strings.Contains(got, "/home/u/dev/acme/") {
+		t.Errorf("the modal's path input did not receive the literal /; view:\n%s", got)
+	}
+}

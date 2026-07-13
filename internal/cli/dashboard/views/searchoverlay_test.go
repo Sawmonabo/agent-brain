@@ -517,3 +517,57 @@ func TestSearchOverlayHighlightsMatchedSpanWithinFragment(t *testing.T) {
 		t.Errorf("view does not render the fragment as dim/Badge/dim split exactly at the match span\nwant segment: %q\nview:\n%q", want, raw)
 	}
 }
+
+// TestSearchOverlayEnterDuringPendingDebounceChoosesVisibleRow pins the
+// what-you-see-is-what-you-get half of the debounce: a value-changing
+// keystroke advances the generation and schedules a tick, but until that
+// tick's query answers, the PREVIOUS results stay on screen — so enter
+// pressed inside the debounce window must act on the row the user can
+// actually see (View and enter read the same hits, single-threaded), latch
+// Closed, and run no query of its own. A "helpful" guard that blanked or
+// ignored the visible rows just because a newer generation is pending would
+// fail here.
+func TestSearchOverlayEnterDuringPendingDebounceChoosesVisibleRow(t *testing.T) {
+	t.Parallel()
+	collectCalls := 0
+	overlay := NewSearchOverlay(SearchOverlayDeps{
+		Collect: func() ([]memoryfs.Memory, error) {
+			collectCalls++
+			return nil, nil
+		},
+		ReadBody: emptyReadBody,
+		Styles:   theme.Default(true),
+	})
+
+	overlay.Update(key("a"))
+	displayed := []search.Hit{
+		{Memory: searchOverlayMemory("acme", "aaa-first"), Tier: search.TierName, Fragment: "aaa-first"},
+		{Memory: searchOverlayMemory("acme", "abb-second"), Tier: search.TierName, Fragment: "abb-second"},
+	}
+	deliverHits(t, overlay, displayed)
+	overlay.Update(key("down")) // cursor onto the second visible row
+
+	overlay.Update(key("b")) // new generation: tick pending, its results not in yet
+	if view := plain(overlay.View(120, 40)); !strings.Contains(view, "> acme · claude · abb-second") {
+		t.Fatalf("setup: the pre-debounce cursor row is no longer on screen; view:\n%s", view)
+	}
+
+	cmd := overlay.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("enter on a visible row returned no Cmd")
+	}
+	msg := cmd()
+	choice, ok := msg.(SearchChoiceMsg)
+	if !ok {
+		t.Fatalf("enter's Cmd yielded %T, want SearchChoiceMsg", msg)
+	}
+	if diff := cmp.Diff(displayed[1].Memory, choice.Memory); diff != "" {
+		t.Errorf("enter chose a different memory than the visible cursor row (-want +got):\n%s", diff)
+	}
+	if !overlay.Closed {
+		t.Error("enter did not latch Closed")
+	}
+	if collectCalls != 0 {
+		t.Errorf("Collect ran %d times; the pending debounce must stay unanswered and enter itself must never query", collectCalls)
+	}
+}
