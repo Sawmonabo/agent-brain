@@ -117,11 +117,10 @@ type Config struct {
 	Registry *provider.Registry
 	// Settings is the loaded config.toml (cli's own loadDashboardSettings,
 	// independent of buildTrackDeps — the cli root command composes it at
-	// the edge, same as Registry above). Task 11 does not yet read a field
-	// from it (config.Settings has no Lint section until Task 8), but the
-	// plumbing lands now so the memory browser's staleness threshold and a
-	// later task's $EDITOR choice (Settings.Editor) need no further change
-	// to this constructor's signature.
+	// the edge, same as Registry above). buildBrowserDeps reads
+	// Settings.Lint.StaleAfterDays; a later task's $EDITOR choice
+	// (Settings.Editor) needs no further change to this constructor's
+	// signature either.
 	Settings config.Settings
 }
 
@@ -137,6 +136,15 @@ type Model struct {
 	// (buildBrowserDeps); nil disables the Projects tab's enter-to-browse
 	// action the same way a nil Discover disables add.
 	registry *provider.Registry
+	// settings is the loaded config.toml (Config.Settings) — buildBrowserDeps
+	// reads settings.Lint.StaleAfterDays for the pushed Browser's staleness
+	// threshold; a zero-value Settings (e.g. a test that never sets Config.
+	// Settings) means StaleAfterDays is 0, spec §8's own "disabled" value,
+	// not config.DefaultSettings()'s 90 — a real config.toml is only ever
+	// absent in a test, and production wiring always sources this through
+	// LoadSettings, which itself defaults to DefaultSettings() when
+	// config.toml does not exist on disk (config/settings.go).
+	settings config.Settings
 	// renderMarkdown is the glamour seam every pushed Screen's preview pane
 	// renders through (buildBrowserDeps' Render, and the later Reading
 	// screen's identical need) — rebuilt by withStyles whenever the theme
@@ -190,6 +198,7 @@ func New(cfg Config) Model {
 		startService: cfg.StartService,
 		actions:      views.TrackActions{Discover: cfg.Discover, Identify: cfg.Identify},
 		registry:     cfg.Registry,
+		settings:     cfg.Settings,
 		now:          time.Now(),
 		projects:     views.NewProjectsView(),
 	}
@@ -862,11 +871,11 @@ func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.Brows
 		Now:      m.now,
 		ReadBody: memoryfs.ReadBody,
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
-		// Task 8 wires the real lint.stale_after_days setting through here;
-		// until config.Settings gains that field, 0 is spec §8's own
-		// "disabled" value (lint.go's stale check, once it lands), not a
-		// fabricated default.
-		StaleAfterDays: 0,
+		// StaleAfterDays reads the configured lint.stale_after_days setting
+		// (config/settings.go, default 90) — m.settings is whatever the cli
+		// root command's own loadDashboardSettings loaded, never a value
+		// this package invents.
+		StaleAfterDays: m.settings.Lint.StaleAfterDays,
 		Render:         m.renderMarkdown,
 	}
 }

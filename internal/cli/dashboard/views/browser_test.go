@@ -160,15 +160,19 @@ func TestBrowserFilterNarrows(t *testing.T) {
 	}
 }
 
-// TestBrowserLintBadge pins the ⚠ badge: a memory whose body names a
-// [[wiki-link]] target that matches no other memory in the listing is
-// flagged; a memory with no such dangling reference is not.
+// TestBrowserLintBadge pins the ⚠ badge against one of lint.Check's several
+// rules — dangling links: a memory whose body names a [[wiki-link]] target
+// that matches no other memory in the listing is flagged; a memory with no
+// such dangling reference is not. Both fixture files carry a complete
+// frontmatter block (name AND description) so the frontmatter rule cannot
+// also flag "Clean Memory" and confound what this test isolates —
+// TestBrowserLintBadgeStaleness covers the staleness rule the same way.
 func TestBrowserLintBadge(t *testing.T) {
 	t.Parallel()
 	registry := browserFixtureRegistry(t)
 	dir := t.TempDir()
-	writeBrowserFile(t, dir, "has-link.md", "---\nname: Has Link\n---\n", time.Now())
-	writeBrowserFile(t, dir, "clean.md", "---\nname: Clean Memory\n---\n", time.Now())
+	writeBrowserFile(t, dir, "has-link.md", "---\nname: Has Link\ndescription: references another memory\n---\n", time.Now())
+	writeBrowserFile(t, dir, "clean.md", "---\nname: Clean Memory\ndescription: a genuinely clean memory\n---\n", time.Now())
 
 	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
 	bodies := map[string]string{
@@ -199,6 +203,44 @@ func TestBrowserLintBadge(t *testing.T) {
 	}
 	if strings.Contains(lineFor("Clean Memory"), "⚠") {
 		t.Errorf("clean memory row wrongly flagged ⚠; view:\n%s", got)
+	}
+}
+
+// TestBrowserLintBadgeStaleness pins the ⚠ badge against lint.Check's
+// staleness rule specifically, with no dangling link anywhere in play: a
+// memory unmodified for exactly the configured threshold is not yet stale
+// (checkStale's own contract is "strictly more than" the threshold, not an
+// exact match); one calendar day past it, delivered via RefreshMsg's own
+// Now rather than a fresh construction, it is.
+func TestBrowserLintBadgeStaleness(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "old.md", "---\nname: Old Note\ndescription: an aging memory\n---\n", base)
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry:       registry,
+		Units:          units,
+		Folder:         "acme",
+		Now:            base.Add(10 * 24 * time.Hour), // exactly at the threshold
+		StaleAfterDays: 10,
+		ReadBody:       fakeReadBody(map[string]string{"claude/old.md": "no links here\n"}),
+		List:           func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	atThreshold := plain(browser.View(80, 40))
+	if strings.Contains(atThreshold, "⚠") {
+		t.Errorf("memory exactly at the staleness threshold is already flagged; view:\n%s", atThreshold)
+	}
+
+	next, _ := browser.Update(RefreshMsg{Now: base.Add(11 * 24 * time.Hour)}) // one day past
+	browser = next.(*Browser)
+
+	pastThreshold := plain(browser.View(80, 40))
+	if !strings.Contains(pastThreshold, "⚠") {
+		t.Errorf("memory one day past the staleness threshold is not flagged; view:\n%s", pastThreshold)
 	}
 }
 
@@ -410,6 +452,54 @@ func TestBrowserRelintSkipsUnchangedListing(t *testing.T) {
 	browser.Update(RefreshMsg{Now: now})
 	if readCalls <= afterConstruct {
 		t.Errorf("ReadBody was not called again after the listing changed: %d calls, want > %d", readCalls, afterConstruct)
+	}
+}
+
+// TestBrowserRelintFiresOnDayBucketRoll pins the fingerprint's blast-radius
+// fix: lint.Check's staleness rule crosses its threshold purely as a
+// function of elapsed wall-clock time, so a memory can need a fresh lint
+// pass while the browser sits open across a calendar day even though no
+// file's ModTime ever changes. Proven the same way
+// TestBrowserRelintSkipsUnchangedListing proves the ordinary
+// ModTime-changed case — a ReadBody call-count seam — except here nothing
+// about any file changes at all; only now's day bucket does.
+func TestBrowserRelintFiresOnDayBucketRoll(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "one.md", "---\nname: One\n---\n", base)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+
+	var readCalls int
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(_ memoryfs.Memory) (string, error) {
+			readCalls++
+			return "", nil
+		},
+		List: func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+	afterConstruct := readCalls
+	if afterConstruct == 0 {
+		t.Fatal("construction never scanned any memory body")
+	}
+
+	// Same instant delivered again: no file changed and no day rolled, so
+	// no rescan is expected.
+	browser.Update(RefreshMsg{Now: base})
+	if readCalls != afterConstruct {
+		t.Errorf("ReadBody called again for an unchanged instant: %d calls, want %d", readCalls, afterConstruct)
+	}
+
+	// One calendar day later: still no file changed, only now's day bucket
+	// rolled — the fingerprint must still change and force a rescan.
+	browser.Update(RefreshMsg{Now: base.Add(24 * time.Hour)})
+	if readCalls <= afterConstruct {
+		t.Errorf("ReadBody was not called again after the day bucket rolled: %d calls, want > %d", readCalls, afterConstruct)
 	}
 }
 

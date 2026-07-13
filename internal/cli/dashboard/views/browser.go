@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/links"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/lint"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -56,10 +57,13 @@ type BrowserDeps struct {
 	// bound once in production, so the browser and its tests never touch
 	// Registry/Units directly.
 	List func() ([]memoryfs.Memory, error)
-	// StaleAfterDays is the configured staleness threshold (spec §8). Task 8
-	// wires the real `lint.stale_after_days` config setting through here;
-	// until config gains that setting, production wiring passes 0 — spec
-	// §8's own "disabled" value, not a fabricated default.
+	// StaleAfterDays is the configured `lint.stale_after_days` staleness
+	// threshold (spec §8, internal/config/settings.go) — production wiring
+	// reads it from the loaded config.toml (dashboard.go's
+	// buildBrowserDeps); 0 disables the staleness rule entirely
+	// (lint.Check's own contract), which is also what a zero-value
+	// BrowserDeps in a test that does not care about staleness gets for
+	// free.
 	StaleAfterDays int
 	// Render markdown-renders md at width — the root-owned glamour seam
 	// (dashboard.go), shared with the later Reading screen. A nil Render
@@ -96,8 +100,18 @@ type Browser struct {
 	// advanced clock is always what the next render actually sees.
 	now time.Time
 
-	index           *links.Index // wiki-link graph over the current listing (Task 7); nil until the first refresh
-	lintFingerprint string       // last (RepoPath,ModTime) set the lint scan ran over
+	// index is the wiki-link graph over the current listing (Task 7),
+	// retained (not just consumed) because Task 12's Reading screen will
+	// need the identical graph for link navigation, and because lint.Check
+	// below takes it as an input rather than building its own.
+	index *links.Index
+	// lintFlags is the ⚠ badge's actual source of truth: RepoPath ->
+	// "present in lint.Check's results" — spec §8's advisory findings
+	// (frontmatter/dangling-link/stale/index-drift), not just dangling
+	// links. Derived once per (fingerprint-gated) relint rather than
+	// scanned from lint.Check's own []Result on every row render.
+	lintFlags       map[string]bool
+	lintFingerprint string // last (memories, StaleAfterDays, now-day-bucket) set the lint scan ran over
 }
 
 // NewBrowser builds a ready Browser and performs its first load. Construction
@@ -146,12 +160,11 @@ func (b *Browser) SetRender(render func(md string, width int) string) {
 // listing a memory dir is cheap and keeps the browser live against writes
 // an external agent makes while the user is browsing.
 //
-// The lint scan (dangling-link detection) additionally reads every
-// memory's full body, which is not free at any real project scale — so it
-// only actually re-runs when the listing's fingerprint (every memory's
-// RepoPath+ModTime) has changed since the last scan. An idle browsing
-// session then costs one relist per tick, not one full-body read per
-// memory every two seconds.
+// The lint pass (frontmatter/dangling-link/stale/index-drift, spec §8)
+// additionally reads every memory's full body, which is not free at any
+// real project scale — so it only actually re-runs when lintFingerprint
+// has changed since the last scan. An idle browsing session then costs one
+// relist per tick, not a full lint.Check pass every two seconds.
 func (b *Browser) refresh() {
 	memories, err := b.deps.List()
 	if err != nil {
@@ -164,8 +177,13 @@ func (b *Browser) refresh() {
 	b.loaded = true
 	b.cursor = clampCursor(b.cursor, len(b.visibleRows()))
 
-	if fingerprint := lintFingerprint(memories); fingerprint != b.lintFingerprint {
+	if fingerprint := lintFingerprint(memories, b.deps.StaleAfterDays, b.now); fingerprint != b.lintFingerprint {
 		b.index = links.BuildIndex(memories, b.deps.ReadBody)
+		results := lint.Check(memories, b.index, b.deps.ReadBody, b.deps.StaleAfterDays, b.now)
+		b.lintFlags = make(map[string]bool, len(results))
+		for _, result := range results {
+			b.lintFlags[result.Memory.RepoPath] = true
+		}
 		b.lintFingerprint = fingerprint
 	}
 }
@@ -181,11 +199,26 @@ func clampCursor(cursor, count int) int {
 	return min(max(cursor, 0), count-1)
 }
 
-// lintFingerprint summarizes a memory listing's identity for change
-// detection: memoryfs.List's own deterministic (Folder, RepoPath) sort
-// order makes a straight concatenation stable across calls that see the
-// same files, so an unchanged listing always reproduces the same string.
-func lintFingerprint(memories []memoryfs.Memory) string {
+// lintFingerprint summarizes everything a relint's verdicts can depend on:
+// the listing's identity (memoryfs.List's own deterministic (Folder,
+// RepoPath) sort order makes a straight concatenation of RepoPath+ModTime
+// stable across calls that see the same files), staleAfterDays (a settings
+// reload must retrigger the same tick it takes effect), and now's own
+// calendar-day bucket (UTC).
+//
+// The day bucket exists because lint.Check's staleness rule crosses its
+// threshold purely as a function of elapsed wall-clock time — a memory can
+// go from "not stale" to "stale" while the browser sits open and its own
+// ModTime never changes at all. Without something keyed to now in this
+// fingerprint, the listing+ModTime component alone would stay identical
+// forever once first computed, and the (correctly) skipped relint would
+// never run again to notice the crossing — freezing every staleness
+// verdict at whatever it was the moment the browser opened. A day-level
+// bucket matches the rule's own day-level granularity: it guarantees a
+// relint at least once per calendar day even when nothing else changed,
+// without forcing the (expensive, full-body) lint pass to re-run on every
+// single tick the way keying on the exact instant would.
+func lintFingerprint(memories []memoryfs.Memory, staleAfterDays int, now time.Time) string {
 	var b strings.Builder
 	for _, m := range memories {
 		b.WriteString(m.RepoPath)
@@ -193,23 +226,10 @@ func lintFingerprint(memories []memoryfs.Memory) string {
 		b.WriteString(strconv.FormatInt(m.ModTime.UnixNano(), 10))
 		b.WriteByte(0)
 	}
+	b.WriteString(strconv.Itoa(staleAfterDays))
+	b.WriteByte(0)
+	b.WriteString(now.UTC().Format(time.DateOnly))
 	return b.String()
-}
-
-// isDangling reports whether m's own body contains at least one [[target]]
-// wiki-link that resolves to no other memory in the current listing — spec
-// §8's dangling-link lint rule, read from the shared links index (Task 7)
-// rather than a bespoke scan here: the same stem-then-name resolution
-// priority, "[[a|b]]" alias handling, and no-newline-inside rule the later
-// Reading screen's own link navigation depends on, so the browser's ⚠ badge
-// and Reading's dangling highlight can never disagree about what counts as
-// a broken link. A memory whose body fails to read contributes no outbound
-// links to the index (BuildIndex's own contract) — it never resolves as
-// dangling FROM that read failure, which surfaces instead through the
-// preview pane's own error state. A nil index (no refresh has completed
-// yet) reports every memory clean rather than panicking.
-func (b *Browser) isDangling(m memoryfs.Memory) bool {
-	return b.index != nil && len(b.index.Dangling(m)) > 0
 }
 
 // Update handles one message. RefreshMsg (the root's tick forward) stores
@@ -408,7 +428,7 @@ func (b *Browser) renderList(rows []memoryfs.Memory, _ int) string {
 			marker = "> "
 		}
 		badge := ""
-		if b.isDangling(m) {
+		if b.lintFlags[m.RepoPath] {
 			badge = " " + b.deps.Styles.Warn.Render("⚠")
 		}
 		line := fmt.Sprintf("%s%s%s — %s (%s)", marker, m.Name, badge,

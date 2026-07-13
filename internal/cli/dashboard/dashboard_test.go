@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"image/color"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -1324,5 +1326,53 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 		if strings.Contains(got, deadHint) {
 			t.Errorf("stack footer %q leaks a tab-level or global hint %q; a pushed screen owns the whole keyboard", got, deadHint)
 		}
+	}
+}
+
+// TestBuildBrowserDepsThreadsConfiguredStaleAfterDays pins that
+// buildBrowserDeps reads the REAL configured lint.stale_after_days
+// (Config.Settings.Lint.StaleAfterDays) rather than any hardcoded
+// fallback: two Models built with different Settings values, pushed
+// against the identical 6-day-old memory, must disagree about whether it
+// is stale — a fixed constant (0, or DefaultSettings' 90) could never
+// produce that disagreement, so the difference itself proves the
+// configured value actually reached lint.Check.
+func TestBuildBrowserDepsThreadsConfiguredStaleAfterDays(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memoryPath := filepath.Join(dir, "old.md")
+	if err := os.WriteFile(memoryPath, []byte("---\nname: Old\ndescription: aging memory\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(memoryPath, base, base); err != nil {
+		t.Fatal(err)
+	}
+	sixDaysLater := base.Add(6 * 24 * time.Hour)
+
+	pushedView := func(t *testing.T, staleAfterDays int) string {
+		t.Helper()
+		m := New(Config{
+			Data:     &fakeData{},
+			Registry: registry,
+			Settings: config.Settings{Lint: config.LintSettings{StaleAfterDays: staleAfterDays}},
+		})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+		m, _ = step(m, tickMsg(sixDaysLater))
+		m.active = tabProjects
+		m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+		m = drive(t, m, key("enter"))
+		return plain(m.View().Content)
+	}
+
+	strict := pushedView(t, 5) // 6 days old, 5-day threshold: stale
+	if !strings.Contains(strict, "⚠") {
+		t.Errorf("StaleAfterDays=5 with a 6-day-old memory did not flag it; view:\n%s", strict)
+	}
+
+	lenient := pushedView(t, 90) // 6 days old, 90-day threshold: not stale
+	if strings.Contains(lenient, "⚠") {
+		t.Errorf("StaleAfterDays=90 with the identical 6-day-old memory wrongly flagged it; view:\n%s", lenient)
 	}
 }
