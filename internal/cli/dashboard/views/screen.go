@@ -1,6 +1,8 @@
 package views
 
 import (
+	"time"
+
 	tea "charm.land/bubbletea/v2"
 )
 
@@ -52,4 +54,16 @@ type PopScreenMsg struct{}
 // tick message type is package-private (internal/cli/dashboard), so it
 // cannot be named from this package; RefreshMsg is the exported message the
 // root translates it to before forwarding.
-type RefreshMsg struct{}
+//
+// "Fresh reality" includes the clock, not just the filesystem: Now carries
+// the root's current tick time, and a Screen that renders anything
+// relative-time-shaped (an "X ago" label) must store the latest Now it
+// receives here and render from that stored field — never from a closure
+// captured at construction/push time. Model has value semantics (spec §2),
+// so a func() time.Time closure built once, at push time, over that
+// moment's Model copy stays frozen at that moment forever; it never observes
+// a later tick's advanced clock the way a value delivered fresh on every
+// RefreshMsg does. Seed the field's initial value at construction (before
+// the first RefreshMsg ever arrives) so the very first render is already
+// correct, not just the first one after a tick.
+type RefreshMsg struct{ Now time.Time }

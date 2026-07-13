@@ -1188,7 +1188,7 @@ func TestStackForwardsTick(t *testing.T) {
 	var listCalls int
 	browser := views.NewBrowser(views.BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
 		List: func() ([]memoryfs.Memory, error) {
 			listCalls++
@@ -1254,7 +1254,7 @@ func TestBackgroundColorSwapsWhileBrowsing(t *testing.T) {
 	t.Parallel()
 	browser := views.NewBrowser(views.BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: func(memoryfs.Memory) (string, error) { return "# Heading", nil },
 		List: func() ([]memoryfs.Memory, error) {
 			return []memoryfs.Memory{{Provider: "claude", Name: "Note", RepoPath: "claude/note.md"}}, nil
@@ -1307,7 +1307,7 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 	t.Parallel()
 	browser := views.NewBrowser(views.BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
 		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
 	})

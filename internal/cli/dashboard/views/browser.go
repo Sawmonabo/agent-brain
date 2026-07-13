@@ -39,10 +39,14 @@ type BrowserDeps struct {
 	Units    []api.UnitInfo // the folder's units
 	Folder   string
 	Styles   theme.Styles
-	// Now is injected (rather than calling time.Now directly) so relative
-	// modified-time and staleness rendering are deterministic in tests;
-	// production wiring passes the real time.Now.
-	Now func() time.Time
+	// Now seeds the Browser's own stored clock (Browser.now) at construction
+	// — a plain value, not a func() time.Time, so it is never mistaken for a
+	// live source of truth: after construction, every render reads the
+	// stored field, kept current by RefreshMsg's own Now (screen.go), not by
+	// re-invoking anything here. Deterministic in tests the same way a live
+	// closure would have been, without the staleness risk one carries once
+	// Model's value semantics are in play (dashboard.go's buildBrowserDeps).
+	Now time.Time
 	// ReadBody reads one memory's full content — memoryfs.ReadBody in
 	// production. Called synchronously: see refresh's doc for why a local
 	// file read, unlike every daemon-backed Cmd elsewhere in this package,
@@ -86,6 +90,12 @@ type Browser struct {
 
 	cursor int // index into the current visibleRows() order
 
+	// now is the Browser's own stored clock: seeded from BrowserDeps.Now at
+	// construction, then kept current by every RefreshMsg's own Now field
+	// (screen.go) — never read through a closure, so a background tick's
+	// advanced clock is always what the next render actually sees.
+	now time.Time
+
 	index           *links.Index // wiki-link graph over the current listing (Task 7); nil until the first refresh
 	lintFingerprint string       // last (RepoPath,ModTime) set the lint scan ran over
 }
@@ -100,7 +110,7 @@ type Browser struct {
 func NewBrowser(deps BrowserDeps) *Browser {
 	filter := textinput.New()
 	filter.Placeholder = "filter by name or description…"
-	b := &Browser{deps: deps, orderByRecency: true, filter: filter}
+	b := &Browser{deps: deps, orderByRecency: true, filter: filter, now: deps.Now}
 	b.refresh()
 	return b
 }
@@ -202,13 +212,16 @@ func (b *Browser) isDangling(m memoryfs.Memory) bool {
 	return b.index != nil && len(b.index.Dangling(m)) > 0
 }
 
-// Update handles one message. RefreshMsg (the root's tick forward)
-// re-lists; everything else that is not a recognized key is left
-// unhandled, matching the Screen contract's "usually itself, nil Cmd"
-// default.
+// Update handles one message. RefreshMsg (the root's tick forward) stores
+// the live clock it carries — see screen.go's RefreshMsg doc for why this,
+// not a closure, is how a pushed screen ever observes a later tick's
+// advanced time — before re-listing; everything else that is not a
+// recognized key is left unhandled, matching the Screen contract's "usually
+// itself, nil Cmd" default.
 func (b *Browser) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case RefreshMsg:
+		b.now = msg.Now
 		b.refresh()
 		return b, nil
 	case tea.KeyPressMsg:
@@ -400,7 +413,7 @@ func (b *Browser) renderList(rows []memoryfs.Memory, _ int) string {
 		}
 		line := fmt.Sprintf("%s%s%s — %s (%s)", marker, m.Name, badge,
 			b.deps.Styles.Dim.Render(truncate(m.Description, descriptionTruncateAt)),
-			relativeTime(m.ModTime, b.deps.Now()))
+			relativeTime(m.ModTime, b.now))
 		if i == b.cursor {
 			line = b.deps.Styles.Selected.Render(line)
 		}

@@ -79,7 +79,7 @@ func TestBrowserListsGroupedByProviderNewestFirst(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 	})
@@ -123,7 +123,7 @@ func TestBrowserFilterNarrows(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 	})
@@ -179,7 +179,7 @@ func TestBrowserLintBadge(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(bodies),
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 	})
@@ -219,7 +219,7 @@ func TestBrowserPreviewRendersSelection(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(map[string]string{"claude/solo.md": "Selected body content"}),
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 		Render: func(md string, _ int) string {
@@ -256,7 +256,7 @@ func TestBrowserEmptyListShowsGuidance(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 	})
@@ -274,7 +274,7 @@ func TestBrowserLoadErrorSurfaces(t *testing.T) {
 	wantErr := errors.New("boom: provider not registered")
 	browser := NewBrowser(BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return nil, wantErr },
 	})
@@ -301,7 +301,7 @@ func TestBrowserPreviewUnavailableOnReadError(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: func(memoryfs.Memory) (string, error) { return "", readErr },
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 		Render:   func(md string, _ int) string { return "RENDERED:" + md },
@@ -324,7 +324,7 @@ func TestBrowserEscClearsFilterThenPops(t *testing.T) {
 	t.Parallel()
 	browser := NewBrowser(BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
 	})
@@ -369,7 +369,8 @@ func TestBrowserRelintSkipsUnchangedListing(t *testing.T) {
 	t.Parallel()
 	registry := browserFixtureRegistry(t)
 	dir := t.TempDir()
-	writeBrowserFile(t, dir, "one.md", "---\nname: One\n---\n", time.Now())
+	now := time.Now()
+	writeBrowserFile(t, dir, "one.md", "---\nname: One\n---\n", now)
 	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
 
 	var readCalls int
@@ -377,7 +378,7 @@ func TestBrowserRelintSkipsUnchangedListing(t *testing.T) {
 		Registry: registry,
 		Units:    units,
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      now,
 		ReadBody: func(_ memoryfs.Memory) (string, error) {
 			readCalls++
 			return "", nil
@@ -391,19 +392,69 @@ func TestBrowserRelintSkipsUnchangedListing(t *testing.T) {
 
 	// Update mutates the *Browser in place and returns the same pointer
 	// (Screen's "usually itself"), so neither return value is needed here —
-	// the mutation is what the readCalls assertions below observe.
-	browser.Update(RefreshMsg{})
+	// the mutation is what the readCalls assertions below observe. Now
+	// stays the same instant both calls below: a bare zero-value RefreshMsg
+	// would otherwise jump the browser's stored clock to year 1, and the
+	// fingerprint's own day-bucket component (spec §8 staleness has day
+	// granularity) would then see a changed bucket and force a rescan this
+	// test does not intend to exercise.
+	browser.Update(RefreshMsg{Now: now})
 	if readCalls != afterConstruct {
 		t.Errorf("ReadBody called again for an unchanged listing: %d calls, want %d", readCalls, afterConstruct)
 	}
 
 	// Touch the file's mtime (a genuine change) and confirm a rescan does happen.
-	if err := os.Chtimes(filepath.Join(dir, "one.md"), time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
+	if err := os.Chtimes(filepath.Join(dir, "one.md"), now.Add(time.Hour), now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	browser.Update(RefreshMsg{})
+	browser.Update(RefreshMsg{Now: now})
 	if readCalls <= afterConstruct {
 		t.Errorf("ReadBody was not called again after the listing changed: %d calls, want > %d", readCalls, afterConstruct)
+	}
+}
+
+// TestBrowserRefreshUpdatesRelativeTimeClock pins the fix for a frozen-clock
+// bug: BrowserDeps.Now used to be a func() time.Time closure built once, at
+// push time, over the root's Model — but Model has value semantics, so that
+// closure stayed pinned to whatever m.now was at that single moment forever,
+// never observing a later tick's advanced clock the way every other
+// relative-time render in this package already does (Activity's View takes
+// now as a live per-call parameter). Now is a plain seed value; the
+// Browser's own stored clock (b.now) is what every render reads, and only a
+// RefreshMsg's own Now field ever advances it. This drives that exact path:
+// construct with one instant, cross an hour boundary via RefreshMsg, and
+// confirm the rendered label actually changes.
+func TestBrowserRefreshUpdatesRelativeTimeClock(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "note.md", "---\nname: Note\n---\n", base)
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base.Add(50 * time.Minute), // ModTime 50m in the past
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	initial := plain(browser.View(80, 40))
+	if !strings.Contains(initial, "50m ago") {
+		t.Fatalf("initial view missing %q; got:\n%s", "50m ago", initial)
+	}
+
+	next, _ := browser.Update(RefreshMsg{Now: base.Add(65 * time.Minute)}) // crosses the 1h boundary
+	browser = next.(*Browser)
+
+	later := plain(browser.View(80, 40))
+	if strings.Contains(later, "50m ago") {
+		t.Errorf("view still shows the stale 50m label after RefreshMsg advanced the clock; got:\n%s", later)
+	}
+	if !strings.Contains(later, "1h ago") {
+		t.Errorf("view missing the updated %q label after RefreshMsg advanced the clock; got:\n%s", "1h ago", later)
 	}
 }
 
@@ -412,7 +463,7 @@ func TestBrowserTitleIsFolder(t *testing.T) {
 	t.Parallel()
 	browser := NewBrowser(BrowserDeps{
 		Folder:   "acme",
-		Now:      time.Now,
+		Now:      time.Now(),
 		ReadBody: fakeReadBody(nil),
 		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
 	})

@@ -423,7 +423,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{m.reloadCmd(), m.tickCmd()}
 		if _, ok := m.stackTop(); ok {
 			var stackCmd tea.Cmd
-			m, stackCmd = m.forwardToStack(views.RefreshMsg{})
+			m, stackCmd = m.forwardToStack(views.RefreshMsg{Now: m.now})
 			cmds = append(cmds, stackCmd)
 		}
 		return m, tea.Batch(cmds...)
@@ -844,10 +844,14 @@ func (m Model) stackFooterBindings() []keybinding.Binding {
 // own composition-at-the-edge dependencies (spec §6's registry/memoryfs
 // seam), binding List/ReadBody to units so the browser and its tests never
 // touch Registry or the fleet snapshot directly (BrowserDeps' own doc in
-// browser.go). Now reads m.now rather than calling time.Now directly, so a
-// pushed browser's relative-time rendering is pinned to the same
-// test-controlled clock the rest of the root already threads through
-// (Activity's View is the existing precedent).
+// browser.go). Now seeds the pushed Browser's clock with m.now at push
+// time only — it is a plain time.Time, not a func() time.Time closure, on
+// purpose: a closure captured here would close over THIS call's Model copy
+// forever (Model has value semantics), never observing a later tick's
+// advanced clock. Every render after the first reads the Browser's own
+// stored field instead, kept current by the live Now RefreshMsg carries on
+// every tick (screen.go's RefreshMsg doc) — this seed only covers the
+// window between push and the first tick.
 func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.BrowserDeps {
 	registry := m.registry
 	return views.BrowserDeps{
@@ -855,7 +859,7 @@ func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.Brows
 		Units:    units,
 		Folder:   folder,
 		Styles:   m.styles,
-		Now:      func() time.Time { return m.now },
+		Now:      m.now,
 		ReadBody: memoryfs.ReadBody,
 		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
 		// Task 8 wires the real lint.stale_after_days setting through here;
