@@ -846,20 +846,52 @@ func TestCtrlKPaletteEscClosesWithoutDispatch(t *testing.T) {
 // ranges over the REAL registry and the REAL predicate/runners map (not a
 // synthetic stand-in), so a future action added to the registry without a
 // runner would fail this test the moment it also became paletteAvailable.
+// Both add-flow wirings run the invariant: with the closures absent,
+// paletteAvailable skips add-project entirely, so only the wired variant
+// walks that row — without it, deleting add-project's runner while keeping
+// its paletteAvailable case would ship a dead palette row unnoticed.
 func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
 	t.Parallel()
-	m := newTestModel(&fakeData{})
-	runners := m.runners()
-	for _, action := range actions.Registry() {
-		if !m.paletteAvailable(action.ID) {
-			continue
-		}
-		if action.ID == "help" {
-			continue // dispatch's one non-runner special case
-		}
-		if _, ok := runners[action.ID]; !ok {
-			t.Errorf("paletteAvailable(%q) = true but dispatch has no runner for it (and it is not the help special-case)", action.ID)
-		}
+	discover := func(context.Context) ([]views.TrackCandidate, error) { return nil, nil }
+	identify := func(context.Context, string, views.TrackRoot, string) (provider.Identity, error) {
+		return provider.Identity{}, nil
+	}
+	variants := []struct {
+		name            string
+		model           Model
+		wantAddAdmitted bool
+	}{
+		{name: "add flow unavailable", model: newTestModel(&fakeData{}), wantAddAdmitted: false},
+		{
+			name: "add flow wired",
+			model: New(Config{
+				Data:         &fakeData{},
+				StartService: func() error { return nil },
+				Discover:     discover,
+				Identify:     identify,
+			}),
+			wantAddAdmitted: true,
+		},
+	}
+	for _, tc := range variants {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.model.paletteAvailable("add-project"); got != tc.wantAddAdmitted {
+				t.Errorf("paletteAvailable(%q) = %v, want %v for this wiring", "add-project", got, tc.wantAddAdmitted)
+			}
+			runners := tc.model.runners()
+			for _, action := range actions.Registry() {
+				if !tc.model.paletteAvailable(action.ID) {
+					continue
+				}
+				if action.ID == "help" {
+					continue // dispatch's one non-runner special case
+				}
+				if _, ok := runners[action.ID]; !ok {
+					t.Errorf("paletteAvailable(%q) = true but dispatch has no runner for it (and it is not the help special-case)", action.ID)
+				}
+			}
+		})
 	}
 }
 
