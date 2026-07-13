@@ -1278,29 +1278,61 @@ func TestNewStickyReplacesOldSticky(t *testing.T) {
 	}
 }
 
-// TestStackFrameFitsBothToastLines pins the layout-honesty fix: a pushed
-// screen fills stackBodyHeight, and the header above it absorbs up to two
-// toast lines. With both slots full the composed frame must stay within the
-// terminal height, or the footer is pushed off-screen. A fixed-height stub
-// screen fills its whole budget deterministically (a real Browser windows
-// its content and may under-fill), so this isolates the root's own chrome
-// reservation.
-func TestStackFrameFitsBothToastLines(t *testing.T) {
+// TestStackFrameExactFillAtEveryToastOccupancy pins the pushed-screen chrome
+// reservation EXACTLY, in both directions. A fixed-height stub screen fills
+// its whole stackBodyHeight budget deterministically (a real Browser windows
+// its content and may under-fill), so the composed frame's line count is a
+// pure function of the reservation — no non-determinism, so every occupancy
+// gets an exact count, never a loose `<=`.
+//
+// The frame is header + breadcrumb + screen + footer joined by three
+// blank-line separators, so its line count is headerLines + screenLines + 5
+// (breadcrumb 1 + footer 1 + 3 separators). screenLines is stackBodyHeight()
+// = height - 10 (well above the floor at height 40). The header block is 1
+// line bare, 3 with one toast (status + blank + line), 5 with two (status +
+// blank + sticky + blank + info). So the total is height-4 / height-2 /
+// height for zero / one / two toasts — the reservation holds room for the
+// two-line max, so fewer toasts leave the frame short (blank rows at the
+// bottom), and full occupancy fills the terminal exactly. Asserting `==`
+// (not `<=`) at the max is what makes an OVER-reservation regression — a
+// screen budget one too small, so the frame never reaches the bottom — fail
+// here rather than pass unseen.
+func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 	t.Parallel()
 	const height = 40
-	m := newTestModel(&fakeData{status: readyStatus()})
-	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
-	m.status = readyStatus()
-	m = m.pushScreen(fixedHeightScreen{title: "stub"})
-	m.pushStickyToast("save failed — your edit is kept at /scratch/x.md")
-	m.pushToast("path: /home/u/x.md")
-
-	body := plain(m.View().Content)
-	if lineCount := strings.Count(body, "\n") + 1; lineCount > height {
-		t.Errorf("stack frame with two toast lines is %d lines, want <= %d (footer pushed off-screen)", lineCount, height)
+	tests := []struct {
+		name      string
+		sticky    string
+		info      string
+		wantLines int
+	}{
+		{name: "zero toasts", wantLines: height - 4},
+		{name: "info only", info: "path: /home/u/x.md", wantLines: height - 2},
+		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md", wantLines: height - 2},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
 	}
-	if want := plain(m.footer()); want != "" && !strings.Contains(body, want) {
-		t.Errorf("stack footer missing from the composed frame — clipped off the bottom:\n%s", body)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{status: readyStatus()})
+			m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+			m.status = readyStatus()
+			m = m.pushScreen(fixedHeightScreen{title: "stub"})
+			if testCase.sticky != "" {
+				m.pushStickyToast(testCase.sticky)
+			}
+			if testCase.info != "" {
+				m.pushToast(testCase.info)
+			}
+
+			body := plain(m.View().Content)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
+				t.Errorf("stack frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, testCase.wantLines)
+			}
+			if want := plain(m.footer()); want == "" || !strings.Contains(body, want) {
+				t.Errorf("stack footer missing from the composed frame:\n%s", body)
+			}
+		})
 	}
 }
 
