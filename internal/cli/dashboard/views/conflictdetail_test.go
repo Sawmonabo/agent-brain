@@ -387,8 +387,10 @@ func TestConflictDetailResolvesCollisionByLocalTargetUnit(t *testing.T) {
 // registry does not know, which LocalTarget still prefix-matches (it never
 // consults the registry) but memoryfs.List rejects — the detail renders the
 // exact "cannot read this project's memories" notice over the still-visible
-// metadata, resolves to no memory (so read/edit strike), and offers no action.
-// Honest degradation, distinct from both the untracked and file-missing notices.
+// metadata, resolves to no memory (so read/edit strike), and offers no action —
+// including h: an errored listing has resolved nothing, so history would push
+// blind. Honest degradation, distinct from both the untracked and file-missing
+// notices, and NOT the enrolled-but-deleted state (which does keep h).
 func TestConflictDetailListErrorShowsNotice(t *testing.T) {
 	t.Parallel()
 	registry := browserFixtureRegistry(t)
@@ -399,6 +401,7 @@ func TestConflictDetailListErrorShowsNotice(t *testing.T) {
 		Registry: registry,
 		ReadBody: memoryfs.ReadBody,
 		Styles:   theme.Default(true),
+		Data:     &fakeHistoryData{},
 	})
 
 	if _, ok := detail.Memory(); ok {
@@ -414,12 +417,21 @@ func TestConflictDetailListErrorShowsNotice(t *testing.T) {
 			t.Errorf("view missing metadata %q; got:\n%s", want, body)
 		}
 	}
-	// Nothing to read or edit: e and enter are inert, esc still pops.
+	// Nothing to read, edit, or browse history. h is struck one notch wider than
+	// read/edit — on resolution, not mapping — so it is pinned here distinctly:
+	// a list error is NOT the enrolled-but-deleted state, so h must strike, not
+	// push blind over a folder whose listing failed.
+	if detail.HistoryAvailable() {
+		t.Error("HistoryAvailable() true over a list-error record, want false (listing failed — nothing resolved)")
+	}
 	if _, cmd := detail.Update(key("e")); cmd != nil {
 		t.Errorf("e on a list-error detail produced %#v, want nil", drain(cmd))
 	}
 	if _, cmd := detail.Update(key("enter")); cmd != nil {
 		t.Errorf("enter on a list-error detail produced %#v, want nil", drain(cmd))
+	}
+	if _, cmd := detail.Update(key("h")); cmd != nil {
+		t.Errorf("h on a list-error detail produced %#v, want nil (no blind history push)", drain(cmd))
 	}
 	_, cmd := detail.Update(key("esc"))
 	if msgs := drain(cmd); len(msgs) != 1 {
