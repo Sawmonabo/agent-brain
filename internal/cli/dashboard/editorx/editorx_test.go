@@ -80,6 +80,21 @@ func TestResolvePrecedence(t *testing.T) {
 			env:      map[string]string{"VISUAL": "", "EDITOR": ""},
 			wantErr:  editorx.ErrNoEditor,
 		},
+		{
+			// Non-empty but whitespace-only survives the emptiness guard and
+			// parses to zero words — the zero-words branch must fall through
+			// to the next source exactly like an unset one.
+			name:     "command of only whitespace parses to zero words, falls through to VISUAL",
+			settings: config.EditorSettings{Command: "   ", InTerminal: true},
+			env:      map[string]string{"VISUAL": "code --wait"},
+			wantArgv: []string{"code", "--wait"},
+		},
+		{
+			name:     "in_terminal false is carried through resolution",
+			settings: config.EditorSettings{Command: "cursor --wait", InTerminal: false},
+			env:      map[string]string{},
+			wantArgv: []string{"cursor", "--wait"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,20 +169,41 @@ func TestResolveQuoting(t *testing.T) {
 	}
 }
 
-// TestResolvePropagatesEditorCommandParseErrors proves a malformed
-// settings.Command surfaces its parse error immediately rather than being
-// silently skipped in favor of $VISUAL/$EDITOR — a bad quote in
-// editor.command is a configuration mistake worth surfacing distinctly
-// from "nothing configured".
+// TestResolvePropagatesEditorCommandParseErrors proves a malformed source
+// surfaces its parse error immediately rather than being silently skipped
+// in favor of a lower-precedence source — a bad quote in editor.command or
+// $VISUAL is a configuration mistake worth surfacing distinctly from
+// "nothing configured". Pinned per source so the halt-don't-mask behavior
+// cannot silently diverge between the config and env paths.
 func TestResolvePropagatesEditorCommandParseErrors(t *testing.T) {
 	t.Parallel()
-	settings := config.EditorSettings{Command: `"unterminated`, InTerminal: true}
-	_, err := editorx.Resolve(settings, fakeGetenv(map[string]string{"EDITOR": "vim"}))
-	if err == nil {
-		t.Fatal("Resolve() error = nil, want a parse error for malformed quoting")
+	cases := []struct {
+		name     string
+		settings config.EditorSettings
+		env      map[string]string
+	}{
+		{
+			name:     "malformed settings.Command halts, never falls through to EDITOR",
+			settings: config.EditorSettings{Command: `"unterminated`, InTerminal: true},
+			env:      map[string]string{"EDITOR": "vim"},
+		},
+		{
+			name:     "malformed VISUAL halts, never falls through to EDITOR",
+			settings: config.EditorSettings{InTerminal: true},
+			env:      map[string]string{"VISUAL": `"unterminated`, "EDITOR": "vim"},
+		},
 	}
-	if errors.Is(err, editorx.ErrNoEditor) {
-		t.Fatalf("Resolve() error = %v, want a parse error distinct from ErrNoEditor", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := editorx.Resolve(tc.settings, fakeGetenv(tc.env))
+			if err == nil {
+				t.Fatal("Resolve() error = nil, want a parse error for malformed quoting")
+			}
+			if errors.Is(err, editorx.ErrNoEditor) {
+				t.Fatalf("Resolve() error = %v, want a parse error distinct from ErrNoEditor", err)
+			}
+		})
 	}
 }
 
