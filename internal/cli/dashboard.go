@@ -32,56 +32,65 @@ func newDashboardCmd() *cobra.Command {
 			"the equivalents are `agent-brain status --json` and `agent-brain projects --json`.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !isInteractiveTTY(cmd) {
-				return errors.New("dashboard requires an interactive terminal (for scripting use `agent-brain status --json` or `agent-brain projects --json`)")
-			}
-			client, err := newAPIClient()
-			if err != nil {
-				return err
-			}
-			binaryPath, err := resolveBinary()
-			if err != nil {
-				return err
-			}
-			controller, err := service.NewController(binaryPath)
-			if err != nil {
-				return err
-			}
-
-			model := dashboard.New(dashboard.Config{
-				Data:     dashboard.NewData(client, offlineDoctorRunner()),
-				Discover: dashboardDiscover(),
-				Identify: dashboardIdentify(),
-				// The start offer only appears on the daemon-down screen. A
-				// service that probes as already running there means a daemon
-				// that is up-but-unresponsive or crash-looping — starting
-				// cannot help, so name the next move instead of relaying the
-				// sentinel as a bare "start failed: service already running".
-				StartService: func() error {
-					err := controller.Start()
-					if errors.Is(err, service.ErrAlreadyRunning) {
-						return errors.New("service already running but the daemon is not responding — check `agent-brain service logs`")
-					}
-					return err
-				},
-			})
-			program := tea.NewProgram(
-				model,
-				tea.WithContext(cmd.Context()),
-				tea.WithInput(cmd.InOrStdin()),
-				tea.WithOutput(cmd.OutOrStdout()),
-			)
-			if _, err := program.Run(); err != nil {
-				// A context-cancelled run (external signal) is a clean user exit,
-				// not a CLI failure to report as exit code 1.
-				if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
-					return nil
-				}
-				return err
-			}
-			return nil
+			return launchHub(cmd)
 		},
 	}
+}
+
+// launchHub builds and runs the bubbletea hub program: `agent-brain
+// dashboard`'s own body (spec §7), and the bare root's initialized+TTY path
+// (spec §1; ADR 20 decision 1) both call it, so the two entry points can
+// never diverge — including this same TTY refusal, which the bare root's
+// initialized+non-TTY case relies on verbatim rather than duplicating.
+func launchHub(cmd *cobra.Command) error {
+	if !isInteractiveTTY(cmd) {
+		return errors.New("dashboard requires an interactive terminal (for scripting use `agent-brain status --json` or `agent-brain projects --json`)")
+	}
+	client, err := newAPIClient()
+	if err != nil {
+		return err
+	}
+	binaryPath, err := resolveBinary()
+	if err != nil {
+		return err
+	}
+	controller, err := service.NewController(binaryPath)
+	if err != nil {
+		return err
+	}
+
+	model := dashboard.New(dashboard.Config{
+		Data:     dashboard.NewData(client, offlineDoctorRunner()),
+		Discover: dashboardDiscover(),
+		Identify: dashboardIdentify(),
+		// The start offer only appears on the daemon-down screen. A
+		// service that probes as already running there means a daemon
+		// that is up-but-unresponsive or crash-looping — starting
+		// cannot help, so name the next move instead of relaying the
+		// sentinel as a bare "start failed: service already running".
+		StartService: func() error {
+			err := controller.Start()
+			if errors.Is(err, service.ErrAlreadyRunning) {
+				return errors.New("service already running but the daemon is not responding — check `agent-brain service logs`")
+			}
+			return err
+		},
+	})
+	program := tea.NewProgram(
+		model,
+		tea.WithContext(cmd.Context()),
+		tea.WithInput(cmd.InOrStdin()),
+		tea.WithOutput(cmd.OutOrStdout()),
+	)
+	if _, err := program.Run(); err != nil {
+		// A context-cancelled run (external signal) is a clean user exit,
+		// not a CLI failure to report as exit code 1.
+		if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // offlineDoctorRunner assembles the full doctor.Deps (the same registry/gh

@@ -85,6 +85,37 @@ func newInitCmd() *cobra.Command {
 	return cmd
 }
 
+// runInteractiveInitFlow runs init's full flow with every decision left at
+// its interactive default — the bare hub's uninitialized+human-TTY path
+// (spec §1; ADR 20 decision 1) calls this so a from-hub first run asks the
+// identical questions unflagged `agent-brain init` would: nonInteractive
+// and both key-source flags stay false (state's zero value), so
+// resolveKeysetDecision's interactive picker decides generate vs import;
+// repoName is defaultRepoName; skipService stays false (install the
+// service); enrollMode stays "" (the interactive enrollment picker,
+// wireEnrollmentCallbacks below). newInitCmd's RunE keeps its own
+// flag-driven construction of initState unchanged alongside this — the two
+// are independent callers of the same underlying steps (gh client,
+// wireEnrollmentCallbacks, runInit), one fed by flags and one fed by these
+// fixed defaults, never one delegating to the other.
+func runInteractiveInitFlow(cmd *cobra.Command) error {
+	gh, err := ghx.NewClient()
+	if err != nil {
+		return err
+	}
+
+	accessible := isAccessible()
+
+	state := &initState{
+		out:      cmd.OutOrStdout(),
+		repoName: defaultRepoName,
+		gh:       gh,
+	}
+	wireEnrollmentCallbacks(state, accessible)
+
+	return runInit(cmd.Context(), state, accessible)
+}
+
 // runInit runs every step in order, with two huh-only decision points
 // interleaved: resolveKeysetDecision (before stepKeyset, only when the
 // keyset is missing, undetermined by flags, and we're interactive) and

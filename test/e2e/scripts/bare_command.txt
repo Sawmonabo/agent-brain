@@ -1,0 +1,35 @@
+# bare_command.txt — bare `agent-brain` as the hub entry point (spec §1;
+# ADR 20 decision 1). testscript never gives a subprocess a controlling TTY,
+# so every case here is a non-TTY case; the TTY+agent distinction on a human
+# terminal is pinned by TestDecideHubEntryMatrix (hub_test.go), not here.
+#
+# Every stderr pattern below is (?i): fang's DefaultErrorHandler renders a
+# returned error through a style whose Transform title-cases the FIRST word
+# of the message (charm.land/fang/v2's titleFirstWord) and appends a
+# trailing period — a cosmetic, framework-wide rendering detail applied to
+# every command's error, not something this feature controls — so
+# "agent-brain is not initialized" prints as "Agent-Brain is not
+# initialized.".
+
+# Bare command on an uninitialized, non-interactive machine: pointer, exit
+# non-zero, no prompt, no hang (spec §1; clig.dev TTY rule).
+! exec agent-brain
+stderr '(?i)agent-brain is not initialized'
+stderr 'run: agent-brain init'
+
+# Agent fingerprint forces the same pointer (testscript has no TTY either
+# way; the TTY+agent distinction is pinned by the unit matrix).
+env CLAUDECODE=1
+! exec agent-brain
+stderr '(?i)agent-brain is not initialized'
+env CLAUDECODE=
+
+# A typo must stay an unknown-command error, never a TUI.
+! exec agent-brain nonsense
+stderr '(?i)unknown command'
+
+# Initialized machine (provision non-interactively), still non-TTY: the
+# dashboard's interactive-terminal refusal, naming the scriptable equivalents.
+exec agent-brain init --non-interactive --generate-key --skip-service --enroll none
+! exec agent-brain
+stderr '(?i)requires an interactive terminal'

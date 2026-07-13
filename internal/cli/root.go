@@ -15,6 +15,14 @@ func Root() *cobra.Command {
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Args + RunE make the bare command the hub entry point (spec §1;
+		// ADR 20 decision 1) instead of cobra's default help-and-exit-0.
+		// NoArgs still leaves a mistyped subcommand failing with cobra's own
+		// unknown-command error (NoArgs produces that exact message itself
+		// when Find resolves no subcommand match back to root) — never
+		// routed into runHub.
+		Args: cobra.NoArgs,
+		RunE: runHub,
 	}
 	root.AddCommand(
 		newGitCleanCmd(),
