@@ -984,6 +984,167 @@ func TestBrowserTitleIsFolder(t *testing.T) {
 	}
 }
 
+// TestBrowserFlowKeysEmitRequests pins the browser's half of the edit flow
+// (spec §5): e/r/d emit their request message carrying the memory under the
+// cursor — proved on the SECOND row, so the emission tracks the cursor, not
+// just the top — and n emits the new-request with the folder, its units, and
+// the cursor row's provider as the placement hint. The keys only emit; the
+// root owns every gate (class, editor, session) and every modal.
+func TestBrowserFlowKeysEmitRequests(t *testing.T) {
+	t.Parallel()
+	newFlowBrowser := func(t *testing.T) (*Browser, []api.UnitInfo) {
+		t.Helper()
+		registry := browserFixtureRegistry(t)
+		dir := t.TempDir()
+		base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+		writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base.Add(time.Hour))
+		writeBrowserFile(t, dir, "zulu.md", "---\nname: Zulu\n---\n", base)
+		units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+		browser := NewBrowser(BrowserDeps{
+			Registry: registry,
+			Units:    units,
+			Folder:   "acme",
+			Now:      base,
+			ReadBody: fakeReadBody(nil),
+			List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		})
+		// Newest-first default puts Alpha on top; move to Zulu so the
+		// emitted memory proves cursor tracking.
+		next, _ := browser.Update(key("down"))
+		return next.(*Browser), units
+	}
+	selectedRepoPath := func(t *testing.T, msg tea.Msg) string {
+		t.Helper()
+		switch request := msg.(type) {
+		case EditRequestMsg:
+			return request.Memory.RepoPath
+		case RenameRequestMsg:
+			return request.Memory.RepoPath
+		case DeleteRequestMsg:
+			return request.Memory.RepoPath
+		default:
+			t.Fatalf("unexpected message %#v", msg)
+			return ""
+		}
+	}
+
+	for _, keyName := range []string{"e", "r", "d"} {
+		t.Run(keyName+" carries the selected memory", func(t *testing.T) {
+			t.Parallel()
+			browser, _ := newFlowBrowser(t)
+			_, cmd := browser.Update(key(keyName))
+			if cmd == nil {
+				t.Fatalf("%s on a selected row produced no Cmd", keyName)
+			}
+			if got := selectedRepoPath(t, cmd()); got != "claude/zulu.md" {
+				t.Errorf("%s emitted for %q, want the selected %q", keyName, got, "claude/zulu.md")
+			}
+		})
+	}
+
+	t.Run("n carries folder, units, and the selection's provider", func(t *testing.T) {
+		t.Parallel()
+		browser, units := newFlowBrowser(t)
+		_, cmd := browser.Update(key("n"))
+		if cmd == nil {
+			t.Fatal("n produced no Cmd")
+		}
+		request, ok := cmd().(NewRequestMsg)
+		if !ok {
+			t.Fatalf("n produced %#v, want NewRequestMsg", cmd())
+		}
+		if request.Folder != "acme" || len(request.Units) != len(units) || request.Provider != "claude" {
+			t.Errorf("NewRequestMsg = %+v, want folder acme, the browser's units, provider claude", request)
+		}
+	})
+
+	t.Run("e r d inert on an empty browser, n still emits", func(t *testing.T) {
+		t.Parallel()
+		browser := NewBrowser(BrowserDeps{
+			Folder:   "acme",
+			Now:      time.Now(),
+			ReadBody: fakeReadBody(nil),
+			List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+		})
+		for _, keyName := range []string{"e", "r", "d"} {
+			if _, cmd := browser.Update(key(keyName)); cmd != nil {
+				t.Errorf("%s on an empty browser produced a message: %#v", keyName, cmd())
+			}
+		}
+		_, cmd := browser.Update(key("n"))
+		if cmd == nil {
+			t.Fatal("n on an empty browser produced no Cmd; creating the first memory must work")
+		}
+		request, ok := cmd().(NewRequestMsg)
+		if !ok || request.Provider != "" {
+			t.Errorf("n emitted %#v, want NewRequestMsg with an empty provider hint", cmd())
+		}
+	})
+
+	t.Run("flow keys stay typable while filtering", func(t *testing.T) {
+		t.Parallel()
+		browser, _ := newFlowBrowser(t)
+		next, _ := browser.Update(key("/"))
+		browser = next.(*Browser)
+		for _, r := range "end" {
+			var cmd tea.Cmd
+			next, cmd = browser.Update(key(string(r)))
+			browser = next.(*Browser)
+			if cmd == nil {
+				continue // textinput may or may not return a Cmd per keystroke
+			}
+			switch msg := cmd().(type) {
+			case EditRequestMsg, NewRequestMsg, RenameRequestMsg, DeleteRequestMsg:
+				t.Fatalf("typing %q into the filter emitted a flow request: %#v", r, msg)
+			}
+		}
+		if got := browser.filter.Value(); got != "end" {
+			t.Errorf("filter value = %q, want %q — e/n/d must reach the input as literal characters", got, "end")
+		}
+	})
+}
+
+// TestBrowserSelectedTracksCursor pins the root-facing selection accessor
+// the availability gates read.
+func TestBrowserSelectedTracksCursor(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base.Add(time.Hour))
+	writeBrowserFile(t, dir, "zulu.md", "---\nname: Zulu\n---\n", base)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	selected, ok := browser.Selected()
+	if !ok || selected.RepoPath != "claude/alpha.md" {
+		t.Errorf("Selected() = %+v, %v; want the top (newest) row alpha", selected, ok)
+	}
+	next, _ := browser.Update(key("down"))
+	browser = next.(*Browser)
+	selected, ok = browser.Selected()
+	if !ok || selected.RepoPath != "claude/zulu.md" {
+		t.Errorf("Selected() after down = %+v, %v; want zulu", selected, ok)
+	}
+
+	empty := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+	})
+	if _, ok := empty.Selected(); ok {
+		t.Error("Selected() on an empty browser reported a selection")
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

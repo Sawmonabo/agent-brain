@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -68,13 +69,24 @@ func launchHub(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// The edit flow's scratch dirs nest under the app's own cache dir
+	// (~/Library/Caches/agent-brain, ~/.cache/agent-brain) — outside every
+	// watched provider tree, per ADR 20 D2. UserCacheDir only fails when
+	// the home dir cannot resolve, which loadDashboardSettings' own
+	// DefaultPaths call has already ruled out by this line; treat a failure
+	// like any other composition error rather than inventing a fallback.
+	userCacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return err
+	}
 
 	model := dashboard.New(dashboard.Config{
-		Data:     dashboard.NewData(client, offlineDoctorRunner()),
-		Discover: dashboardDiscover(),
-		Identify: dashboardIdentify(),
-		Registry: deps.registry,
-		Settings: settings,
+		Data:      dashboard.NewData(client, offlineDoctorRunner()),
+		Discover:  dashboardDiscover(),
+		Identify:  dashboardIdentify(),
+		Registry:  deps.registry,
+		Settings:  settings,
+		CacheRoot: filepath.Join(userCacheDir, "agent-brain"),
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting

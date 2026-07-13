@@ -45,10 +45,18 @@ type DashboardKeymap struct {
 	// Browser* bindings own the keyboard while a memory browser Screen is
 	// on the root's navigation stack (Task 11+); Select above is reused
 	// verbatim for its list cursor, the same cross-context reuse ForModal
-	// already applies to the add picker.
+	// already applies to the add picker. Edit/New/Rename/Delete (Task 13,
+	// spec §5) only EMIT flow-request messages — every gate and modal is
+	// the root's — and stay typable literals while the in-browser filter
+	// owns input focus (updateFiltering forwards them to the text input
+	// before these bindings are ever matched).
 	BrowserRead   keybinding.Binding
 	BrowserOrder  keybinding.Binding
 	BrowserFilter keybinding.Binding
+	BrowserEdit   keybinding.Binding
+	BrowserNew    keybinding.Binding
+	BrowserRename keybinding.Binding
+	BrowserDelete keybinding.Binding
 	BrowserBack   keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
 	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
@@ -61,6 +69,7 @@ type DashboardKeymap struct {
 	ReadingFollow     keybinding.Binding
 	ReadingBacklinks  keybinding.Binding
 	ReadingCopyPath   keybinding.Binding
+	ReadingEdit       keybinding.Binding
 	ReadingBack       keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
@@ -89,11 +98,16 @@ var DashboardKeys = DashboardKeymap{
 	BrowserRead:       bindingFor("browser-read"),
 	BrowserOrder:      bindingFor("browser-order"),
 	BrowserFilter:     bindingFor("browser-filter"),
+	BrowserEdit:       bindingFor("browser-edit"),
+	BrowserNew:        bindingFor("browser-new"),
+	BrowserRename:     bindingFor("browser-rename"),
+	BrowserDelete:     bindingFor("browser-delete"),
 	BrowserBack:       bindingFor("browser-back"),
 	ReadingCycleLinks: bindingFor("reading-links"),
 	ReadingFollow:     bindingFor("reading-follow"),
 	ReadingBacklinks:  bindingFor("reading-backlinks"),
 	ReadingCopyPath:   bindingFor("reading-copy-path"),
+	ReadingEdit:       bindingFor("reading-edit"),
 	ReadingBack:       bindingFor("reading-back"),
 	Cancel:            keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
 	Accept:            keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),

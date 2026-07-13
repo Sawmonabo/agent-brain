@@ -105,15 +105,26 @@ var registry = []Action{
 	{ID: "browser-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeBrowser},
 	{ID: "browser-order", Title: "order", Keys: []string{"o"}, KeyHint: "o", Scope: ScopeBrowser},
 	{ID: "browser-filter", Title: "filter", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeBrowser},
+	// Edit-flow rows (Task 13, spec §5): all Mutates — they land provider-
+	// file writes — and, like every stack-scope row, runner-less: the views
+	// match the keys directly and emit flow-request messages the root
+	// handles. Their live availability (editor resolves, fact-class
+	// selection, no active handoff) is the root's available(id); the stack
+	// footer renders an unavailable row visibly struck rather than hidden.
+	{ID: "browser-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeBrowser, Mutates: true},
+	{ID: "browser-new", Title: "new", Keys: []string{"n"}, KeyHint: "n", Scope: ScopeBrowser, Mutates: true},
+	{ID: "browser-rename", Title: "rename", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeBrowser, Mutates: true},
+	{ID: "browser-delete", Title: "delete", Keys: []string{"d"}, KeyHint: "d", Scope: ScopeBrowser, Mutates: true},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
-	// ScopeReading rows (Task 12): the reading view's own in-screen keys,
-	// matched directly by Reading.updateKey. e-edit and h-history are
-	// deliberately absent — Tasks 13/14 declare those rows together with
-	// their screens and runners, so no dead row advertises an unbuilt key.
+	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
+	// view's own in-screen keys, matched directly by Reading.updateKey.
+	// h-history is deliberately absent — Task 14 declares that row together
+	// with its screen, so no dead row advertises an unbuilt key.
 	{ID: "reading-links", Title: "links", Keys: []string{"tab", "shift+tab"}, KeyHint: "tab", Scope: ScopeReading},
 	{ID: "reading-follow", Title: "follow", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeReading},
 	{ID: "reading-backlinks", Title: "backlinks", Keys: []string{"b"}, KeyHint: "b", Scope: ScopeReading},
 	{ID: "reading-copy-path", Title: "copy path", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeReading},
+	{ID: "reading-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeReading, Mutates: true},
 	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading},
 }
 

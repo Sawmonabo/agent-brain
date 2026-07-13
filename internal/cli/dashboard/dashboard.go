@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -118,10 +119,15 @@ type Config struct {
 	// Settings is the loaded config.toml (cli's own loadDashboardSettings,
 	// independent of buildTrackDeps — the cli root command composes it at
 	// the edge, same as Registry above). buildBrowserDeps reads
-	// Settings.Lint.StaleAfterDays; a later task's $EDITOR choice
-	// (Settings.Editor) needs no further change to this constructor's
-	// signature either.
+	// Settings.Lint.StaleAfterDays; the edit flow reads Settings.Editor
+	// (editorx.Resolve's first source).
 	Settings config.Settings
+	// CacheRoot is where the edit flow creates its per-session scratch
+	// directories (editorx.NewScratchDir) — the cli root command passes an
+	// os.UserCacheDir()-derived root, so the editor only ever sees a
+	// disposable copy outside every watched provider tree (ADR 20 D2).
+	// "" falls back to os.UserCacheDir() itself inside editorx.
+	CacheRoot string
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -188,6 +194,20 @@ type Model struct {
 	quitPrompt  bool
 	toast       *toast
 
+	// Edit-flow state (spec §5, editflow.go). All three pointer fields
+	// follow the toast field's replace-only discipline under Model's value
+	// semantics: a handler installs a fresh pointer (or nil) and never
+	// mutates through a stored one — flowModal, whose textinput must change
+	// per keystroke, goes copy-on-write (updateFlowModal). getenv and
+	// cacheRoot are the flow's two environment seams: os.Getenv and
+	// Config.CacheRoot in production, scripted in tests so a developer
+	// machine's real $EDITOR can never leak into an assertion.
+	editing        *editSession
+	pendingCapture *pendingCapture
+	flowModal      *flowModal
+	getenv         func(string) string
+	cacheRoot      string
+
 	quitting bool
 }
 
@@ -199,6 +219,8 @@ func New(cfg Config) Model {
 		actions:      views.TrackActions{Discover: cfg.Discover, Identify: cfg.Identify},
 		registry:     cfg.Registry,
 		settings:     cfg.Settings,
+		getenv:       os.Getenv,
+		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
 		projects:     views.NewProjectsView(),
 	}
@@ -450,6 +472,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status, m.statusErr = msg.resp, msg.err
 		m.daemonDown = errors.Is(msg.err, api.ErrDaemonNotRunning)
+		// The capture wait resolves off the same poll that carries every
+		// other daemon fact — no dedicated timer (editflow.go).
+		m.checkPendingCapture()
 		return m, nil
 
 	case projectsMsg:
@@ -529,6 +554,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// is the one outcome the binding can promise.
 		m.pushToast("path: " + msg.Path)
 		return m, tea.SetClipboard(msg.Path)
+
+	case views.EditRequestMsg:
+		// The four flow-request messages follow the CopyPathMsg pattern:
+		// views emit, the root — the only holder of editor settings, the
+		// scratch cache root, ExecProcess, and the toast/modal chrome —
+		// runs the flow (editflow.go).
+		return m.startEditFlow(msg.Memory)
+
+	case views.NewRequestMsg:
+		return m.startNewFlow(msg)
+
+	case views.RenameRequestMsg:
+		return m.startRenameFlow(msg.Memory)
+
+	case views.DeleteRequestMsg:
+		return m.startDeleteFlow(msg.Memory), nil
+
+	case editorFinishedMsg:
+		return m.finishEdit(msg), nil
 
 	case views.PaletteChoiceMsg:
 		return m, m.dispatch(msg.ID)
@@ -614,6 +658,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// An open flow modal (the edit flow's name input / rename input /
+	// delete confirm, editflow.go) owns the keyboard before the stack it
+	// floats over: esc must abort the MODAL — consumed there — never fall
+	// through to pop the screen or open the quit prompt, and y/n must
+	// answer the confirm, never reach a screen binding that shares the key.
+	if m.flowModal != nil {
+		return m.updateFlowModal(msg)
+	}
+
 	// A pushed Screen owns the keyboard exactly the way a Projects modal
 	// does (the two states are mutually exclusive in practice: reaching
 	// enter-to-browse or a screen's own drill-in keys requires NOT being
@@ -622,7 +675,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// backs out of a screen instead of opening the quit prompt, and a
 	// screen's own keys are never shadowed by a global binding that
 	// happens to share the same key. See ScopeBrowser's registry rows
-	// (actions.go) and stackFooterBindings for the matching footer/help
+	// (actions.go) and stackFooterRows for the matching footer/help
 	// surface of this same priority.
 	if _, ok := m.stackTop(); ok {
 		return m.forwardToStack(msg)
@@ -688,11 +741,11 @@ func (m Model) quiesced() bool {
 // quiesceGate refuses — before it reaches ProjectsView.Update or any runner
 // — a bare-tab keypress that maps to a Mutates action while the daemon is
 // quiesced, toasting the same refusal dispatch uses for the palette path
-// (refuseIfQuiesced is the one function both call). It is scope-aware: a
-// Projects-scoped action's key is only a real refusal when the Projects tab
-// is actually active — off that tab the key was already a no-op, and
-// quiescing must not start toasting about something that was never going to
-// happen anyway.
+// (refuseIfQuiesced is the one function both call). It is scope-aware: an
+// action's key is only a real refusal when its scope is the surface the
+// key would actually reach — anywhere else the key was already a no-op,
+// and quiescing must not start toasting about something that was never
+// going to happen anyway (scopeActiveAtRoot).
 func (m *Model) quiesceGate(msg tea.KeyPressMsg) bool {
 	if !m.quiesced() {
 		return false
@@ -701,23 +754,47 @@ func (m *Model) quiesceGate(msg tea.KeyPressMsg) bool {
 		if !candidate.Mutates || !keybinding.Matches(msg, actions.Binding(candidate)) {
 			continue
 		}
-		if candidate.Scope == actions.ScopeProjects && m.active != tabProjects {
-			continue // dead key off the Projects tab; nothing to refuse
+		if !m.scopeActiveAtRoot(candidate.Scope) {
+			continue // dead key on this surface; nothing to refuse
 		}
 		return m.refuseIfQuiesced(candidate)
 	}
 	return false
 }
 
+// scopeActiveAtRoot reports whether scope's keys are live on the current
+// BARE-TAB surface. quiesceGate only ever runs with an empty navigation
+// stack — handleKey forwards every key to a pushed screen first — so the
+// stack scopes (Browser/Reading/History) are never live here: their
+// mutation keys (the edit flow's e/n/r/d, all Mutates) pressed on a bare
+// tab are dead keys, and their own quiesce refusal happens where the keys
+// are real, in the flow-request handlers (refuseFlowStart, editflow.go).
+func (m *Model) scopeActiveAtRoot(scope actions.Scope) bool {
+	switch scope {
+	case actions.ScopeGlobal:
+		return true
+	case actions.ScopeProjects:
+		return m.active == tabProjects
+	case actions.ScopeDoctor:
+		return m.active == tabDoctor
+	case actions.ScopeConflicts:
+		return m.active == tabConflicts
+	default:
+		return false
+	}
+}
+
 // refuseIfQuiesced toasts and refuses action if it Mutates and the daemon is
-// currently quiesced. It is the one place that decides a mutation is
-// refused — called from quiesceGate (a direct keypress) and dispatch (a
-// palette choice) alike, so the refusal itself cannot diverge between them.
+// currently quiesced. It decides the refusal for every registry-dispatched
+// mutation — quiesceGate (a direct keypress) and dispatch (a palette
+// choice) alike — while the flow-request handlers apply the identical
+// verdict through refuseFlowStart; all three share toastQuiesceRefusal
+// (editflow.go), so the wording cannot diverge between any of them.
 func (m *Model) refuseIfQuiesced(action actions.Action) bool {
 	if !action.Mutates || !m.quiesced() {
 		return false
 	}
-	m.pushToast(fmt.Sprintf("daemon quiesced until %s — retry after", m.status.QuiescedUntil.Format("15:04:05")))
+	m.toastQuiesceRefusal()
 	return true
 }
 
@@ -855,28 +932,68 @@ func (m Model) stackBodyHeight() int {
 	return 3
 }
 
-// stackFooterBindings renders the top stack screen's own scope, in
-// registry order, filtered to rows with a real key and currently available
-// (the same m.available every tab-level footerBindings honors). Unlike
-// footerBindings, ScopeGlobal is deliberately NOT included: a pushed Screen
-// intercepts every key before the global dispatch loop ever runs (handleKey
-// — the same modal-priority rule ProjectsView's own confirm/add flow
-// already establishes), so a global hint here would name a key the active
-// surface actually ignores.
-func (m Model) stackFooterBindings() []keybinding.Binding {
+// stackFooterRow is one advertised key on a pushed screen's footer.
+// disabled marks a row whose action cannot run right now — it renders
+// visibly struck rather than vanishing (stackFooterLine), the crush-style
+// honesty rule: the user must see that e exists and learn why it is dead
+// (the toast on pressing it says), never wonder whether the key exists at
+// all. Contrast footerBindings, which HIDES an unavailable row: at tab
+// level "unavailable" means not-built-yet (search until Task 15) or
+// unwired (add without closures) — surfaces where a struck row would
+// advertise something that may never work on this build — while a stack
+// row's gates (editor resolution, selection class, an active handoff,
+// quiesce) are all live, momentary state worth explaining.
+type stackFooterRow struct {
+	binding  keybinding.Binding
+	disabled bool
+}
+
+// stackFooterRows lists the top stack screen's own scope, in registry
+// order, every row with a real key — available or not (see stackFooterRow).
+// A Mutates row additionally greys while the daemon is quiesced (spec §15's
+// grey-out, matching the refusal its request handler would answer with).
+// Unlike footerBindings, ScopeGlobal is deliberately NOT included: a pushed
+// Screen intercepts every key before the global dispatch loop ever runs
+// (handleKey — the same modal-priority rule ProjectsView's own confirm/add
+// flow already establishes), so a global hint here would name a key the
+// active surface actually ignores.
+func (m Model) stackFooterRows() []stackFooterRow {
 	top, ok := m.stackTop()
 	if !ok {
 		return nil
 	}
 	scope := m.stackScope(top)
-	var bindings []keybinding.Binding
+	var rows []stackFooterRow
 	for _, action := range actions.Registry() {
-		if len(action.Keys) == 0 || action.Scope != scope || !m.available(action.ID) {
+		if len(action.Keys) == 0 || action.Scope != scope {
 			continue
 		}
-		bindings = append(bindings, actions.Binding(action))
+		disabled := !m.available(action.ID) || (action.Mutates && m.quiesced())
+		rows = append(rows, stackFooterRow{binding: actions.Binding(action), disabled: disabled})
 	}
-	return bindings
+	return rows
+}
+
+// stackFooterLine renders stackFooterRows in views.HelpLine's exact "key
+// desc · key desc" shape, but styled per row: enabled rows dim (the whole
+// footer's usual treatment), disabled rows dim + struck through — the
+// visible half of the availability gate. Segments are styled individually
+// because lipgloss terminates each Render with a reset, so one outer
+// Dim.Render over a line containing an inner strikethrough render would
+// lose the dim for everything after the inner reset.
+func (m Model) stackFooterLine() string {
+	rows := m.stackFooterRows()
+	segments := make([]string, len(rows))
+	for i, row := range rows {
+		help := row.binding.Help()
+		segment := help.Key + " " + help.Desc
+		if row.disabled {
+			segments[i] = m.styles.Dim.Strikethrough(true).Render(segment)
+		} else {
+			segments[i] = m.styles.Dim.Render(segment)
+		}
+	}
+	return strings.Join(segments, m.styles.Dim.Render(" · "))
 }
 
 // buildBrowserDeps assembles a views.BrowserDeps for folder from the root's
@@ -952,7 +1069,7 @@ func (m *Model) dispatch(id string) tea.Cmd {
 }
 
 // available reports whether action id can actually do something right now.
-// It drives the footer (footerBindings, stackFooterBindings) and dispatch's
+// It drives the footer (footerBindings, stackFooterRows) and dispatch's
 // own pre-run gate — NOT the palette, which uses the stricter
 // paletteAvailable below. switch-tabs and select are structural navigation
 // handled by dedicated key-routing paths in handleKey rather than a runner
@@ -965,7 +1082,10 @@ func (m *Model) dispatch(id string) tea.Cmd {
 // match their bindings directly (see actions.go's row comments), so
 // dispatch never reaches any of them either, and they stay unconditionally
 // available so the Projects, browser, and reading footers keep naming
-// them. add-project
+// them — except the edit-flow rows, whose availability is the live gate
+// flowAvailable computes (editor resolves ∧ fact-class selection ∧ no
+// active handoff, editflow.go): false renders them struck in the stack
+// footer, never hidden. add-project
 // additionally needs both track closures wired (the existing AddAvailable
 // contract, unchanged by this task); every other action is available
 // exactly when it has a registered runner — the mechanism that keeps a
@@ -977,6 +1097,8 @@ func (m *Model) available(id string) bool {
 		"open-browser", "browser-read", "browser-order", "browser-filter", "browser-back",
 		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-back":
 		return true
+	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit":
+		return m.flowAvailable(id)
 	case "add-project":
 		return m.actions.AddAvailable()
 	default:
@@ -1128,7 +1250,9 @@ func (m Model) tabBar() string {
 }
 
 // footer advertises exactly the keys that dispatch on the active surface:
-// the quit prompt while it owns the keyboard, the active Projects modal's
+// the quit prompt or an edit-flow modal while one owns the keyboard (both
+// single-line footer states — the flow modal's whole chrome fits the slot
+// this budget already reserves, editflow.go), the active Projects modal's
 // live subset while it owns the keyboard (unchanged — a modal is an input-
 // owned state machine, not a set of dispatchable actions), the top of the
 // navigation stack's own scope while a screen is pushed, or otherwise the
@@ -1139,12 +1263,14 @@ func (m Model) footer() string {
 	switch {
 	case m.quitPrompt:
 		return m.styles.Warn.Render("quit agent-brain? (y/n)")
+	case m.flowModal != nil:
+		return m.flowModalFooterLine()
 	case m.projects.ModalOpen():
 		bindings := views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
 		return m.styles.Dim.Render(views.HelpLine(bindings))
 	default:
 		if _, ok := m.stackTop(); ok {
-			return m.styles.Dim.Render(views.HelpLine(m.stackFooterBindings()))
+			return m.stackFooterLine()
 		}
 		return m.styles.Dim.Render(views.HelpLine(m.footerBindings()))
 	}

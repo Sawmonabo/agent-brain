@@ -759,4 +759,28 @@ func TestReadingViewportHalfPageKeys(t *testing.T) {
 	}
 }
 
+// TestReadingEditKeyEmitsRequest pins the reading view's half of spec §5's
+// e: it emits EditRequestMsg for the memory it renders — the root owns the
+// class/editor/session gates and the handoff itself. Memory() is the
+// root-facing accessor those availability gates read.
+func TestReadingEditKeyEmitsRequest(t *testing.T) {
+	t.Parallel()
+	reading := newReadingFixture(t, nil)
+
+	_, cmd := reading.Update(key("e"))
+	if cmd == nil {
+		t.Fatal("e produced no Cmd")
+	}
+	request, ok := cmd().(EditRequestMsg)
+	if !ok {
+		t.Fatalf("e produced %#v, want EditRequestMsg", cmd())
+	}
+	if request.Memory.RepoPath != "claude/alpha.md" {
+		t.Errorf("EditRequestMsg carries %q, want the open memory %q", request.Memory.RepoPath, "claude/alpha.md")
+	}
+	if got := reading.Memory().RepoPath; got != "claude/alpha.md" {
+		t.Errorf("Memory() = %q, want %q", got, "claude/alpha.md")
+	}
+}
+
 var _ Screen = (*Reading)(nil)

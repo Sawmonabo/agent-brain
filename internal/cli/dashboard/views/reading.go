@@ -153,6 +153,15 @@ func (r *Reading) Title() string {
 	return r.deps.Memory.Name
 }
 
+// Memory reports the memory this screen renders — the browser-listing
+// snapshot it was opened from. Exported for the root's flow-availability
+// gates (fact-class ∧ …), outside the Screen interface for the same reason
+// as Browser.Selected: the root reaches the concrete type, the stack
+// contract stays Update/View/Title.
+func (r *Reading) Memory() memoryfs.Memory {
+	return r.deps.Memory
+}
+
 // SetStyles installs a new theme — root-propagated via applyStackTheme on a
 // background-color swap, outside the Screen interface for the same reason
 // as Browser.SetStyles. Styles feed only the header/panel chrome, which
@@ -240,6 +249,11 @@ func (r *Reading) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	case keybinding.Matches(msg, DashboardKeys.ReadingCopyPath):
 		path := r.deps.Memory.Path()
 		return r, func() tea.Msg { return CopyPathMsg{Path: path} }
+	case keybinding.Matches(msg, DashboardKeys.ReadingEdit):
+		// Emit-only, like the browser's e: the root owns the class/editor/
+		// session gates and the handoff (screen.go's EditRequestMsg doc).
+		memory := r.deps.Memory
+		return r, func() tea.Msg { return EditRequestMsg{Memory: memory} }
 	case msg.String() == "g":
 		r.viewport.GotoTop()
 		return r, nil

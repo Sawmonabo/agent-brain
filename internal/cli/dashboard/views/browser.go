@@ -297,11 +297,58 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		b.orderByRecency = !b.orderByRecency
 		b.cursor = clampCursor(b.cursor, len(b.visibleRows()))
 		return b, nil
+	case keybinding.Matches(msg, DashboardKeys.BrowserEdit):
+		return b, b.selectedRequest(func(memory memoryfs.Memory) tea.Msg { return EditRequestMsg{Memory: memory} })
+	case keybinding.Matches(msg, DashboardKeys.BrowserRename):
+		return b, b.selectedRequest(func(memory memoryfs.Memory) tea.Msg { return RenameRequestMsg{Memory: memory} })
+	case keybinding.Matches(msg, DashboardKeys.BrowserDelete):
+		return b, b.selectedRequest(func(memory memoryfs.Memory) tea.Msg { return DeleteRequestMsg{Memory: memory} })
+	case keybinding.Matches(msg, DashboardKeys.BrowserNew):
+		return b, b.newRequest()
 	case keybinding.Matches(msg, DashboardKeys.Select):
 		b.moveCursor(msg.String())
 		return b, nil
 	}
 	return b, nil
+}
+
+// Selected reports the memory under the cursor in the current visible
+// order, or ok=false with nothing to select (an empty project, or a filter
+// matching nothing). Exported for the root, which reads it two ways: the
+// flow-availability gates (fact-class ∧ …) and nothing else — it is not
+// part of the Screen interface, the same root-reaches-the-concrete-type
+// seam as SetStyles/SetRender.
+func (b *Browser) Selected() (memoryfs.Memory, bool) {
+	rows := b.visibleRows()
+	if len(rows) == 0 {
+		return memoryfs.Memory{}, false
+	}
+	return rows[b.cursor], true
+}
+
+// selectedRequest builds the Cmd that emits wrap's flow-request message for
+// the selected memory — e/r/d share it — or nil with no row selected. The
+// browser only ever emits; the root's handler owns every gate (class,
+// editor, session, quiesce) and the flow itself (screen.go's request-message
+// docs).
+func (b *Browser) selectedRequest(wrap func(memoryfs.Memory) tea.Msg) tea.Cmd {
+	selected, ok := b.Selected()
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg { return wrap(selected) }
+}
+
+// newRequest builds the Cmd that emits NewRequestMsg. Unlike e/r/d it needs
+// no selection — n on an empty project is exactly how its first memory gets
+// created — and it carries the cursor row's provider ("" with no rows) so
+// the root places the new file in the unit the user is actually looking at.
+func (b *Browser) newRequest() tea.Cmd {
+	request := NewRequestMsg{Folder: b.deps.Folder, Units: b.deps.Units}
+	if selected, ok := b.Selected(); ok {
+		request.Provider = selected.Provider
+	}
+	return func() tea.Msg { return request }
 }
 
 // openReading pushes the selected memory's reading view (spec §4's enter),

@@ -271,9 +271,10 @@ func TestBrowserRegistryRowsShape(t *testing.T) {
 // browser's enter-to-read row and the reading view's own in-screen keys
 // (ScopeReading). Same discipline as the browser rows above: none Mutates,
 // none has a root-level runner (direct view-level key routing), so they are
-// footer/help-only and absent from the palette. e-edit and h-history are
-// deliberately NOT here — Tasks 13/14 register those rows together with
-// their runners.
+// footer/help-only and absent from the palette. h-history is deliberately
+// NOT here — Task 14 registers that row together with its screen; the edit
+// flow's own rows (e/n/r/d, all Mutates) are pinned separately by
+// TestFlowRegistryRowsShape below.
 func TestReadingRegistryRowsShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -306,6 +307,54 @@ func TestReadingRegistryRowsShape(t *testing.T) {
 			}
 			if action.Mutates {
 				t.Error("Mutates = true, want false")
+			}
+			if action.Scope != testCase.scope {
+				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
+	}
+}
+
+// TestFlowRegistryRowsShape pins Task 13's registry additions: the edit
+// flow's mutation keys in the browser (e/n/r/d) and the reading view's e.
+// All Mutates — they land provider-file writes — which is what makes the
+// stack footer grey them while the daemon is quiesced (spec §15). Like
+// every other stack-scope row they have no root-level runner: the views
+// match the keys directly and emit flow-request messages the root handles.
+func TestFlowRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id    string
+		keys  []string
+		scope Scope
+	}{
+		{id: "browser-edit", keys: []string{"e"}, scope: ScopeBrowser},
+		{id: "browser-new", keys: []string{"n"}, scope: ScopeBrowser},
+		{id: "browser-rename", keys: []string{"r"}, scope: ScopeBrowser},
+		{id: "browser-delete", keys: []string{"d"}, scope: ScopeBrowser},
+		{id: "reading-edit", keys: []string{"e"}, scope: ScopeReading},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff(testCase.keys, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if !action.Mutates {
+				t.Error("Mutates = false, want true — the flow rows land provider-file writes")
 			}
 			if action.Scope != testCase.scope {
 				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)

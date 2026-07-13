@@ -4,6 +4,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
+	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
 // Screen is one drill-in surface on the root's navigation stack (spec §2):
@@ -53,6 +56,36 @@ type PopScreenMsg struct{}
 // a Cmd's result, exactly like Push/PopScreenMsg, so a pushed screen never
 // needs a reference to the root to explain itself.
 type ToastMsg struct{ Text string }
+
+// EditRequestMsg asks the root to run the $EDITOR handoff over Memory (spec
+// §5's e, from the browser or the reading view). Views only ever EMIT these
+// — produced as a Cmd's result, exactly like Push/PopScreenMsg — because the
+// flow itself is root property: it needs tea.ExecProcess, the loaded editor
+// settings, the scratch cache root, and the root's toast/modal chrome, none
+// of which a pushed screen holds. Every gate (fact-class, editor resolution,
+// one-session, quiesce) lives with the root's handler too, so the browser
+// and reading emitters can never disagree about what is refusable.
+type EditRequestMsg struct{ Memory memoryfs.Memory }
+
+// NewRequestMsg asks the root to start the new-memory flow (spec §5's n):
+// name input, provider skeleton, then the same handoff. It carries the
+// browser's folder and units — the root picks the receiving unit — plus the
+// provider group the browser cursor sat on as the placement hint ("" with
+// nothing selected), so pressing n while looking at a codex group creates a
+// codex memory, not whichever unit happens to be first.
+type NewRequestMsg struct {
+	Folder   string
+	Units    []api.UnitInfo
+	Provider string
+}
+
+// RenameRequestMsg asks the root to run the rename flow over Memory (spec
+// §5's r): prefilled name input → memoryfs.Rename. No editor involved.
+type RenameRequestMsg struct{ Memory memoryfs.Memory }
+
+// DeleteRequestMsg asks the root to run the delete flow over Memory (spec
+// §5's d): default-No confirm naming the file → memoryfs.Delete.
+type DeleteRequestMsg struct{ Memory memoryfs.Memory }
 
 // RefreshMsg is forwarded to the top screen on every root tick, in addition
 // to the root's own status/tab reload, so a drill-in surface stays live
