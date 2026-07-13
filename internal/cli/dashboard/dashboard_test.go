@@ -1313,6 +1313,55 @@ func TestBackgroundColorSwapsWhileBrowsing(t *testing.T) {
 	}
 }
 
+// TestApplyStackThemeInvalidatesPushedBrowserPreviewCache isolates a seam
+// the test above does not actually cover: it never calls View before the
+// first theme swap, so the preview cache is never warmed beforehand, and
+// the byte difference it asserts on can come entirely from the list
+// pane's own SetStyles-driven chrome — proving nothing about whether the
+// PREVIEW region specifically re-rendered. TestBrowserPreviewRenderIsCached
+// (views/browser_test.go) never calls SetRender at all. Deleting
+// SetRender's own `b.preview.valid = false` line left the entire
+// dashboard+views suite green, including both of those tests — proof
+// neither one covered it.
+//
+// Warms the cache with an initial renderer, then drives the real
+// applyStackTheme wiring (not a simulated call) with a distinctly marked
+// "sentinel" Render installed as the incoming theme's renderer, and
+// asserts the very next View contains the sentinel's output. That
+// requires BOTH that applyStackTheme actually propagated the new Render
+// func to this specific pushed *Browser AND that SetRender's own
+// invalidation cleared the cache so the next render re-runs it instead of
+// serving the pre-swap cached string — failing if either breaks.
+func TestApplyStackThemeInvalidatesPushedBrowserPreviewCache(t *testing.T) {
+	t.Parallel()
+	const sentinelMarker = "SENTINEL-RENDER-OUTPUT"
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "# Heading", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", Name: "Note", RepoPath: "claude/note.md"}}, nil
+		},
+		Render: func(md string, _ int) string { return "ORIGINAL:" + md },
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	warm := plain(browser.View(m.width, m.stackBodyHeight()))
+	if !strings.Contains(warm, "ORIGINAL:") {
+		t.Fatalf("setup: initial render did not go through the original Render func; got:\n%s", warm)
+	}
+
+	m.renderMarkdown = func(md string, _ int) string { return sentinelMarker + ":" + md }
+	m.applyStackTheme()
+
+	got := plain(browser.View(m.width, m.stackBodyHeight()))
+	if !strings.Contains(got, sentinelMarker) {
+		t.Errorf("pushed browser's preview was not re-rendered through the theme's newly installed Render func; got:\n%s", got)
+	}
+}
+
 // TestStackFooterAdvertisesScopedKeys pins the footer's scope switch: while
 // a screen is pushed, the footer must name exactly that screen's own keys
 // (ScopeBrowser's o/(/)/esc) and nothing from the tab level or
