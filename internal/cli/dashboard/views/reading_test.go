@@ -607,14 +607,14 @@ func TestReadingRenderIsCached(t *testing.T) {
 	}
 }
 
-// newHundredLineReading builds a Reading over the 100-line alpha body —
-// the shared fixture for the height and half-page assertions below —
-// optionally with the backlinks panel opened (alpha's two referrers: Beta
-// and Gamma).
-func newHundredLineReading(t *testing.T, backlinksOpen bool) *Reading {
+// newReadingWithBody builds a Reading over alpha with the given body,
+// optionally with the backlinks panel opened. Alpha's two referrers (Beta
+// and Gamma) come from the OTHER fixture bodies, so overriding alpha's own
+// body never changes the panel's three lines (title + 2 rows).
+func newReadingWithBody(t *testing.T, body string, backlinksOpen bool) *Reading {
 	t.Helper()
 	bodies := readingFixtureBodies()
-	bodies["claude/alpha.md"] = hundredLineBody()
+	bodies["claude/alpha.md"] = body
 	memories := readingFixtureMemories()
 	readBody := fakeReadBody(bodies)
 	reading := NewReading(ReadingDeps{
@@ -629,33 +629,50 @@ func newHundredLineReading(t *testing.T, backlinksOpen bool) *Reading {
 	return reading
 }
 
+// newHundredLineReading builds a Reading over the 100-line alpha body —
+// the shared fixture for the height and half-page assertions below —
+// optionally with the backlinks panel opened.
+func newHundredLineReading(t *testing.T, backlinksOpen bool) *Reading {
+	t.Helper()
+	return newReadingWithBody(t, hundredLineBody(), backlinksOpen)
+}
+
 // TestReadingViewFillsHeightExactlyAtAndAboveTheChromeFloor pins the height
 // contract in BOTH directions — never more than height lines, and never a
-// wasted row either. The viewport pads its content area to its full height,
-// so at or above the screen's honest chrome floor View renders EXACTLY
-// height lines. The floor is chrome+1: header line + one blank (2 lines)
-// with the panel closed, plus the panel's own lines and the ONE blank line
-// its "\n\n" separator opens when it is open — with this fixture's two
-// referrers the panel is 3 lines (title + 2 rows), so the open floor is
-// 2+3+1+1 = 7.
+// wasted row either. The viewport pads its content area to its full height
+// with space-FILLED lines (lipgloss width-aligns the height padding), which
+// survive View's trailing newline trim — so at or above the screen's honest
+// chrome floor View renders EXACTLY height lines for short bodies too, not
+// only ones that over-fill the viewport; the short-body rows pin that half.
+// The floor is chrome+1: header line + one blank (2 lines) with the panel
+// closed, plus the panel's own lines and the ONE blank line its "\n\n"
+// separator opens when it is open — with this fixture's two referrers the
+// panel is 3 lines (title + 2 rows), so the open floor is 2+3+1+1 = 7.
 func TestReadingViewFillsHeightExactlyAtAndAboveTheChromeFloor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
 		height        int
 		backlinksOpen bool
+		shortBody     bool
 	}{
-		{"panel closed, at the floor", 3, false},
-		{"panel closed, one above the floor", 4, false},
-		{"panel closed, roomy", 20, false},
-		{"panel open, at the floor", 7, true},
-		{"panel open, one above the floor", 8, true},
-		{"panel open, roomy", 20, true},
+		{"panel closed, at the floor", 3, false, false},
+		{"panel closed, one above the floor", 4, false, false},
+		{"panel closed, roomy", 20, false, false},
+		{"panel closed, roomy, short body", 20, false, true},
+		{"panel open, at the floor", 7, true, false},
+		{"panel open, one above the floor", 8, true, false},
+		{"panel open, roomy", 20, true, false},
+		{"panel open, roomy, short body", 20, true, true},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			reading := newHundredLineReading(t, testCase.backlinksOpen)
+			body := hundredLineBody()
+			if testCase.shortBody {
+				body = "short body line one\nshort body line two"
+			}
+			reading := newReadingWithBody(t, body, testCase.backlinksOpen)
 
 			got := reading.View(80, testCase.height)
 			if lineCount := strings.Count(got, "\n") + 1; lineCount != testCase.height {
