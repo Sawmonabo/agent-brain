@@ -199,8 +199,9 @@ func (e *Engine) markLive(ctx context.Context, pathspec string, versions []Histo
 // Guard order matters, and draws a hard line between "the caller asked for
 // something that doesn't exist" and "git itself failed". First, a
 // `rev-parse --verify --quiet` existence probe resolves blobRef via
-// gitx.RunStatus — exit code as data, never git's stderr text (message-
-// matching on git output is a recorded incident pattern in this repo) — and
+// gitx.RunStatus — exit code as data, never git's stderr text (git's
+// human-facing messages are not a stable interface: they shift across
+// versions and locales, so branching on them is a latent bug) — and
 // a non-zero exit is ErrHistoryNotFound: an ordinary, caller-facing outcome
 // (an unknown rev, or a path never tracked at that rev), not a server
 // failure. Only once existence is confirmed does the size probe run: it
