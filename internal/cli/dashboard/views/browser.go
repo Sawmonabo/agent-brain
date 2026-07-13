@@ -444,16 +444,29 @@ func (b *Browser) View(width, height int) string {
 // provider changes from the previous row — safe because visibleRows always
 // sorts provider-major) with a cursor marker, an optional ⚠ lint badge, a
 // truncated description, and a relative modified time.
-func (b *Browser) renderList(rows []memoryfs.Memory, _ int) string {
+//
+// height windows rows around the cursor (visibleWindow) so a project with
+// more memories than fit the pane never lets the cursor walk off-screen
+// (spec §3). The provider-transition tracking below runs fresh over just
+// the visible window, so the top visible row always gets a header naming
+// its provider — even if that repeats one that scrolled past several
+// screens up. A provider group that lies entirely outside the window (both
+// its rows and its header) simply is not shown; nothing tracks that
+// separately, so a header can scroll off exactly like any other row.
+func (b *Browser) renderList(rows []memoryfs.Memory, height int) string {
+	start, end := visibleWindow(b.cursor, len(rows), height)
+	rows = rows[start:end]
+
 	var lines []string
 	lastProvider := ""
 	for i, m := range rows {
+		row := start + i
 		if m.Provider != lastProvider {
 			lines = append(lines, b.deps.Styles.Header.Render(m.Provider))
 			lastProvider = m.Provider
 		}
 		marker := "  "
-		if i == b.cursor {
+		if row == b.cursor {
 			marker = "> "
 		}
 		badge := ""
@@ -463,12 +476,30 @@ func (b *Browser) renderList(rows []memoryfs.Memory, _ int) string {
 		line := fmt.Sprintf("%s%s%s — %s (%s)", marker, m.Name, badge,
 			b.deps.Styles.Dim.Render(truncate(m.Description, descriptionTruncateAt)),
 			relativeTime(m.ModTime, b.now))
-		if i == b.cursor {
+		if row == b.cursor {
 			line = b.deps.Styles.Selected.Render(line)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// visibleWindow returns the [start, end) bounds of a height-row slice of a
+// total-length list that keeps index cursor inside it, centering cursor
+// within the window when the full list overflows height and clamping both
+// ends to [0, total). height <= 0 or a list that already fits within it is
+// the identity window (the whole list — no scrolling needed).
+func visibleWindow(cursor, total, height int) (start, end int) {
+	if height <= 0 || total <= height {
+		return 0, total
+	}
+	start = max(cursor-height/2, 0)
+	end = start + height
+	if end > total {
+		end = total
+		start = end - height
+	}
+	return start, end
 }
 
 // renderPreview markdown-renders the selected memory's body through the

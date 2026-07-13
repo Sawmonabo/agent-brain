@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -634,6 +635,88 @@ func TestBrowserRefreshUpdatesRelativeTimeClock(t *testing.T) {
 	}
 	if !strings.Contains(later, "1h ago") {
 		t.Errorf("view missing the updated %q label after RefreshMsg advanced the clock; got:\n%s", "1h ago", later)
+	}
+}
+
+// TestVisibleWindowKeepsCursorInBounds pins visibleWindow's own math
+// directly: a table exercising the identity (no-scroll) case, both edges,
+// and the centered middle, independent of any rendering.
+func TestVisibleWindowKeepsCursorInBounds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                  string
+		cursor, total, height int
+		wantStart, wantEnd    int
+	}{
+		{"fits without scrolling", 5, 8, 10, 0, 8},
+		{"height <= 0 is unwindowed", 5, 30, 0, 0, 30},
+		{"cursor at top", 0, 30, 10, 0, 10},
+		{"cursor at bottom", 29, 30, 10, 20, 30},
+		{"cursor near bottom stays clamped", 25, 30, 10, 20, 30},
+		{"cursor centers mid-list", 15, 30, 10, 10, 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			start, end := visibleWindow(tt.cursor, tt.total, tt.height)
+			if start != tt.wantStart || end != tt.wantEnd {
+				t.Errorf("visibleWindow(%d, %d, %d) = (%d, %d), want (%d, %d)",
+					tt.cursor, tt.total, tt.height, start, end, tt.wantStart, tt.wantEnd)
+			}
+			if tt.cursor < start || tt.cursor >= end {
+				t.Errorf("visibleWindow(%d, %d, %d) = (%d, %d) excludes its own cursor",
+					tt.cursor, tt.total, tt.height, start, end)
+			}
+		})
+	}
+}
+
+// TestBrowserListWindowsAroundCursor pins M2 end-to-end: a project with
+// more memories than fit the pane must keep the cursor's own row visible
+// rather than let it walk off-screen. 30 memories at height 10 (five
+// windows' worth) — cursor at construction's default (0) must show the top
+// slice; walking it down to 25 must bring that row into view.
+func TestBrowserListWindowsAroundCursor(t *testing.T) {
+	t.Parallel()
+	const rowCount = 30
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	memories := make([]memoryfs.Memory, rowCount)
+	for i := range memories {
+		memories[i] = memoryfs.Memory{
+			Provider: "claude",
+			Name:     fmt.Sprintf("Memory %02d", i),
+			RepoPath: fmt.Sprintf("claude/memory-%02d.md", i),
+			// Descending ModTime so visibleRows's newest-first default
+			// sorts index i to row i directly, with no resort surprises.
+			ModTime: base.Add(time.Duration(rowCount-i) * time.Hour),
+		}
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memories, nil },
+	})
+
+	got := plain(browser.View(80, 10))
+	if !strings.Contains(got, "Memory 00") {
+		t.Errorf("cursor at 0: view missing the top row; got:\n%s", got)
+	}
+	if strings.Contains(got, "Memory 25") {
+		t.Errorf("cursor at 0: view already shows row 25; window did not start at the top; got:\n%s", got)
+	}
+
+	for range 25 {
+		next, _ := browser.Update(key("down"))
+		browser = next.(*Browser)
+	}
+
+	got = plain(browser.View(80, 10))
+	if !strings.Contains(got, "Memory 25") {
+		t.Errorf("cursor at 25: view missing the cursor's own row; got:\n%s", got)
+	}
+	if strings.Contains(got, "Memory 00") {
+		t.Errorf("cursor at 25: view still shows row 0; cursor was not kept visible; got:\n%s", got)
 	}
 }
 
