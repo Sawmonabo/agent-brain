@@ -127,6 +127,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	if !debounce.Stop() {
 		<-debounce.C
 	}
+	defer debounce.Stop()
 	debouncing := false
 
 	var pollC <-chan time.Time
@@ -139,13 +140,11 @@ func (m *Manager) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			debounce.Stop()
 			return nil
 
 		case event, ok := <-m.watcher.Events:
 			if !ok {
 				if ctx.Err() != nil {
-					debounce.Stop()
 					return nil // Close raced our own shutdown; orderly, not a death
 				}
 				return errors.New("watch: event stream closed")
@@ -172,7 +171,6 @@ func (m *Manager) Run(ctx context.Context) error {
 		case err, ok := <-m.watcher.Errors:
 			if !ok {
 				if ctx.Err() != nil {
-					debounce.Stop()
 					return nil // Close raced our own shutdown; orderly, not a death
 				}
 				return errors.New("watch: error stream closed")
