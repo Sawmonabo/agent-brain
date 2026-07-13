@@ -426,7 +426,7 @@ func (b *Browser) View(width, height int) string {
 		return strings.TrimRight(body.String(), "\n")
 	}
 
-	listContent := b.renderList(rows, height)
+	listContent := b.renderList(rows, b.listRowBudget(rows, height))
 	if width < previewMinWidth {
 		body.WriteString(listContent)
 		return strings.TrimRight(body.String(), "\n")
@@ -440,21 +440,61 @@ func (b *Browser) View(width, height int) string {
 	return strings.TrimRight(body.String(), "\n")
 }
 
+// listRowBudget computes how many rows renderList may window over so that
+// View's total rendered line count — title line + its trailing blank,
+// optionally the filter line + its own trailing blank, the windowed rows,
+// and however many provider-group header lines the visible window turns
+// out to include — never exceeds height.
+//
+// The header count is circular: it depends on which rows land in the
+// window, which depends on the row budget being computed here. Rather than
+// iterate to a fixed point, this reserves the worst case up front: no
+// contiguous window can show more provider-header transitions than there
+// are distinct providers in the full (unwindowed) listing, so subtracting
+// that count once is always sufficient to keep the total within height,
+// even though it is occasionally more conservative than the tightest
+// possible fit (a window touching only one or two of several providers
+// could have shown a couple more rows).
+func (b *Browser) listRowBudget(rows []memoryfs.Memory, height int) int {
+	chrome := 2 // title line + its trailing blank
+	if b.filtering || b.filter.Value() != "" {
+		chrome += 2 // filter line + its own trailing blank
+	}
+	budget := height - chrome - countDistinctProviders(rows)
+	// Always show at least the cursor's own row: a budget of zero would
+	// otherwise hit visibleWindow's "height <= 0" identity-window branch
+	// and show everything, which is the one outcome guaranteed to
+	// overflow an already-tight height rather than degrade gracefully.
+	return max(budget, 1)
+}
+
+// countDistinctProviders reports how many distinct Provider values appear
+// across rows — listRowBudget's worst-case bound on header lines any
+// window into rows could contain.
+func countDistinctProviders(rows []memoryfs.Memory) int {
+	seen := make(map[string]struct{})
+	for _, m := range rows {
+		seen[m.Provider] = struct{}{}
+	}
+	return len(seen)
+}
+
 // renderList renders rows grouped by provider (a header line whenever the
 // provider changes from the previous row — safe because visibleRows always
 // sorts provider-major) with a cursor marker, an optional ⚠ lint badge, a
 // truncated description, and a relative modified time.
 //
-// height windows rows around the cursor (visibleWindow) so a project with
-// more memories than fit the pane never lets the cursor walk off-screen
-// (spec §3). The provider-transition tracking below runs fresh over just
-// the visible window, so the top visible row always gets a header naming
-// its provider — even if that repeats one that scrolled past several
-// screens up. A provider group that lies entirely outside the window (both
-// its rows and its header) simply is not shown; nothing tracks that
-// separately, so a header can scroll off exactly like any other row.
-func (b *Browser) renderList(rows []memoryfs.Memory, height int) string {
-	start, end := visibleWindow(b.cursor, len(rows), height)
+// rowBudget (from listRowBudget) windows rows around the cursor
+// (visibleWindow) so a project with more memories than fit the pane never
+// lets the cursor walk off-screen (spec §3). The provider-transition
+// tracking below runs fresh over just the visible window, so the top
+// visible row always gets a header naming its provider — even if that
+// repeats one that scrolled past several screens up. A provider group that
+// lies entirely outside the window (both its rows and its header) simply
+// is not shown; nothing tracks that separately, so a header can scroll off
+// exactly like any other row.
+func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget int) string {
+	start, end := visibleWindow(b.cursor, len(rows), rowBudget)
 	rows = rows[start:end]
 
 	var lines []string

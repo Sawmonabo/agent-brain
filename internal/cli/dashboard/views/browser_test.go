@@ -720,6 +720,78 @@ func TestBrowserListWindowsAroundCursor(t *testing.T) {
 	}
 }
 
+// TestBrowserViewNeverExceedsHeightBudget pins the height contract: View
+// must never render more than height lines, no matter how much chrome (the
+// title line and its blank, the filter line and its blank when open, and
+// however many provider-group header lines the visible window happens to
+// include) it layers on top of the windowed list rows. Runs over a crowded,
+// three-provider fixture at several cursor positions — including both
+// ends of the list, where visibleWindow's clamping is most likely to
+// surface an off-by-one — with the filter both closed and open, since
+// opening it changes the chrome budget listRowBudget must account for.
+func TestBrowserViewNeverExceedsHeightBudget(t *testing.T) {
+	t.Parallel()
+	const rowCount = 30
+	const groupSize = 10
+	const height = 10
+	providerNames := []string{"claude", "codex", "gemini"}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	memories := make([]memoryfs.Memory, rowCount)
+	for i := range memories {
+		provider := providerNames[i/groupSize]
+		memories[i] = memoryfs.Memory{
+			Provider: provider,
+			Name:     fmt.Sprintf("Memory %02d", i),
+			RepoPath: fmt.Sprintf("%s/memory-%02d.md", provider, i),
+			// Descending ModTime so visibleRows's newest-first default
+			// sorts index i to row i directly, with no resort surprises.
+			ModTime: base.Add(time.Duration(rowCount-i) * time.Hour),
+		}
+	}
+
+	tests := []struct {
+		name      string
+		cursor    int
+		filtering bool
+	}{
+		{"top, filter closed", 0, false},
+		{"bottom, filter closed", rowCount - 1, false},
+		{"middle, filter closed", 15, false},
+		{"top, filter open", 0, true},
+		{"bottom, filter open", rowCount - 1, true},
+		{"middle, filter open", 15, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			browser := NewBrowser(BrowserDeps{
+				Folder:   "acme",
+				Now:      time.Now(),
+				ReadBody: fakeReadBody(nil),
+				List:     func() ([]memoryfs.Memory, error) { return memories, nil },
+			})
+			for range tt.cursor {
+				next, _ := browser.Update(key("down"))
+				browser = next.(*Browser)
+			}
+			if tt.filtering {
+				next, _ := browser.Update(key("/"))
+				browser = next.(*Browser)
+			}
+
+			got := plain(browser.View(80, height))
+			lineCount := strings.Count(got, "\n") + 1
+			if lineCount > height {
+				t.Errorf("View rendered %d lines, want <= %d (height budget); got:\n%s", lineCount, height, got)
+			}
+			wantRow := fmt.Sprintf("Memory %02d", tt.cursor)
+			if !strings.Contains(got, wantRow) {
+				t.Errorf("cursor row %q not visible; got:\n%s", wantRow, got)
+			}
+		})
+	}
+}
+
 // TestBrowserTitleIsFolder pins the breadcrumb segment contract.
 func TestBrowserTitleIsFolder(t *testing.T) {
 	t.Parallel()
