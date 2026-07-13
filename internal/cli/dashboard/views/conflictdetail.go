@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	keybinding "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
@@ -46,6 +47,14 @@ type ConflictDetailDeps struct {
 	ReadBody func(memoryfs.Memory) (string, error)
 	Render   func(string, int) string
 	Styles   theme.Styles
+	// Data and Now feed the history affordance (h). Data is the read-only
+	// version surface every history-capable screen shares — threaded straight to
+	// the History this screen builds; Now seeds that pushed History's clock so
+	// its relative timestamps agree with the rest of the dashboard. A nil Data is
+	// reachable only in tests, where History degrades to its loading notice
+	// rather than fetching (history.go's Data doc).
+	Data HistoryDataSource
+	Now  time.Time
 }
 
 // ConflictDetail is the pushed detail screen for one retain-both conflict
@@ -63,6 +72,17 @@ type ConflictDetailDeps struct {
 // no read or edit (availability, gated on mapped, strikes those footer rows).
 type ConflictDetail struct {
 	deps ConflictDetailDeps
+	// now is the clock the h affordance seeds into a pushed History, advanced by
+	// RefreshMsg's Now — a stored value, never a live source (the tick-clock
+	// contract shared with the browser's b.now).
+	now time.Time
+
+	// folder and repoPath are the record's path split into memoryfs's two
+	// coordinates once by resolve — the leading <folder> segment and the
+	// <provider>[/<repo_subdir>]/<rel> repo path — so the metadata block and the
+	// history affordance both read the same split rather than re-cutting it.
+	folder   string
+	repoPath string
 
 	// memory is the resolved target; mapped is false when the recorded path no
 	// longer maps to a live file, in which case notice explains why and
@@ -70,6 +90,12 @@ type ConflictDetail struct {
 	memory memoryfs.Memory
 	mapped bool
 	notice string
+
+	// historyAvailable gates the h affordance: true exactly when the path
+	// resolves to an enrolled unit — the mapped case and the enrolled-but-deleted
+	// case — so history is offered wherever a version chain can exist and struck
+	// where the project is untracked or its memories cannot be listed.
+	historyAvailable bool
 
 	// folderMemories is every memory in the record's folder, captured once by
 	// resolve — the source both for finding the target and for the link index
@@ -103,7 +129,7 @@ type conflictRenderState struct {
 func NewConflictDetail(deps ConflictDetailDeps) *ConflictDetail {
 	contentViewport := viewport.New()
 	contentViewport.KeyMap = readingViewportKeyMap()
-	detail := &ConflictDetail{deps: deps, viewport: contentViewport}
+	detail := &ConflictDetail{deps: deps, now: deps.Now, viewport: contentViewport}
 	detail.resolve()
 	return detail
 }
@@ -118,17 +144,17 @@ func NewConflictDetail(deps ConflictDetailDeps) *ConflictDetail {
 // memories+chronicle shape, spec §3) and captures folderMemories for the link
 // index enter builds — one walk serving both.
 func (d *ConflictDetail) resolve() {
-	folder, repoPath := splitConflictPath(d.deps.Record.Path)
-	if folder == "" {
+	d.folder, d.repoPath = splitConflictPath(d.deps.Record.Path)
+	if d.folder == "" {
 		d.notice = conflictUntrackedNotice
 		return
 	}
-	dir, rel, ok := memoryfs.LocalTarget(d.deps.Units, folder, repoPath)
+	dir, rel, ok := memoryfs.LocalTarget(d.deps.Units, d.folder, d.repoPath)
 	if !ok {
 		d.notice = conflictUntrackedNotice
 		return
 	}
-	memories, err := memoryfs.List(d.deps.Registry, unitsForFolder(d.deps.Units, folder))
+	memories, err := memoryfs.List(d.deps.Registry, unitsForFolder(d.deps.Units, d.folder))
 	if err != nil {
 		d.notice = fmt.Sprintf("cannot read this project's memories: %v", err)
 		return
@@ -138,11 +164,34 @@ func (d *ConflictDetail) resolve() {
 		if memory.LocalDir == dir && memory.RelPath == rel {
 			d.memory = memory
 			d.mapped = true
+			d.historyAvailable = true
 			d.readBody()
 			return
 		}
 	}
-	d.notice = conflictMissingNotice
+	// Enrolled-but-deleted: an enrolled unit still carries this path, but the
+	// file itself is gone. A version chain can still exist for it, so h stays
+	// live (history over on-disk-now content) and the notice points at it;
+	// missingNotice words whether an earlier version can be restored, which turns
+	// on the path's provider class.
+	d.historyAvailable = true
+	d.notice = d.missingNotice()
+}
+
+// missingNotice words the enrolled-but-deleted notice. The base fact — the file
+// is not present on this machine — is constant; the affordance clause always
+// names h, and mentions restoring an earlier version only for a fact-class
+// path, since a derived index or regenerated artifact is rebuilt from its
+// sources rather than restored from history (History's own R-gate enforces
+// that; this notice only tells the truth about it). A path memoryfs cannot
+// classify (provider segment missing or provider unregistered) falls to the
+// conservative no-restore wording — though such a path cannot in fact reach
+// here, its folder listing having failed first.
+func (d *ConflictDetail) missingNotice() string {
+	if class, ok := memoryfs.ClassifyRepoPath(d.deps.Registry, d.repoPath); ok && class == provider.ClassFact {
+		return conflictMissingNotice + " — press h to view its history and restore an earlier version"
+	}
+	return conflictMissingNotice + " — press h to view its history"
 }
 
 // splitConflictPath separates the leading <folder> segment from the repo path
@@ -201,12 +250,15 @@ func (d *ConflictDetail) refreshBody() {
 	}
 }
 
-// Update handles one message. RefreshMsg (the root's tick forward) re-reads
-// the body; its Now is unused because the metadata's time is the recorded
-// event instant, absolute by design, and nothing here renders relative time.
+// Update handles one message. RefreshMsg (the root's tick forward) re-reads the
+// body and advances the clock the h affordance seeds into a pushed History, so
+// that screen's relative timestamps start from the same instant as the rest of
+// the dashboard. The metadata block itself renders the recorded event instant,
+// absolute by design, so the clock never changes what this screen shows.
 func (d *ConflictDetail) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case RefreshMsg:
+		d.now = msg.Now
 		if d.mapped {
 			d.refreshBody()
 		}
@@ -237,6 +289,11 @@ func (d *ConflictDetail) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 			return d, nil
 		}
 		return d, d.openReading()
+	case keybinding.Matches(msg, DashboardKeys.ConflictDetailHistory):
+		// openHistory self-gates on historyAvailable (returning nil where the
+		// footer strikes the row), so h is inert on an untracked record without a
+		// second guard here.
+		return d, d.openHistory()
 	case msg.String() == "g":
 		d.viewport.GotoTop()
 		return d, nil
@@ -267,6 +324,41 @@ func (d *ConflictDetail) openReading() tea.Cmd {
 	return func() tea.Msg { return PushScreenMsg{Screen: reading} }
 }
 
+// openHistory pushes the version-history screen for the record's memory (spec
+// §10's file-gone notice made live: h). It returns nil when the path did not
+// resolve to a unit — untracked, or its folder unlistable — so h is inert
+// exactly where historyAvailable strikes its footer row. The pushed History is
+// built the same two ways the browser builds its own (browser.go's openHistory
+// / openDeletedHistory): a mapped conflict hands History the resolved Memory and
+// a Live that re-reads that file; an enrolled-but-deleted conflict hands it a
+// zero Memory and a Live reading whatever is on disk now (memoryfs.LiveContent),
+// so a restore performed inside History shows through immediately rather than
+// diffing against a frozen empty snapshot.
+func (d *ConflictDetail) openHistory() tea.Cmd {
+	if !d.historyAvailable {
+		return nil
+	}
+	deps := HistoryDeps{
+		Folder:   d.folder,
+		RepoPath: d.repoPath,
+		Data:     d.deps.Data,
+		Render:   d.deps.Render,
+		Styles:   d.deps.Styles,
+		Now:      d.now,
+	}
+	if d.mapped {
+		memory := d.memory
+		deps.Memory = memory
+		deps.RepoPath = memory.RepoPath
+		deps.Live = func() (string, error) { return d.deps.ReadBody(memory) }
+	} else {
+		folder, repoPath, units := d.folder, d.repoPath, d.deps.Units
+		deps.Live = func() (string, error) { return memoryfs.LiveContent(units, folder, repoPath) }
+	}
+	history := NewHistory(deps)
+	return func() tea.Msg { return PushScreenMsg{Screen: history} }
+}
+
 // Title names the breadcrumb segment: the memory's display name when mapped,
 // else the record's own filename — an honest segment even when the file is
 // gone.
@@ -284,6 +376,15 @@ func (d *ConflictDetail) Title() string {
 // stack contract stays Update/View/Title.
 func (d *ConflictDetail) Memory() (memoryfs.Memory, bool) {
 	return d.memory, d.mapped
+}
+
+// HistoryAvailable reports whether h does anything — true exactly when the
+// record resolved to an enrolled unit (mapped or enrolled-but-deleted).
+// Exported for the root's footer/dispatch availability gate, outside the Screen
+// interface for the same reason as Memory: the root reaches the concrete type
+// while the stack contract stays Update/View/Title.
+func (d *ConflictDetail) HistoryAvailable() bool {
+	return d.historyAvailable
 }
 
 // SetStyles installs a new theme — root-propagated via applyStackTheme on a
@@ -327,11 +428,10 @@ func (d *ConflictDetail) View(width, height int) string {
 // project folder, the repo path within it, and the resolution mode. Exactly
 // conflictDetailMetaLines lines regardless of value lengths.
 func (d *ConflictDetail) metaBlock() string {
-	folder, repoPath := splitConflictPath(d.deps.Record.Path)
 	rows := [conflictDetailMetaLines]struct{ label, value string }{
 		{"time", orDash(d.deps.Record.Time)},
-		{"project", orDash(folder)},
-		{"path", orDash(repoPath)},
+		{"project", orDash(d.folder)},
+		{"path", orDash(d.repoPath)},
 		{"mode", orDash(d.deps.Record.Mode)},
 	}
 	lines := make([]string, len(rows))

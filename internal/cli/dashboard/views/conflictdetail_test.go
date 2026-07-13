@@ -9,6 +9,8 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
+	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
 
 // sentinelRender wraps its markdown input in unmistakable markers so a View
@@ -43,6 +45,8 @@ func newMappedDetail(t *testing.T, content string, render func(string, int) stri
 		ReadBody: memoryfs.ReadBody,
 		Render:   render,
 		Styles:   theme.Default(true),
+		Data:     &fakeHistoryData{},
+		Now:      historyNow,
 	})
 	return detail, memories[0]
 }
@@ -423,4 +427,190 @@ func TestConflictDetailListErrorShowsNotice(t *testing.T) {
 	} else if _, ok := msgs[0].(PopScreenMsg); !ok {
 		t.Fatalf("esc emitted %T, want PopScreenMsg", msgs[0])
 	}
+}
+
+// pushedHistory presses h and returns the History screen the detail pushed,
+// failing the test if h produced anything other than exactly one PushScreenMsg
+// carrying a *History.
+func pushedHistory(t *testing.T, detail *ConflictDetail) *History {
+	t.Helper()
+	_, cmd := detail.Update(key("h"))
+	msgs := drain(cmd)
+	if len(msgs) != 1 {
+		t.Fatalf("h produced %d messages, want exactly 1 (PushScreenMsg)", len(msgs))
+	}
+	push, ok := msgs[0].(PushScreenMsg)
+	if !ok {
+		t.Fatalf("h emitted %T, want PushScreenMsg", msgs[0])
+	}
+	history, ok := push.Screen.(*History)
+	if !ok {
+		t.Fatalf("pushed screen = %T, want *History", push.Screen)
+	}
+	return history
+}
+
+// TestConflictDetailHistoryOnMappedPushesForTarget pins h on a mapped conflict:
+// it pushes the version-history screen keyed to the resolved memory's exact
+// (folder, RepoPath), hands History the live Memory snapshot, and — proven
+// through the fake Data — fetches that same key when the pushed screen loads.
+func TestConflictDetailHistoryOnMappedPushesForTarget(t *testing.T) {
+	t.Parallel()
+	detail, memory := newMappedDetail(t, "# Heading\n\nbody\n", sentinelRender)
+
+	history := pushedHistory(t, detail)
+	if folder, repoPath := history.Target(); folder != "acme" || repoPath != memory.RepoPath {
+		t.Errorf("pushed history Target() = (%q, %q), want (%q, %q)", folder, repoPath, "acme", memory.RepoPath)
+	}
+	if history.deps.Memory.RepoPath != memory.RepoPath {
+		t.Errorf("mapped history got Memory %q, want the resolved snapshot %q", history.deps.Memory.RepoPath, memory.RepoPath)
+	}
+
+	// The pushed screen's own initial load must fetch that exact key — the fake
+	// records what a real /v0/history call would carry.
+	fake, ok := history.deps.Data.(*fakeHistoryData)
+	if !ok {
+		t.Fatalf("history Data = %T, want *fakeHistoryData", history.deps.Data)
+	}
+	drain(history.InitCmd())
+	if len(fake.historyCalls) != 1 {
+		t.Fatalf("InitCmd made %d history fetches, want exactly 1", len(fake.historyCalls))
+	}
+	if got := fake.historyCalls[0]; got.folder != "acme" || got.path != memory.RepoPath {
+		t.Errorf("history fetch = (folder %q, path %q), want (%q, %q)", got.folder, got.path, "acme", memory.RepoPath)
+	}
+}
+
+// TestConflictDetailHistoryOnDeletedPushesLiveOnDisk pins h on an
+// enrolled-but-deleted conflict: history is still offered (a since-deleted file
+// keeps its version chain), the pushed screen carries no live Memory snapshot,
+// and its Live seam reads whatever is on disk NOW — not a frozen empty — so a
+// restore performed inside History shows through. The file is written AFTER
+// construction; a Live that returned a construction-time snapshot would miss it.
+func TestConflictDetailHistoryOnDeletedPushesLiveOnDisk(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "present.md", "a sibling that still exists\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	detail := NewConflictDetail(ConflictDetailDeps{
+		Record:   config.ConflictRecord{Time: "t", Path: "acme/claude/deleted.md", Mode: "fact"},
+		Units:    units,
+		Registry: registry,
+		ReadBody: memoryfs.ReadBody,
+		Styles:   theme.Default(true),
+		Data:     &fakeHistoryData{},
+		Now:      historyNow,
+	})
+	if _, ok := detail.Memory(); ok {
+		t.Fatal("a deleted file resolved to a memory, want ok=false")
+	}
+
+	history := pushedHistory(t, detail)
+	if folder, repoPath := history.Target(); folder != "acme" || repoPath != "claude/deleted.md" {
+		t.Errorf("pushed history Target() = (%q, %q), want (%q, %q)", folder, repoPath, "acme", "claude/deleted.md")
+	}
+	if history.deps.Memory.RepoPath != "" {
+		t.Errorf("deleted history got a non-zero Memory %q, want the zero snapshot", history.deps.Memory.RepoPath)
+	}
+	if history.deps.Live == nil {
+		t.Fatal("deleted history has a nil Live; want a LiveContent probe")
+	}
+
+	// The restore lands the file after the screen was built. Live must read it.
+	writeBrowserFile(t, dir, "deleted.md", "restored from an earlier version\n", time.Now())
+	live, err := history.deps.Live()
+	if err != nil {
+		t.Fatalf("Live() errored after the file landed: %v", err)
+	}
+	if !strings.Contains(live, "restored from an earlier version") {
+		t.Errorf("Live() = %q, want the on-disk-now content (a frozen snapshot would miss it)", live)
+	}
+}
+
+// TestConflictDetailHistoryOnUntrackedIsInert pins that h does nothing when the
+// record's project is no longer tracked: no push, no Cmd, HistoryAvailable
+// false, and the notice never advertises h (its wording is byte-unchanged from
+// the pre-affordance untracked notice).
+func TestConflictDetailHistoryOnUntrackedIsInert(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}}
+	detail := NewConflictDetail(ConflictDetailDeps{
+		Record:   config.ConflictRecord{Time: "t", Path: "ghost/claude/gone.md", Mode: "fact"},
+		Units:    units,
+		Registry: registry,
+		ReadBody: memoryfs.ReadBody,
+		Styles:   theme.Default(true),
+		Data:     &fakeHistoryData{},
+		Now:      historyNow,
+	})
+
+	if detail.HistoryAvailable() {
+		t.Error("HistoryAvailable() true on an untracked record, want false")
+	}
+	if _, cmd := detail.Update(key("h")); cmd != nil {
+		t.Errorf("h on an untracked detail produced %#v, want nil", drain(cmd))
+	}
+	if body := plain(detail.View(80, 40)); strings.Contains(body, "press h") {
+		t.Errorf("untracked notice advertises h; want it byte-unchanged from today; got:\n%s", body)
+	}
+}
+
+// TestConflictDetailMissingNoticeWordsRestoreByClass pins the enrolled-but-
+// deleted notice wording: it always names h, and mentions restoring an earlier
+// version only for a fact-class path — a derived index is rebuilt from its
+// sources, not restored, so its notice names h without promising a restore.
+func TestConflictDetailMissingNoticeWordsRestoreByClass(t *testing.T) {
+	t.Parallel()
+
+	// The wording is asserted on the notice string itself, not a View render: at
+	// a terminal width the long fact notice soft-wraps mid-phrase, an orthogonal
+	// concern the height tests already pin. Reading detail.notice (same package)
+	// targets exactly what this pin guards.
+	t.Run("fact class mentions restore", func(t *testing.T) {
+		t.Parallel()
+		registry := browserFixtureRegistry(t) // empty pattern table: everything is fact
+		units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}}
+		detail := NewConflictDetail(ConflictDetailDeps{
+			Record:   config.ConflictRecord{Time: "t", Path: "acme/claude/deleted.md", Mode: "fact"},
+			Units:    units,
+			Registry: registry,
+			ReadBody: memoryfs.ReadBody,
+			Styles:   theme.Default(true),
+		})
+		if !strings.HasPrefix(detail.notice, conflictMissingNotice) {
+			t.Errorf("notice does not start with the base file-missing text; got %q", detail.notice)
+		}
+		if !strings.Contains(detail.notice, "press h to view its history and restore an earlier version") {
+			t.Errorf("fact-class notice does not mention restore; got %q", detail.notice)
+		}
+	})
+
+	t.Run("derived class names h without promising a restore", func(t *testing.T) {
+		t.Parallel()
+		// A claude provider that classifies MEMORY.md as a derived index rather
+		// than a fact — the one shape whose notice must drop the restore clause.
+		claudeFake := providertest.New("claude", provider.ScopePerProject, []provider.Pattern{
+			{Glob: "MEMORY.md", Class: provider.ClassDerivedIndex},
+		})
+		registry, err := provider.NewRegistry(claudeFake)
+		if err != nil {
+			t.Fatal(err)
+		}
+		units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}}
+		detail := NewConflictDetail(ConflictDetailDeps{
+			Record:   config.ConflictRecord{Time: "t", Path: "acme/claude/MEMORY.md", Mode: "fact"},
+			Units:    units,
+			Registry: registry,
+			ReadBody: memoryfs.ReadBody,
+			Styles:   theme.Default(true),
+		})
+		if !strings.Contains(detail.notice, "press h to view its history") {
+			t.Errorf("derived-class notice does not name h; got %q", detail.notice)
+		}
+		if strings.Contains(detail.notice, "restore an earlier version") {
+			t.Errorf("derived-class notice promises a restore; a derived index is rebuilt, not restored; got %q", detail.notice)
+		}
+	})
 }

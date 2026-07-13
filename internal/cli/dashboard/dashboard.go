@@ -1013,6 +1013,24 @@ func (m Model) stackTop() (views.Screen, bool) {
 	return m.stack[len(m.stack)-1], true
 }
 
+// conflictDetailHistoryAvailable answers available("conflictdetail-history"):
+// the stack top is a conflict detail whose record resolved to an enrolled unit
+// (mapped or enrolled-but-deleted). The detail owns the resolution — it already
+// walked the folder in NewConflictDetail — so this only reaches for the concrete
+// type and asks, keeping the footer's struck/lit state exactly the h key's own
+// inert/live behavior (openHistory self-gates on the same bit).
+func (m *Model) conflictDetailHistoryAvailable() bool {
+	top, ok := m.stackTop()
+	if !ok {
+		return false
+	}
+	detail, ok := top.(*views.ConflictDetail)
+	if !ok {
+		return false
+	}
+	return detail.HistoryAvailable()
+}
+
 // replaceStackTop swaps the top of the stack for screen. A Screen's Update
 // usually returns itself — the common case is a pure in-place mutation, so
 // this is a harmless rewrite of the same value — but the interface
@@ -1303,6 +1321,8 @@ func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.Brows
 // seams buildBrowserDeps threads. Units is the whole fleet snapshot — the
 // detail resolves the record's repo-relative path down to the one enrolled
 // unit that still carries it (or renders the untracked notice when none does).
+// Data and Now are the same history seam and clock every history-capable screen
+// receives, threaded so the detail's h can push a live History screen.
 func (m Model) buildConflictDetailDeps(record config.ConflictRecord) views.ConflictDetailDeps {
 	return views.ConflictDetailDeps{
 		Record:   record,
@@ -1311,6 +1331,8 @@ func (m Model) buildConflictDetailDeps(record config.ConflictRecord) views.Confl
 		ReadBody: memoryfs.ReadBody,
 		Render:   m.renderMarkdown,
 		Styles:   m.styles,
+		Data:     m.data,
+		Now:      m.now,
 	}
 }
 
@@ -1430,6 +1452,12 @@ func (m *Model) available(id string) bool {
 		// one resolved. flowTarget reports exactly that for the detail on top.
 		_, ok := m.flowTarget()
 		return ok
+	case "conflictdetail-history":
+		// Wider than read: history is honest for a since-deleted file too — an
+		// enrolled-but-deleted record still owns a version chain to browse and
+		// restore from — so this asks the detail's own resolution (mapped OR
+		// enrolled-but-deleted) rather than flowTarget's mapped-only report.
+		return m.conflictDetailHistoryAvailable()
 	case "add-project":
 		return m.actions.AddAvailable()
 	default:

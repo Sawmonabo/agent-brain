@@ -89,12 +89,14 @@ type DashboardKeymap struct {
 	// ↑/↓/k/j keys as Select, kept a distinct binding so its footer row scopes
 	// to Conflicts rather than Projects. ConflictDetail* own the pushed detail
 	// screen (Task 17): Read jumps to the reading view, Edit only EMITS
-	// EditRequestMsg (the root owns the handoff and every gate), Back pops.
-	ConflictsSelect    keybinding.Binding
-	ConflictsOpen      keybinding.Binding
-	ConflictDetailRead keybinding.Binding
-	ConflictDetailEdit keybinding.Binding
-	ConflictDetailBack keybinding.Binding
+	// EditRequestMsg (the root owns the handoff and every gate), History pushes
+	// the version-history screen when the path resolves to a unit, Back pops.
+	ConflictsSelect       keybinding.Binding
+	ConflictsOpen         keybinding.Binding
+	ConflictDetailRead    keybinding.Binding
+	ConflictDetailEdit    keybinding.Binding
+	ConflictDetailHistory keybinding.Binding
+	ConflictDetailBack    keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
 	// subset each modal state honors, and the tab-level set above never
@@ -112,42 +114,43 @@ type DashboardKeymap struct {
 // bindings never change at runtime; per-tab, per-quiesce availability is the
 // root's footer/palette job, not this package's.
 var DashboardKeys = DashboardKeymap{
-	TabSwitch:          bindingFor("switch-tabs"),
-	Select:             bindingFor("select"),
-	Sync:               bindingFor("sync-project"),
-	Untrack:            bindingFor("untrack"),
-	Add:                bindingFor("add-project"),
-	Open:               bindingFor("open-browser"),
-	Quit:               bindingFor("quit"),
-	BrowserRead:        bindingFor("browser-read"),
-	BrowserOrder:       bindingFor("browser-order"),
-	BrowserFilter:      bindingFor("browser-filter"),
-	BrowserEdit:        bindingFor("browser-edit"),
-	BrowserNew:         bindingFor("browser-new"),
-	BrowserRename:      bindingFor("browser-rename"),
-	BrowserDelete:      bindingFor("browser-delete"),
-	BrowserHistory:     bindingFor("browser-history"),
-	BrowserShowDeleted: bindingFor("browser-show-deleted"),
-	BrowserBack:        bindingFor("browser-back"),
-	ReadingCycleLinks:  bindingFor("reading-links"),
-	ReadingFollow:      bindingFor("reading-follow"),
-	ReadingBacklinks:   bindingFor("reading-backlinks"),
-	ReadingCopyPath:    bindingFor("reading-copy-path"),
-	ReadingEdit:        bindingFor("reading-edit"),
-	ReadingHistory:     bindingFor("reading-history"),
-	ReadingBack:        bindingFor("reading-back"),
-	HistoryView:        bindingFor("history-view"),
-	HistoryDiff:        bindingFor("history-diff"),
-	HistoryDiffOlder:   bindingFor("history-diff-older"),
-	HistoryRestore:     bindingFor("history-restore"),
-	HistoryBack:        bindingFor("history-back"),
-	ConflictsSelect:    bindingFor("conflicts-select"),
-	ConflictsOpen:      bindingFor("conflicts-open"),
-	ConflictDetailRead: bindingFor("conflictdetail-read"),
-	ConflictDetailEdit: bindingFor("conflictdetail-edit"),
-	ConflictDetailBack: bindingFor("conflictdetail-back"),
-	Cancel:             keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
-	Accept:             keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	TabSwitch:             bindingFor("switch-tabs"),
+	Select:                bindingFor("select"),
+	Sync:                  bindingFor("sync-project"),
+	Untrack:               bindingFor("untrack"),
+	Add:                   bindingFor("add-project"),
+	Open:                  bindingFor("open-browser"),
+	Quit:                  bindingFor("quit"),
+	BrowserRead:           bindingFor("browser-read"),
+	BrowserOrder:          bindingFor("browser-order"),
+	BrowserFilter:         bindingFor("browser-filter"),
+	BrowserEdit:           bindingFor("browser-edit"),
+	BrowserNew:            bindingFor("browser-new"),
+	BrowserRename:         bindingFor("browser-rename"),
+	BrowserDelete:         bindingFor("browser-delete"),
+	BrowserHistory:        bindingFor("browser-history"),
+	BrowserShowDeleted:    bindingFor("browser-show-deleted"),
+	BrowserBack:           bindingFor("browser-back"),
+	ReadingCycleLinks:     bindingFor("reading-links"),
+	ReadingFollow:         bindingFor("reading-follow"),
+	ReadingBacklinks:      bindingFor("reading-backlinks"),
+	ReadingCopyPath:       bindingFor("reading-copy-path"),
+	ReadingEdit:           bindingFor("reading-edit"),
+	ReadingHistory:        bindingFor("reading-history"),
+	ReadingBack:           bindingFor("reading-back"),
+	HistoryView:           bindingFor("history-view"),
+	HistoryDiff:           bindingFor("history-diff"),
+	HistoryDiffOlder:      bindingFor("history-diff-older"),
+	HistoryRestore:        bindingFor("history-restore"),
+	HistoryBack:           bindingFor("history-back"),
+	ConflictsSelect:       bindingFor("conflicts-select"),
+	ConflictsOpen:         bindingFor("conflicts-open"),
+	ConflictDetailRead:    bindingFor("conflictdetail-read"),
+	ConflictDetailEdit:    bindingFor("conflictdetail-edit"),
+	ConflictDetailHistory: bindingFor("conflictdetail-history"),
+	ConflictDetailBack:    bindingFor("conflictdetail-back"),
+	Cancel:                keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:                keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),

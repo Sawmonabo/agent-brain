@@ -163,9 +163,14 @@ var registry = []Action{
 	// live availability is flowAvailable (editor resolves ∧ fact-class ∧ no
 	// active handoff ∧ the recorded path still maps to an enrolled unit),
 	// rendered struck rather than hidden when false. read is likewise gated on
-	// the path still mapping: an unmapped record offers nothing to read.
+	// the path still mapping: an unmapped record offers nothing to read. history
+	// is gated one notch wider — on the path resolving to an enrolled unit at all,
+	// mapped OR enrolled-but-deleted — since a since-deleted file can still own a
+	// version chain to browse and restore an earlier version from; it only pushes
+	// the History screen, so the root gates it on the detail's own resolution.
 	{ID: "conflictdetail-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeConflictDetail},
 	{ID: "conflictdetail-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeConflictDetail, Mutates: true},
+	{ID: "conflictdetail-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeConflictDetail},
 	{ID: "conflictdetail-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeConflictDetail},
 }
 

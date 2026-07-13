@@ -1547,6 +1547,98 @@ func TestConflictDetailAvailabilityTracksMapping(t *testing.T) {
 	}
 }
 
+// TestConflictDetailHistoryAvailabilityTracksResolution pins the h footer row's
+// gate, which is wider than read/edit: history is honest wherever the record
+// resolves to an enrolled unit — the mapped case AND the enrolled-but-deleted
+// case (a since-deleted file keeps its version chain) — and struck only when the
+// project is untracked. The wiring is conflictDetailHistoryAvailable plus the
+// "conflictdetail-history" arm in available(); making h unconditionally
+// available (the availability mutation) kills the untracked assertion below.
+func TestConflictDetailHistoryAvailabilityTracksResolution(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{Data: &fakeData{}, Registry: registry, Settings: terminalEditorSettings()})
+	m.getenv = func(string) string { return "" }
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+
+	// Mapped: the file resolves, so history is live.
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "acme/claude/notes.md", Mode: "fact"}})
+	if !m.available("conflictdetail-history") {
+		t.Error("history unavailable over a mapped record, want available")
+	}
+
+	// Enrolled-but-deleted: the unit still carries the path but the file is gone;
+	// history stays live where read (nothing live to read) strikes.
+	m = m.popScreen()
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "acme/claude/deleted.md", Mode: "fact"}})
+	if !m.available("conflictdetail-history") {
+		t.Error("history unavailable over an enrolled-but-deleted record, want available")
+	}
+	if m.available("conflictdetail-read") {
+		t.Error("read available over an enrolled-but-deleted record, want struck (nothing live to read)")
+	}
+
+	// Untracked: no enrolled unit carries the path; history strikes.
+	m = m.popScreen()
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "ghost/claude/gone.md", Mode: "fact"}})
+	if m.available("conflictdetail-history") {
+		t.Error("history available over an untracked record, want struck")
+	}
+}
+
+// TestConflictDetailHistoryEscPopsToDetail pins the h round trip at the root: h
+// on a mapped detail pushes the History screen onto the stack above the detail,
+// and esc pops History back off to the SAME intact detail beneath — the stack
+// discipline every pushed screen shares, proven end-to-end through the real
+// ConflictDetail and History screens rather than a stubbed push.
+func TestConflictDetailHistoryEscPopsToDetail(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("# Notes\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{Data: &fakeData{}, Registry: registry, Settings: terminalEditorSettings()})
+	m.getenv = func(string) string { return "" }
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+	m = drive(t, m, views.OpenConflictMsg{Record: config.ConflictRecord{Time: "t", Path: "acme/claude/notes.md", Mode: "fact"}})
+
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after opening the detail, want 1", len(m.stack))
+	}
+	detail, ok := m.stack[0].(*views.ConflictDetail)
+	if !ok {
+		t.Fatalf("stack[0] = %T, want *views.ConflictDetail", m.stack[0])
+	}
+
+	// h pushes History above the detail.
+	m = drive(t, m, key("h"))
+	if len(m.stack) != 2 {
+		t.Fatalf("stack depth = %d after h, want 2 (History pushed above the detail)", len(m.stack))
+	}
+	if _, ok := m.stack[1].(*views.History); !ok {
+		t.Fatalf("stack top = %T after h, want *views.History", m.stack[1])
+	}
+
+	// esc pops History back to the same intact detail.
+	m = drive(t, m, key("esc"))
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after esc, want 1 (History popped, detail intact)", len(m.stack))
+	}
+	if m.stack[0] != detail {
+		t.Error("detail beneath History was replaced; want the same instance intact")
+	}
+	if _, mapped := detail.Memory(); !mapped {
+		t.Error("detail no longer resolves to its memory after the History round trip")
+	}
+}
+
 // TestStackForwardsTick pins that the shared 2s poll keeps a pushed screen
 // live: RefreshMsg reaches the top of the stack on every tick (proved here
 // by a List call count that only a forwarded refresh can advance beyond
