@@ -1296,9 +1296,11 @@ func driveDeletedScan(t *testing.T, browser *Browser) *Browser {
 }
 
 // TestBrowserDeletedViewDisclosesTruncation pins the deleted-mode half of the
-// silent-cap disclosure: a folder-wide scan that came back at exactly
-// historyVersionLimit discloses that older history was not read, and its empty
-// state stops making an unqualified whole-history claim.
+// silent-cap disclosure in BOTH directions: a folder-wide scan that came back at
+// exactly historyVersionLimit discloses that older history was not read (and its
+// empty state drops the unqualified whole-history claim), while a scan under the
+// cap discloses nothing — a below-limit scan read the whole timeline, so an
+// "older history not scanned" claim over it would be the inverse dishonesty.
 func TestBrowserDeletedViewDisclosesTruncation(t *testing.T) {
 	t.Parallel()
 	registry := browserFixtureRegistry(t)
@@ -1346,6 +1348,26 @@ func TestBrowserDeletedViewDisclosesTruncation(t *testing.T) {
 		}
 		if !strings.Contains(got, "older history not scanned") {
 			t.Errorf("capped empty state did not qualify the scan bound; got:\n%s", got)
+		}
+	})
+
+	t.Run("below-limit scan with deleted rows does not disclose", func(t *testing.T) {
+		t.Parallel()
+		// A scan well under the cap read the whole timeline — nothing older went
+		// unscanned — so even with a deleted row present, the disclosure must NOT
+		// render. Without this negative pin, hoisting the notice out of the
+		// truncated branch (or the flag regressing to always-true) would claim
+		// "older history not scanned" over a 3-commit repo and stay green.
+		belowLimit := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: []api.HistoryVersion{
+			{Rev: "r000", Timestamp: &when, Paths: []string{"claude/gone.md"}},
+		}}}
+		browser := newDeletedBrowser(t, belowLimit)
+		got := plain(browser.View(120, 30))
+		if !strings.Contains(got, "claude/gone.md") {
+			t.Fatalf("deleted row missing; got:\n%s", got)
+		}
+		if strings.Contains(got, "older history not scanned") {
+			t.Errorf("a below-limit deleted scan wrongly disclosed truncation; got:\n%s", got)
 		}
 	})
 }
