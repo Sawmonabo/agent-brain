@@ -802,6 +802,101 @@ func TestFlowRequestsRefusedWhileModalOpen(t *testing.T) {
 	})
 }
 
+// assertFlowRequestRefusedUnderChrome runs every flow-request kind against a
+// model whose keyboard is already owned by an open chrome surface (openChrome
+// installs it) and asserts each request is refused with wantToast and leaks no
+// flow state: no modal, no session, no staged scratch, no Cmd, and the chrome
+// left undisturbed (chromeStillOpen). The same no-ordering-guarantee race the
+// modal pin exercises applies here — a request queued by a screen key can land
+// after the chrome opened — and handleKey checks both chrome surfaces before
+// the flow modal, so any flow started here would open a modal (or launch an
+// editor) beneath a surface that owns the keyboard, starving it invisibly.
+func assertFlowRequestRefusedUnderChrome(t *testing.T, openChrome func(*testing.T, Model) Model, wantToast string, chromeStillOpen func(Model) bool) {
+	t.Helper()
+	kinds := []struct {
+		name    string
+		request func(memoryfs.Memory, api.UnitInfo) tea.Msg
+	}{
+		{name: "edit", request: func(mem memoryfs.Memory, _ api.UnitInfo) tea.Msg { return views.EditRequestMsg{Memory: mem} }},
+		{name: "new", request: func(_ memoryfs.Memory, unit api.UnitInfo) tea.Msg {
+			return views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{unit}, Provider: "claude"}
+		}},
+		{name: "rename", request: func(mem memoryfs.Memory, _ api.UnitInfo) tea.Msg { return views.RenameRequestMsg{Memory: mem} }},
+		{name: "delete", request: func(mem memoryfs.Memory, _ api.UnitInfo) tea.Msg { return views.DeleteRequestMsg{Memory: mem} }},
+	}
+	for _, testCase := range kinds {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m, cacheRoot := newFlowModel(t, terminalEditorSettings())
+			unitDir := t.TempDir()
+			memory := writeFlowMemory(t, unitDir, "note.md", "# note\n")
+			unit := api.UnitInfo{Provider: "claude", Folder: "acme", LocalDir: unitDir}
+
+			m = openChrome(t, m)
+
+			m, cmd := step(m, testCase.request(memory, unit))
+
+			if got := plain(m.toastLine()); got != wantToast {
+				t.Errorf("toast = %q, want exactly %q", got, wantToast)
+			}
+			if m.flowModal != nil {
+				t.Error("a flow modal opened while chrome owns the keyboard")
+			}
+			if m.editing != nil {
+				t.Error("an edit session started while chrome owns the keyboard")
+			}
+			if !chromeStillOpen(m) {
+				t.Error("the refused request disturbed the open chrome; it must stay open")
+			}
+			if cmd != nil {
+				t.Errorf("refused request produced a Cmd (%#v); want none", cmd())
+			}
+			if got := cacheRootEntries(t, cacheRoot); got != 0 {
+				t.Errorf("cache root has %d entries, want 0 (nothing may stage under open chrome)", got)
+			}
+		})
+	}
+}
+
+// TestFlowRequestRefusedWhileSearchOverlayOpen pins the search-overlay half of
+// the chrome gate: a mutation request that lands after `/` opened the global
+// overlay must be refused for every request kind, with the overlay left open —
+// never a flow modal or editor launched beneath it.
+func TestFlowRequestRefusedWhileSearchOverlayOpen(t *testing.T) {
+	t.Parallel()
+	assertFlowRequestRefusedUnderChrome(
+		t,
+		func(t *testing.T, m Model) Model {
+			m, _ = step(m, key("/"))
+			if m.searchOverlay == nil {
+				t.Fatal("setup: / did not open the search overlay")
+			}
+			return m
+		},
+		"search is open — esc it first",
+		func(m Model) bool { return m.searchOverlay != nil },
+	)
+}
+
+// TestFlowRequestRefusedWhilePaletteOpen is the palette twin: a request landing
+// after ctrl+k opened the command palette must be refused for every kind, with
+// the palette left open.
+func TestFlowRequestRefusedWhilePaletteOpen(t *testing.T) {
+	t.Parallel()
+	assertFlowRequestRefusedUnderChrome(
+		t,
+		func(t *testing.T, m Model) Model {
+			m, _ = step(m, key("ctrl+k"))
+			if !m.paletteOpen {
+				t.Fatal("setup: ctrl+k did not open the palette")
+			}
+			return m
+		},
+		"the palette is open — esc it first",
+		func(m Model) bool { return m.paletteOpen },
+	)
+}
+
 // TestNewRefusedWithoutEditorAtRequest pins n's no-editor refusal at REQUEST
 // time, exactly like e's: the exact ErrNoEditor wording lands immediately
 // and no name modal ever opens — deferring the refusal to submit would

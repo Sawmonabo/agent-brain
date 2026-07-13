@@ -223,11 +223,20 @@ func pickUnit(units []api.UnitInfo, providerHint string) (api.UnitInfo, bool) {
 // earlier Cmd's message, so a queued request CAN arrive after another
 // request's modal opened — admitting it would fork the flow state the
 // modal is about to act on, or silently replace an open delete confirm),
-// or while the daemon is quiesced (spec §15's grey-out-with-refusal for
-// mutating actions). It deliberately guards only flow STARTS — a landing
-// edit is never blocked, because refusing a finish would discard content
-// the user already wrote; a quiesce that begins mid-edit merely defers the
-// capture, which the pendingCapture deadline toast names explicitly.
+// while the search overlay or palette owns the screen (the same
+// no-ordering-guarantee race: a request queued by a screen key can land
+// after that chrome opened, and handleKey checks both chrome surfaces
+// before the flow modal, so the flow it would start — a modal, or an
+// ExecProcess editor launch — would sit underneath a surface that owns the
+// keyboard and starve invisibly), or while the daemon is quiesced (spec
+// §15's grey-out-with-refusal for mutating actions). Refusing starts under
+// open chrome also makes chrome-over-modal unreachable in both directions:
+// a flow modal can now open only while chrome is closed, and while one is
+// open handleKey's modal priority consumes the very keys that would open
+// chrome. It deliberately guards only flow STARTS — a landing edit is never
+// blocked, because refusing a finish would discard content the user already
+// wrote; a quiesce that begins mid-edit merely defers the capture, which the
+// pendingCapture deadline toast names explicitly.
 func (m *Model) refuseFlowStart() bool {
 	if m.editing != nil {
 		m.toastEditorBusy()
@@ -235,6 +244,14 @@ func (m *Model) refuseFlowStart() bool {
 	}
 	if m.flowModal != nil {
 		m.pushToast("a prompt is already open — finish or esc it first")
+		return true
+	}
+	if m.searchOverlay != nil {
+		m.pushToast("search is open — esc it first")
+		return true
+	}
+	if m.paletteOpen {
+		m.pushToast("the palette is open — esc it first")
 		return true
 	}
 	if m.quiesced() {
