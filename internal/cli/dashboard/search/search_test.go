@@ -262,7 +262,9 @@ func TestQueryUnicodeCaseFolding(t *testing.T) {
 
 // TestQueryFragment covers Fragment extraction across all three tiers:
 // verbatim for a short Name/Description, trimmed-but-needle-preserved for
-// a long body line, and stripped of a trailing CRLF carriage return.
+// a long body line, stripped of a trailing CRLF carriage return, and
+// left uncentered (truncated from the match's start rather than around it)
+// when the query itself is longer than the 120-rune cap.
 func TestQueryFragment(t *testing.T) {
 	t.Parallel()
 
@@ -321,6 +323,21 @@ func TestQueryFragment(t *testing.T) {
 		}
 		if !strings.Contains(strings.ToLower(fragment), "needle") {
 			t.Errorf("Fragment = %q, want it to still contain the matched needle", fragment)
+		}
+	})
+
+	t.Run("query over 120 runes is not centered: fragment is the match's first 120 runes", func(t *testing.T) {
+		t.Parallel()
+		query := strings.Repeat("abcdefghij", 13) // 130 runes, over fragmentRuneCap's 120
+		memories := []memoryfs.Memory{mem("m1", "unrelated-name", "")}
+		bodies := map[string]string{"m1": query}
+		hits := search.Query(memories, fakeReadBody(bodies, nil), query, 0)
+		if len(hits) != 1 {
+			t.Fatalf("len(hits) = %d, want 1", len(hits))
+		}
+		want := strings.Repeat("abcdefghij", 12) // first 120 runes of the 130-rune match
+		if hits[0].Fragment != want {
+			t.Errorf("Fragment = %q, want %q (the match's first 120 runes, uncentered)", hits[0].Fragment, want)
 		}
 	})
 

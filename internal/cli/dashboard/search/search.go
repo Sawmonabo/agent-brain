@@ -11,7 +11,6 @@ import (
 	"cmp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
 )
@@ -66,9 +65,10 @@ const (
 	qualityNone
 )
 
-// scoredHit pairs a Hit with the nameQuality tie-break Query sorts by,
-// computed once per hit rather than recomputed on every comparator call
-// during the sort.
+// scoredHit pairs a Hit with the nameQuality tie-break Query sorts by.
+// matchOne computes it once, alongside the Hit itself, from the same
+// folded name it already used to test the Name tier — never recomputed
+// later during ranking or inside the sort comparator.
 type scoredHit struct {
 	hit     Hit
 	quality quality
@@ -109,11 +109,11 @@ func Query(memories []memoryfs.Memory, readBody func(memoryfs.Memory) (string, e
 
 	scoredHits := make([]scoredHit, 0, len(memories))
 	for _, memory := range memories {
-		hit, ok := matchOne(memory, readBody, foldedQuery)
+		scored, ok := matchOne(memory, readBody, foldedQuery)
 		if !ok {
 			continue
 		}
-		scoredHits = append(scoredHits, scoredHit{hit: hit, quality: nameQuality(memory.Name, foldedQuery)})
+		scoredHits = append(scoredHits, scored)
 	}
 
 	slices.SortStableFunc(scoredHits, func(a, b scoredHit) int {
@@ -137,35 +137,42 @@ func Query(memories []memoryfs.Memory, readBody func(memoryfs.Memory) (string, e
 }
 
 // matchOne tries memory's three tiers in priority order — name, then
-// description, then body — and returns the first that matches. readBody is
-// only called once the cheaper name and description checks have both
-// already failed.
-func matchOne(memory memoryfs.Memory, readBody func(memoryfs.Memory) (string, error), foldedQuery []rune) (Hit, bool) {
-	if fragment, ok := matchName(memory.Name, foldedQuery); ok {
-		return Hit{Memory: memory, Tier: TierName, Fragment: fragment}, true
+// description, then body — and returns the first that matches as a
+// scoredHit, pairing the Hit with the nameQuality tie-break Query sorts by.
+// A Description or Body match is assigned qualityNone directly, without
+// calling nameQuality at all: Tier already proves the Name didn't even
+// subsequence-match (see the quality doc comment), so there is nothing left
+// to classify. readBody is only called once the cheaper name and
+// description checks have both already failed.
+func matchOne(memory memoryfs.Memory, readBody func(memoryfs.Memory) (string, error), foldedQuery []rune) (scoredHit, bool) {
+	if fragment, matchQuality, ok := matchName(memory.Name, foldedQuery); ok {
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierName, Fragment: fragment}, quality: matchQuality}, true
 	}
 	if fragment, ok := matchDescription(memory.Description, foldedQuery); ok {
-		return Hit{Memory: memory, Tier: TierDescription, Fragment: fragment}, true
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierDescription, Fragment: fragment}, quality: qualityNone}, true
 	}
 	body, err := readBody(memory)
 	if err != nil {
-		return Hit{}, false
+		return scoredHit{}, false
 	}
 	if fragment, line, ok := matchBody(body, foldedQuery); ok {
-		return Hit{Memory: memory, Tier: TierBody, Fragment: fragment, Line: line}, true
+		return scoredHit{hit: Hit{Memory: memory, Tier: TierBody, Fragment: fragment, Line: line}, quality: qualityNone}, true
 	}
-	return Hit{}, false
+	return scoredHit{}, false
 }
 
 // matchName reports whether foldedQuery occurs in name as a case-insensitive
 // subsequence, returning name trimmed to a display Fragment around the
-// matched span.
-func matchName(name string, foldedQuery []rune) (fragment string, ok bool) {
-	start, end, ok := subsequenceSpan(foldRunes(name), foldedQuery)
+// matched span, plus its nameQuality classification — computed here from
+// the same folded name used for the subsequence test, rather than folding
+// name again later to recompute it.
+func matchName(name string, foldedQuery []rune) (fragment string, matchQuality quality, ok bool) {
+	foldedName := foldRunes(name)
+	start, end, ok := subsequenceSpan(foldedName, foldedQuery)
 	if !ok {
-		return "", false
+		return "", qualityNone, false
 	}
-	return trimFragment([]rune(name), start, end), true
+	return trimFragment([]rune(name), start, end), nameQuality(foldedName, foldedQuery), true
 }
 
 // matchDescription reports whether foldedQuery occurs in description as a
@@ -200,39 +207,35 @@ func matchBody(body string, foldedQuery []rune) (fragment string, line int, ok b
 	return "", 0, false
 }
 
-// nameQuality classifies how strongly name matches foldedQuery: an exact
-// case-insensitive prefix ranks above a non-prefix substring, which ranks
-// above a bare (non-contiguous) subsequence; a name with no subsequence
-// match at all — only possible for a TierDescription or TierBody Hit, whose
-// Tier already proves the name check failed — ranks lowest.
-func nameQuality(name string, foldedQuery []rune) quality {
-	foldedName := foldRunes(name)
+// nameQuality classifies how strongly foldedName matches foldedQuery: an
+// exact case-insensitive prefix ranks above a non-prefix substring, which
+// ranks above a bare (non-contiguous) subsequence. Both arguments must
+// already be folded by the caller. matchName calls this only once
+// subsequenceSpan has already confirmed at least a subsequence match, so
+// unlike matchName's own check, this never needs to re-test for one: the
+// subsequence case is the fallback once prefix and substring have both
+// missed.
+func nameQuality(foldedName, foldedQuery []rune) quality {
 	if len(foldedQuery) <= len(foldedName) && runesEqual(foldedName[:len(foldedQuery)], foldedQuery) {
 		return qualityPrefix
 	}
 	if _, _, ok := substringSpan(foldedName, foldedQuery); ok {
 		return qualitySubstring
 	}
-	if _, _, ok := subsequenceSpan(foldedName, foldedQuery); ok {
-		return qualitySubsequence
-	}
-	return qualityNone
+	return qualitySubsequence
 }
 
-// foldRunes case-folds s rune-by-rune (unicode.ToLower), unlike
-// strings.ToLower's whole-string mapping: a handful of codepoints (e.g.
-// Turkish İ) expand to more than one rune under strings.ToLower's full
-// Unicode case-folding, which would shift the rune offsets substringSpan
-// and subsequenceSpan report out of alignment with the original text.
-// unicode.ToLower maps exactly one rune to one rune, so folding this way
-// keeps positions rune-for-rune aligned with the input.
+// foldRunes case-folds s to a rune slice for matching: rune-slice indexing
+// keeps the [start, end) spans substringSpan and subsequenceSpan report
+// aligned with what a cell-oriented terminal UI highlights. strings.ToLower
+// is rune-count-preserving in Go — its non-ASCII path is
+// Map(unicode.ToLower, s), and unicode.ToLower has signature func(rune)
+// rune, so it can only ever replace one rune with one rune. (Go deliberately
+// doesn't implement ICU-style full case folding, which can expand a single
+// rune — e.g. Turkish İ — into several; ordinary simple case folding never
+// shifts offsets the way full folding could.)
 func foldRunes(s string) []rune {
-	runes := []rune(s)
-	folded := make([]rune, len(runes))
-	for i, r := range runes {
-		folded[i] = unicode.ToLower(r)
-	}
-	return folded
+	return []rune(strings.ToLower(s))
 }
 
 // runesEqual reports whether a and b hold the same runes in the same order.
