@@ -363,8 +363,8 @@ func checkRemote(ctx context.Context, deps Deps) (CheckResult, bool) {
 // firstLine trims a potentially multi-line message to its first line, so a
 // check Detail stays a single table row.
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

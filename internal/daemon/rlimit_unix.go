@@ -17,9 +17,6 @@ func raiseFDLimit() error {
 	if limit.Cur >= want {
 		return nil
 	}
-	limit.Cur = want
-	if limit.Max < want {
-		limit.Cur = limit.Max
-	}
+	limit.Cur = min(limit.Max, want)
 	return unix.Setrlimit(unix.RLIMIT_NOFILE, &limit)
 }

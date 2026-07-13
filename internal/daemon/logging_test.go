@@ -88,16 +88,14 @@ func TestRotatingWriterConcurrentWritesAreRaceFree(t *testing.T) {
 	line := []byte(strings.Repeat("x", 63) + "\n")
 	var group sync.WaitGroup
 	for range 16 {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		group.Go(func() {
 			for range 200 {
 				if _, err := writer.Write(line); err != nil {
 					t.Errorf("concurrent write: %v", err)
 					return
 				}
 			}
-		}()
+		})
 	}
 	group.Wait()
 }

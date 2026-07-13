@@ -41,7 +41,7 @@ func ReadConflictLog(path string) ([]ConflictRecord, error) {
 	}
 
 	var records []ConflictRecord
-	for _, line := range bytes.Split(bytes.TrimRight(data, "\n"), []byte("\n")) {
+	for line := range bytes.SplitSeq(bytes.TrimRight(data, "\n"), []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

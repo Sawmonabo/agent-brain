@@ -326,7 +326,7 @@ func (e *Engine) stagedFileCount(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	count := 0
-	for _, path := range strings.Split(res.Stdout, "\x00") {
+	for path := range strings.SplitSeq(res.Stdout, "\x00") {
 		if path != "" {
 			count++
 		}

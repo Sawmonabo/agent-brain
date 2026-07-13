@@ -212,7 +212,7 @@ func refreshWorktree(t *testing.T, dir string) {
 	if listed == "" {
 		return
 	}
-	for _, file := range strings.Split(listed, "\n") {
+	for file := range strings.SplitSeq(listed, "\n") {
 		if err := os.Remove(filepath.Join(dir, file)); err != nil {
 			t.Fatal(err)
 		}

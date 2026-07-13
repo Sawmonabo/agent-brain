@@ -164,16 +164,14 @@ func TestSyncBusyGuardSerializesConcurrentCalls(t *testing.T) {
 	start.Add(1)
 	errs := make([]error, goroutines)
 	for i := range goroutines {
-		done.Add(1)
-		go func() {
-			defer done.Done()
+		done.Go(func() {
 			start.Wait() // release all goroutines at once for maximum contention
 			_, err := engine.Sync(context.Background(), []repo.Unit{u})
 			errs[i] = err
 			if err == nil {
 				succeeded.Add(1)
 			}
-		}()
+		})
 	}
 	start.Done()
 	done.Wait()

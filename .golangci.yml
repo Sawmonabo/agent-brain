@@ -16,6 +16,11 @@ linters:
     # Enabled (rather than hand-fixing the two sites gopls flagged) because a
     # style fixed without enforcement regresses on the next contributor.
     - intrange
+    # modernize keeps code on current-stdlib idiom (strings.Cut/SplitSeq,
+    # min/max, WaitGroup.Go, t.Context, errors.AsType). Enabled at a zero
+    # baseline for the intrange reason: a one-off sweep without enforcement
+    # regresses on the next contributor.
+    - modernize
   settings:
     nolintlint:
       require-explanation: true

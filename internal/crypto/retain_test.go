@@ -140,7 +140,7 @@ func TestRewriteRetainBothSanitizesLabels(t *testing.T) {
 			}
 			// Format-stability invariants independent of the exact bytes above.
 			endAnchors := 0
-			for _, line := range strings.Split(string(got), "\n") {
+			for line := range strings.SplitSeq(string(got), "\n") {
 				if line == "<!-- agent-brain conflict end -->" {
 					endAnchors++
 				}

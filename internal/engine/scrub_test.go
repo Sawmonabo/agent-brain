@@ -155,7 +155,7 @@ func writeCheckout(t *testing.T, checkout, rel, content string) {
 func lsFiles(t *testing.T, checkout string) map[string]bool {
 	t.Helper()
 	set := map[string]bool{}
-	for _, p := range strings.Split(mustGit(t, checkout, "ls-files", "-z").Stdout, "\x00") {
+	for p := range strings.SplitSeq(mustGit(t, checkout, "ls-files", "-z").Stdout, "\x00") {
 		if p != "" {
 			set[p] = true
 		}

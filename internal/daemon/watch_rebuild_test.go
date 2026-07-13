@@ -27,8 +27,7 @@ func TestRebuildWatcherSwapsRootsAndClosesOld(t *testing.T) {
 	t.Parallel()
 	rootA := t.TempDir()
 	rootB := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	cfg := watch.Config{Debounce: 20 * time.Millisecond, Poll: 0}

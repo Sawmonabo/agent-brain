@@ -135,7 +135,7 @@ func ValidateRelPath(rel string) error {
 	if path.Clean(rel) != rel {
 		return fmt.Errorf("path %q is not in clean form", rel)
 	}
-	for _, seg := range strings.Split(rel, "/") {
+	for seg := range strings.SplitSeq(rel, "/") {
 		if seg == "." || seg == ".." {
 			return fmt.Errorf("path %q contains a %q segment", rel, seg)
 		}

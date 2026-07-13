@@ -184,7 +184,7 @@ func TestMergeFactSanitizesInjectionLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	endAnchors := 0
-	for _, line := range bytes.Split(plaintext, []byte("\n")) {
+	for line := range bytes.SplitSeq(plaintext, []byte("\n")) {
 		if string(line) == "<!-- agent-brain conflict end -->" {
 			endAnchors++
 		}

@@ -83,8 +83,8 @@ func (e *Engine) changedTopLevels(ctx context.Context) ([]string, error) {
 }
 
 func topSegment(p string) string {
-	if i := strings.IndexByte(p, '/'); i >= 0 {
-		return p[:i]
+	if before, _, ok := strings.Cut(p, "/"); ok {
+		return before
 	}
 	return p
 }

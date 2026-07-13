@@ -128,12 +128,12 @@ func extractTitleAndHook(content, filename string) (title, hook string) {
 // trimming whitespace and a single matching pair of surrounding quotes
 // from the value.
 func splitFrontmatterLine(line string) (key, value string, ok bool) {
-	idx := strings.Index(line, ":")
-	if idx < 0 {
+	before, after, ok := strings.Cut(line, ":")
+	if !ok {
 		return "", "", false
 	}
-	key = strings.TrimSpace(line[:idx])
-	value = trimMatchingQuotes(strings.TrimSpace(line[idx+1:]))
+	key = strings.TrimSpace(before)
+	value = trimMatchingQuotes(strings.TrimSpace(after))
 	return key, value, true
 }
 
