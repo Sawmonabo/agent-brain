@@ -493,6 +493,7 @@ func TestPendingCaptureToasts(t *testing.T) {
 	captureAt := flowT0.Add(10 * time.Second)
 	tests := []struct {
 		name        string
+		folder      string // pending folder; "" means the default "acme"
 		tickTo      time.Time
 		lastSync    *api.SyncSummary
 		wantToast   string
@@ -534,13 +535,45 @@ func TestPendingCaptureToasts(t *testing.T) {
 			wantCleared: false,
 		},
 		{
-			// Pushed is set so the space-delimited subject match is the ONLY
-			// thing keeping the sibling "acme-web" capture from confirming
-			// "acme" — without it, the push-state gate would mask a broken
-			// (bare-substring) folder match.
+			// Pushed is set so the subject's folder match is the ONLY thing
+			// keeping the sibling "acme-web" capture from confirming "acme" —
+			// without it, the push-state gate would mask a broken folder
+			// match. The same rationale holds for every ignored row below.
 			name:        "another folder's capture is ignored",
 			tickTo:      flowT0.Add(12 * time.Second),
 			lastSync:    &api.SyncSummary{At: captureAt, Commits: []string{"memory: host1 acme-web 2026-07-13T12:00:10Z"}, Pushed: true},
+			wantToast:   "",
+			wantCleared: false,
+		},
+		{
+			name:        "sibling folder in the suffix direction is ignored",
+			folder:      "web",
+			tickTo:      flowT0.Add(12 * time.Second),
+			lastSync:    &api.SyncSummary{At: captureAt, Commits: []string{"memory: host1 acme-web 2026-07-13T12:00:10Z"}, Pushed: true},
+			wantToast:   "",
+			wantCleared: false,
+		},
+		{
+			// The pending folder's name equals the HOST field, which appears
+			// space-delimited in every subject from that host — only matching
+			// the folder by its field POSITION keeps it from false-confirming.
+			name:        "folder named like the host is not confirmed by the host field",
+			folder:      "host1",
+			tickTo:      flowT0.Add(12 * time.Second),
+			lastSync:    &api.SyncSummary{At: captureAt, Commits: []string{"memory: host1 acme 2026-07-13T12:00:10Z"}, Pushed: true},
+			wantToast:   "",
+			wantCleared: false,
+		},
+		{
+			// The engine's meta convention reserves the folder-field value
+			// "manifest" (`memory: <host> manifest <stamp>`), so manifest
+			// bookkeeping must never confirm a folder capture — even for a
+			// folder literally named manifest, which degrades to the honest
+			// deadline toast instead of being confirmed by every meta commit.
+			name:        "manifest bookkeeping never confirms a folder capture",
+			folder:      "manifest",
+			tickTo:      flowT0.Add(12 * time.Second),
+			lastSync:    &api.SyncSummary{At: captureAt, Commits: []string{"memory: host1 manifest 2026-07-13T12:00:10Z"}, Pushed: true},
 			wantToast:   "",
 			wantCleared: false,
 		},
@@ -549,7 +582,11 @@ func TestPendingCaptureToasts(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			m, _ := newFlowModel(t, terminalEditorSettings())
-			m.pendingCapture = &pendingCapture{folder: "acme", since: flowT0}
+			pendingFolder := testCase.folder
+			if pendingFolder == "" {
+				pendingFolder = "acme"
+			}
+			m.pendingCapture = &pendingCapture{folder: pendingFolder, since: flowT0}
 
 			m, _ = step(m, tickMsg(testCase.tickTo))
 			m, _ = step(m, statusMsg{resp: api.StatusResponse{State: "ready", LastSync: testCase.lastSync}})
@@ -660,6 +697,137 @@ func TestSecondEditRefusedWhileActive(t *testing.T) {
 	m, _ = step(m, views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: unitDir}}, Provider: "claude"})
 	if m.flowModal != nil {
 		t.Error("n opened a modal while an edit session is active")
+	}
+}
+
+// TestFlowRequestsRefusedWhileModalOpen pins the one-flow invariant against
+// message interleaving: bubbletea gives no ordering guarantee between a
+// keystroke and an earlier Cmd's message, so a second mutation request can
+// arrive AFTER an earlier request's modal opened (fast typing, key repeat,
+// paste). Every such request must be refused outright — a session starting
+// under an open modal would later be clobbered by the modal's own submit
+// (losing its cleanup and mis-adjudicating its editor's exit), and a queued
+// request must never silently replace an open delete confirm.
+func TestFlowRequestsRefusedWhileModalOpen(t *testing.T) {
+	t.Parallel()
+	const wantRefusal = "a prompt is already open — finish or esc it first"
+
+	t.Run("edit request under the open name modal is refused", func(t *testing.T) {
+		t.Parallel()
+		m, cacheRoot := newFlowModel(t, terminalEditorSettings())
+		unitDir := t.TempDir()
+		memory := writeFlowMemory(t, unitDir, "note.md", "# note\n")
+		m, _ = step(m, views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: unitDir}}, Provider: "claude"})
+		if m.flowModal == nil || m.flowModal.kind != flowModalNewName {
+			t.Fatal("setup: n request did not open the name modal")
+		}
+
+		m, cmd := step(m, views.EditRequestMsg{Memory: memory})
+
+		if got := plain(m.toastLine()); got != wantRefusal {
+			t.Errorf("toast = %q, want exactly %q", got, wantRefusal)
+		}
+		if m.editing != nil {
+			t.Error("a session started under the open modal")
+		}
+		if cmd != nil {
+			t.Errorf("refused request produced a Cmd (%#v); want none", cmd())
+		}
+		if m.flowModal == nil || m.flowModal.kind != flowModalNewName {
+			t.Error("the refused request disturbed the open modal")
+		}
+		if got := cacheRootEntries(t, cacheRoot); got != 0 {
+			t.Errorf("cache root has %d entries, want 0 (nothing may stage under an open modal)", got)
+		}
+	})
+
+	t.Run("queued request never replaces the open delete confirm", func(t *testing.T) {
+		t.Parallel()
+		m, _ := newFlowModel(t, terminalEditorSettings())
+		unitDir := t.TempDir()
+		memory := writeFlowMemory(t, unitDir, "note.md", "# note\n")
+		m, _ = step(m, views.DeleteRequestMsg{Memory: memory})
+		if m.flowModal == nil || m.flowModal.kind != flowModalDeleteConfirm {
+			t.Fatal("setup: d request did not open the confirm")
+		}
+
+		m, _ = step(m, views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: unitDir}}, Provider: "claude"})
+
+		if got := plain(m.toastLine()); got != wantRefusal {
+			t.Errorf("toast = %q, want exactly %q", got, wantRefusal)
+		}
+		if m.flowModal == nil || m.flowModal.kind != flowModalDeleteConfirm {
+			t.Fatal("the open delete confirm was replaced by the queued request")
+		}
+		if got := m.flowModal.memory.RelPath; got != "note.md" {
+			t.Errorf("delete confirm target = %q, want the original %q", got, "note.md")
+		}
+	})
+
+	t.Run("name submit refuses when a session is already active", func(t *testing.T) {
+		t.Parallel()
+		// The request-time conjunct above makes this state unreachable
+		// through the message flow, so the pin drives the last line of
+		// defense directly — the session guard where sessions are created —
+		// by planting an active session under the open modal.
+		m, cacheRoot := newFlowModel(t, terminalEditorSettings())
+		claudeUnit := api.UnitInfo{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}
+		m, _ = step(m, views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{claudeUnit}, Provider: "claude"})
+		if m.flowModal == nil {
+			t.Fatal("setup: n request did not open the name modal")
+		}
+		for _, r := range "notes" {
+			m, _ = step(m, key(string(r)))
+		}
+		planted := &editSession{scratchPath: "/sentinel/first.md", startedAt: flowT0}
+		m.editing = planted
+
+		m, cmd := step(m, key("enter"))
+
+		if got := plain(m.toastLine()); !strings.Contains(got, "editor already open") {
+			t.Errorf("toast = %q, want the active-session refusal", got)
+		}
+		if m.editing != planted || m.editing.scratchPath != "/sentinel/first.md" {
+			t.Errorf("submit clobbered the active session: %+v", m.editing)
+		}
+		if cmd != nil {
+			t.Errorf("refused submit produced a Cmd (%#v); want none", cmd())
+		}
+		if got := cacheRootEntries(t, cacheRoot); got != 0 {
+			t.Errorf("cache root has %d entries, want 0 (the refused submit must not stage)", got)
+		}
+		if _, err := os.Lstat(filepath.Join(claudeUnit.LocalDir, "notes.md")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the refused submit created a file: %v", err)
+		}
+	})
+}
+
+// TestNewRefusedWithoutEditorAtRequest pins n's no-editor refusal at REQUEST
+// time, exactly like e's: the exact ErrNoEditor wording lands immediately
+// and no name modal ever opens — deferring the refusal to submit would
+// collect a name only to discard it.
+func TestNewRefusedWithoutEditorAtRequest(t *testing.T) {
+	t.Parallel()
+	m, cacheRoot := newFlowModel(t, config.Settings{})
+	claudeUnit := api.UnitInfo{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}
+
+	m, cmd := step(m, views.NewRequestMsg{Folder: "acme", Units: []api.UnitInfo{claudeUnit}, Provider: "claude"})
+
+	const want = "no editor configured — set $EDITOR or editor.command in config"
+	if got := plain(m.toastLine()); got != want {
+		t.Errorf("toast = %q, want exactly %q", got, want)
+	}
+	if m.flowModal != nil {
+		t.Error("the name modal opened despite no editor resolving")
+	}
+	if m.editing != nil {
+		t.Error("a session started despite no editor resolving")
+	}
+	if cmd != nil {
+		t.Errorf("request produced a Cmd (%#v); want none", cmd())
+	}
+	if got := cacheRootEntries(t, cacheRoot); got != 0 {
+		t.Errorf("cache root has %d entries, want 0", got)
 	}
 }
 
@@ -829,12 +997,14 @@ func TestQuiescedFlowRefusals(t *testing.T) {
 // why it is dead, crush-style.
 func TestStackFooterShowsFlowRowsVisiblyDisabled(t *testing.T) {
 	t.Parallel()
-	pushBrowser := func(t *testing.T, m Model, class provider.Class) Model {
+	enrolledUnits := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: "/enrolled/claude"}}
+	pushBrowser := func(t *testing.T, m Model, class provider.Class, units []api.UnitInfo) Model {
 		t.Helper()
 		memory := writeFlowMemory(t, t.TempDir(), "note.md", "# note\n")
 		memory.Class = class
 		browser := views.NewBrowser(views.BrowserDeps{
 			Folder:   "acme",
+			Units:    units,
 			Now:      m.now,
 			ReadBody: func(memoryfs.Memory) (string, error) { return "# note\n", nil },
 			List:     func() ([]memoryfs.Memory, error) { return []memoryfs.Memory{memory}, nil },
@@ -846,7 +1016,7 @@ func TestStackFooterShowsFlowRowsVisiblyDisabled(t *testing.T) {
 	t.Run("no editor: edit and new visible but struck", func(t *testing.T) {
 		t.Parallel()
 		m, _ := newFlowModel(t, config.Settings{}) // no editor resolves
-		m = pushBrowser(t, m, provider.ClassFact)
+		m = pushBrowser(t, m, provider.ClassFact, enrolledUnits)
 
 		footer := m.footer()
 		if got := plain(footer); !strings.Contains(got, "e edit") || !strings.Contains(got, "n new") {
@@ -860,7 +1030,7 @@ func TestStackFooterShowsFlowRowsVisiblyDisabled(t *testing.T) {
 	t.Run("editor resolves on a fact row: nothing struck", func(t *testing.T) {
 		t.Parallel()
 		m, _ := newFlowModel(t, terminalEditorSettings())
-		m = pushBrowser(t, m, provider.ClassFact)
+		m = pushBrowser(t, m, provider.ClassFact, enrolledUnits)
 
 		footer := m.footer()
 		if got := plain(footer); !strings.Contains(got, "e edit") || !strings.Contains(got, "r rename") || !strings.Contains(got, "d delete") {
@@ -874,7 +1044,7 @@ func TestStackFooterShowsFlowRowsVisiblyDisabled(t *testing.T) {
 	t.Run("derived-class selection: rename and delete struck", func(t *testing.T) {
 		t.Parallel()
 		m, _ := newFlowModel(t, terminalEditorSettings())
-		m = pushBrowser(t, m, provider.ClassDerivedIndex)
+		m = pushBrowser(t, m, provider.ClassDerivedIndex, enrolledUnits)
 
 		footer := m.footer()
 		if got := plain(footer); !strings.Contains(got, "r rename") {
@@ -882,6 +1052,25 @@ func TestStackFooterShowsFlowRowsVisiblyDisabled(t *testing.T) {
 		}
 		if !strikethroughPattern.MatchString(footer) {
 			t.Errorf("no SGR strikethrough with a derived-class selection:\n%q", footer)
+		}
+	})
+
+	t.Run("no enrolled units: new struck even with an editor", func(t *testing.T) {
+		t.Parallel()
+		// Editor resolves and a fact row is selected, so e/r/d all pass
+		// their gates (the "nothing struck" subtest above proves that
+		// combination renders zero strikethrough) — any strike here is
+		// therefore attributable to n's units conjunct alone: a folder with
+		// no enrolled units has nowhere to put a new memory.
+		m, _ := newFlowModel(t, terminalEditorSettings())
+		m = pushBrowser(t, m, provider.ClassFact, nil)
+
+		footer := m.footer()
+		if got := plain(footer); !strings.Contains(got, "n new") {
+			t.Fatalf("footer %q hides the units-gated row; it must stay visible", got)
+		}
+		if !strikethroughPattern.MatchString(footer) {
+			t.Errorf("no SGR strikethrough with zero enrolled units:\n%q", footer)
 		}
 	})
 }

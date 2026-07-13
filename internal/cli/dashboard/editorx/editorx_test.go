@@ -2,10 +2,12 @@ package editorx_test
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 
@@ -455,4 +457,86 @@ func TestCommandPanicsOnEmptyArgv(t *testing.T) {
 		}
 	}()
 	editorx.Command(editorx.Editor{}, "/scratch/dir/notes.md")
+}
+
+// TestSweepStaleScratch pins the reclamation policy: scratch dirs whose
+// mtime is ScratchStaleAfter or older are removed recursively (staged
+// plaintext included), strictly younger ones and non-scratch entries are
+// untouched, and a missing cache root is a clean no-op. Ages are scripted
+// through os.Chtimes against a fixed reference time — the sweep never
+// consults the wall clock itself.
+func TestSweepStaleScratch(t *testing.T) {
+	t.Parallel()
+	sweepReference := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+
+	// newScratchAged stages a real scratch dir (through the same
+	// NewScratchDir/Stage pair production uses, so the naming can never
+	// drift from what the sweep matches) and backdates its mtime.
+	newScratchAged := func(t *testing.T, cacheRoot string, age time.Duration) string {
+		t.Helper()
+		scratchDir, _, err := editorx.NewScratchDir(cacheRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := editorx.Stage(scratchDir, "note.md", []byte("# staged\n")); err != nil {
+			t.Fatal(err)
+		}
+		backdated := sweepReference.Add(-age)
+		if err := os.Chtimes(scratchDir, backdated, backdated); err != nil {
+			t.Fatal(err)
+		}
+		return scratchDir
+	}
+
+	t.Run("stale swept, fresh and foreign kept", func(t *testing.T) {
+		t.Parallel()
+		cacheRoot := t.TempDir()
+		staleDir := newScratchAged(t, cacheRoot, editorx.ScratchStaleAfter+time.Hour)
+		boundaryDir := newScratchAged(t, cacheRoot, editorx.ScratchStaleAfter) // exactly the threshold: stale
+		freshDir := newScratchAged(t, cacheRoot, editorx.ScratchStaleAfter-time.Minute)
+		foreignDir := filepath.Join(cacheRoot, "unrelated-cache-dir")
+		if err := os.Mkdir(foreignDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		foreignFile := filepath.Join(cacheRoot, "agent-brain-edit-shaped-file")
+		if err := os.WriteFile(foreignFile, []byte("not a dir\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ancient := sweepReference.Add(-2 * editorx.ScratchStaleAfter)
+		for _, path := range []string{foreignDir, foreignFile} {
+			if err := os.Chtimes(path, ancient, ancient); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if err := editorx.SweepStaleScratch(cacheRoot, sweepReference); err != nil {
+			t.Fatalf("sweep errored: %v", err)
+		}
+
+		for _, sweptDir := range []string{staleDir, boundaryDir} {
+			if _, err := os.Stat(sweptDir); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("stale scratch dir %s survived the sweep: %v", sweptDir, err)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(freshDir, "note.md")); err != nil {
+			t.Errorf("fresh scratch (or its staged file) was swept: %v", err)
+		}
+		if _, err := os.Stat(foreignDir); err != nil {
+			t.Errorf("non-scratch dir was swept: %v", err)
+		}
+		if _, err := os.Stat(foreignFile); err != nil {
+			t.Errorf("scratch-named plain file was swept (only dirs are scratch sessions): %v", err)
+		}
+	})
+
+	t.Run("missing cache root is a no-op", func(t *testing.T) {
+		t.Parallel()
+		neverCreated := filepath.Join(t.TempDir(), "never-created")
+		if err := editorx.SweepStaleScratch(neverCreated, sweepReference); err != nil {
+			t.Fatalf("sweep of a missing cache root errored: %v", err)
+		}
+		if _, err := os.Stat(neverCreated); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("sweep created the missing cache root: %v", err)
+		}
+	})
 }

@@ -149,6 +149,13 @@ func (m Model) startNewFlow(request views.NewRequestMsg) (Model, tea.Cmd) {
 	if m.refuseFlowStart() {
 		return m, nil
 	}
+	// Refuse a missing editor at REQUEST time, exactly like e (whose
+	// beginEdit resolves the editor as its first act): deferring to submit
+	// would collect a name only to discard it with the refusal.
+	if _, err := editorx.Resolve(m.settings.Editor, m.getenv); err != nil {
+		m.pushToast(err.Error())
+		return m, nil
+	}
 	unit, ok := pickUnit(request.Units, request.Provider)
 	if !ok {
 		m.pushToast("no enrolled unit in this folder to create a memory in")
@@ -211,15 +218,23 @@ func pickUnit(units []api.UnitInfo, providerHint string) (api.UnitInfo, bool) {
 }
 
 // refuseFlowStart toasts and refuses when no flow may start right now:
-// while a handoff is active (one session, ever), or while the daemon is
-// quiesced (spec §15's grey-out-with-refusal for mutating actions). It
-// deliberately guards only flow STARTS — a landing edit is never blocked,
-// because refusing a finish would discard content the user already wrote;
-// a quiesce that begins mid-edit merely defers the capture, which the
-// pendingCapture deadline toast names explicitly.
+// while a handoff is active (one session, ever), while a flow modal is
+// open (bubbletea gives no ordering guarantee between a keystroke and an
+// earlier Cmd's message, so a queued request CAN arrive after another
+// request's modal opened — admitting it would fork the flow state the
+// modal is about to act on, or silently replace an open delete confirm),
+// or while the daemon is quiesced (spec §15's grey-out-with-refusal for
+// mutating actions). It deliberately guards only flow STARTS — a landing
+// edit is never blocked, because refusing a finish would discard content
+// the user already wrote; a quiesce that begins mid-edit merely defers the
+// capture, which the pendingCapture deadline toast names explicitly.
 func (m *Model) refuseFlowStart() bool {
 	if m.editing != nil {
-		m.pushToast(fmt.Sprintf("editor already open (since %s) — finish that edit first", m.editing.startedAt.Format("15:04:05")))
+		m.toastEditorBusy()
+		return true
+	}
+	if m.flowModal != nil {
+		m.pushToast("a prompt is already open — finish or esc it first")
 		return true
 	}
 	if m.quiesced() {
@@ -227,6 +242,13 @@ func (m *Model) refuseFlowStart() bool {
 		return true
 	}
 	return false
+}
+
+// toastEditorBusy is the one active-session refusal wording, shared by
+// refuseFlowStart (request gating) and beginEdit (the session guard), so
+// the two paths can never drift.
+func (m *Model) toastEditorBusy() {
+	m.pushToast(fmt.Sprintf("editor already open (since %s) — finish that edit first", m.editing.startedAt.Format("15:04:05")))
 }
 
 // refuseNonFact toasts and refuses a mutation over anything but a fact-class
@@ -248,6 +270,17 @@ func (m *Model) refuseNonFact(memory memoryfs.Memory) bool {
 // returns nil with no session recorded. ErrNoEditor's own message is
 // exactly the spec's footer wording, so it is toasted verbatim.
 func (m *Model) beginEdit(session editSession) tea.Cmd {
+	if m.editing != nil {
+		// The at-most-one-session invariant, enforced where sessions are
+		// created. Request handlers refuse via refuseFlowStart well before
+		// this line; the guard protects the callers that DON'T pass through
+		// it — a modal submit whose session appeared after the modal opened,
+		// and any future caller — from clobbering the live session (which
+		// would leak its scratch and mis-adjudicate its editor's exit
+		// against the wrong session).
+		m.toastEditorBusy()
+		return nil
+	}
 	editor, err := editorx.Resolve(m.settings.Editor, m.getenv)
 	if err != nil {
 		m.pushToast(err.Error())
@@ -561,18 +594,46 @@ func (m *Model) checkPendingCapture() {
 	}
 }
 
-// capturedFolder reports whether any capture-commit subject names folder.
-// Subjects follow the engine's own convention (`memory: <host> <folder>
-// <timestamp>`), so the folder appears space-delimited on both sides —
-// which is what keeps "acme" from matching a sibling "acme-web" capture.
+// capturedFolder reports whether any commit subject is a capture of
+// folder, matched by field POSITION against the engine's own convention —
+// a space-delimited substring is not enough, because a folder named like
+// the host would sit space-delimited in every subject from that host.
 func capturedFolder(commitSubjects []string, folder string) bool {
-	needle := " " + folder + " "
 	for _, subject := range commitSubjects {
-		if strings.Contains(subject, needle) {
+		if capturedFolderName, ok := captureSubjectFolder(subject); ok && capturedFolderName == folder {
 			return true
 		}
 	}
 	return false
+}
+
+// captureSubjectFolder extracts the folder field from one capture-commit
+// subject, ok=false for anything that is not a folder capture. The shape
+// mirrors the engine's own subject convention and parser
+// (internal/engine/commit.go, history.go): `memory: <host> <folder>
+// <timestamp>` — exactly four space-separated fields, the first literally
+// "memory:", the last parsing as RFC3339.
+//
+// The folder-field value "manifest" is RESERVED by the engine's meta
+// convention (`memory: <host> manifest <stamp>` — the identical shape), so
+// a subject carrying it is registry/manifest bookkeeping, never a folder
+// capture. The engine's own parser escapes that ambiguity because its
+// history queries pathspec-filter meta commits out upstream; the hub reads
+// the daemon's unfiltered LastSync subjects, so the reservation must be
+// applied here. A real folder literally named "manifest" therefore never
+// confirms by subject and degrades to the honest deadline toast.
+func captureSubjectFolder(subject string) (string, bool) {
+	fields := strings.Split(subject, " ")
+	if len(fields) != 4 || fields[0] != "memory:" {
+		return "", false
+	}
+	if _, err := time.Parse(time.RFC3339, fields[3]); err != nil {
+		return "", false
+	}
+	if fields[2] == "manifest" {
+		return "", false
+	}
+	return fields[2], true
 }
 
 // toastQuiesceRefusal is the one quiesce-refusal wording, shared by
@@ -588,6 +649,19 @@ func (m *Model) toastQuiesceRefusal() {
 func (m *Model) editorResolves() bool {
 	_, err := editorx.Resolve(m.settings.Editor, m.getenv)
 	return err == nil
+}
+
+// browserHasUnits reports whether the navigation stack's top is a Browser
+// whose folder has at least one enrolled unit — the receiving end a new
+// memory needs (pickUnit's ok=false case, surfaced as availability so the
+// n row reads struck instead of lit-but-refusing).
+func (m *Model) browserHasUnits() bool {
+	top, ok := m.stackTop()
+	if !ok {
+		return false
+	}
+	browser, ok := top.(*views.Browser)
+	return ok && len(browser.Units()) > 0
 }
 
 // flowTarget resolves the memory the flow keys would act on from the top of
@@ -611,19 +685,20 @@ func (m *Model) flowTarget() (memoryfs.Memory, bool) {
 
 // flowAvailable answers available(id) for the flow rows: the brief's
 // editor-resolves ∧ fact-class ∧ no-active-session, with each conjunct
-// applied where it is meaningful — new has no existing target (no class
-// conjunct), rename/delete never touch the editor (no editor conjunct),
-// and the one-session gate binds them all. The footer renders a false
-// answer as a visibly struck row (stackFooterRows), and the request
-// handlers enforce the same gates with a toast, so availability is honest
-// advertising, never the only line of defense.
+// applied where it is meaningful — new has no existing target (its class
+// conjunct is replaced by "the folder has a unit to receive the file"),
+// rename/delete never touch the editor (no editor conjunct), and the
+// one-session gate binds them all. The footer renders a false answer as a
+// visibly struck row (stackFooterRows), and the request handlers enforce
+// the same gates with a toast, so availability is honest advertising,
+// never the only line of defense.
 func (m *Model) flowAvailable(id string) bool {
 	if m.editing != nil {
 		return false
 	}
 	switch id {
 	case "browser-new":
-		return m.editorResolves()
+		return m.editorResolves() && m.browserHasUnits()
 	case "browser-edit", "reading-edit":
 		target, ok := m.flowTarget()
 		return ok && target.Class == provider.ClassFact && m.editorResolves()

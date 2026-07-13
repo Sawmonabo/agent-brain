@@ -10,9 +10,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"mvdan.cc/sh/v3/shell"
 
@@ -110,6 +113,60 @@ func NewScratchDir(cacheRoot string) (dir string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("create scratch dir: %w", err)
 	}
 	return scratchDir, func() { _ = os.RemoveAll(scratchDir) }, nil
+}
+
+// ScratchStaleAfter is the age (on the dir's mtime, which staging sets — a
+// proxy for when the session began) at which SweepStaleScratch reclaims a
+// scratch dir. Scratch dirs hold PLAINTEXT memory copies, so nothing may
+// persist indefinitely; but the caller deliberately preserves a scratch on
+// its failure paths precisely because it is the user's ONLY remaining copy
+// of an edit, and the pointer to it is a transient toast — so the rescue
+// window must comfortably span human absence (a weekend, a short trip).
+// Destroying the only copy early is strictly worse than a week of lingering
+// plaintext inside the user's own 0700 cache dir, the same trust domain as
+// the provider dirs holding the same content; after a full week unrescued,
+// the edit is abandoned. The age floor also means a sweep at one hub's
+// start can never touch another live hub's in-flight session, which is
+// hours old at most.
+const ScratchStaleAfter = 7 * 24 * time.Hour
+
+// SweepStaleScratch reclaims scratch dirs under cacheRoot aged
+// ScratchStaleAfter or more: sessions orphaned by a quit or crash mid-edit
+// and preserved-but-abandoned failure scratches would otherwise accumulate
+// plaintext memory copies forever. The hub invokes it once at start, before
+// any session of its own exists. Best-effort by contract: each candidate is
+// judged and removed independently, one failure never stops the sweep, and
+// the joined error is advisory — anything unreclaimed simply waits for the
+// next launch. Only directories matching NewScratchDir's own naming are
+// considered; a missing cacheRoot means nothing was ever staged.
+func SweepStaleScratch(cacheRoot string, now time.Time) error {
+	entries, err := os.ReadDir(cacheRoot)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("sweep scratch root %s: %w", cacheRoot, err)
+	}
+	scratchDirPrefix := strings.TrimSuffix(scratchDirPattern, "*")
+	staleCutoff := now.Add(-ScratchStaleAfter)
+	var sweepErrors []error
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), scratchDirPrefix) {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			sweepErrors = append(sweepErrors, infoErr)
+			continue
+		}
+		if info.ModTime().After(staleCutoff) {
+			continue // strictly younger than the cutoff: live or still rescuable
+		}
+		if removeErr := os.RemoveAll(filepath.Join(cacheRoot, entry.Name())); removeErr != nil {
+			sweepErrors = append(sweepErrors, removeErr)
+		}
+	}
+	return errors.Join(sweepErrors...)
 }
 
 // Stage writes content into dir under filename — the memory's own

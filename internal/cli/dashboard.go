@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/editorx"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
@@ -79,6 +81,15 @@ func launchHub(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	cacheRoot := filepath.Join(userCacheDir, "agent-brain")
+	// Reclaim scratch dirs orphaned by earlier sessions (quit or crash
+	// mid-edit, abandoned failure preservations) before the hub starts:
+	// they hold plaintext memory copies, which must never persist forever
+	// (editorx.ScratchStaleAfter documents the window and its rationale).
+	// The error is deliberately dropped — reclamation is opportunistic
+	// housekeeping, anything unswept waits for the next launch, and
+	// refusing to launch the dashboard over it would invert priorities.
+	_ = editorx.SweepStaleScratch(cacheRoot, time.Now())
 
 	model := dashboard.New(dashboard.Config{
 		Data:      dashboard.NewData(client, offlineDoctorRunner()),
@@ -86,7 +97,7 @@ func launchHub(cmd *cobra.Command) error {
 		Identify:  dashboardIdentify(),
 		Registry:  deps.registry,
 		Settings:  settings,
-		CacheRoot: filepath.Join(userCacheDir, "agent-brain"),
+		CacheRoot: cacheRoot,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting

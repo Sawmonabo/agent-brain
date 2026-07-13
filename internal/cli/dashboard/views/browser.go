@@ -326,6 +326,14 @@ func (b *Browser) Selected() (memoryfs.Memory, bool) {
 	return rows[b.cursor], true
 }
 
+// Units exposes the folder's enrolled units for the root's browser-new
+// availability gate: a folder with no units has nowhere to receive a new
+// memory, so the n row renders struck instead of lit-but-refusing. Same
+// root-reaches-the-concrete-type seam as Selected.
+func (b *Browser) Units() []api.UnitInfo {
+	return b.deps.Units
+}
+
 // selectedRequest builds the Cmd that emits wrap's flow-request message for
 // the selected memory — e/r/d share it — or nil with no row selected. The
 // browser only ever emits; the root's handler owns every gate (class,
