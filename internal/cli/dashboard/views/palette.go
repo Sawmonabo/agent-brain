@@ -21,15 +21,17 @@ type PaletteChoiceMsg struct{ ID string }
 // PaletteModel is the ctrl+k command palette: a fuzzy-filtered, keyboard-
 // driven list over actions.Registry(). It holds no daemon knowledge of its
 // own — availability (which rows a not-yet-wired build can actually run) and
-// the current quiesce posture are both injected at construction, the same
-// TrackActions-style seam the add flow uses, because runners and daemon
-// status are root-private (views must not import the root package).
+// the current quiesce posture are both injected at construction (available
+// is then re-bound on every forwarded keypress via SetAvailable — see
+// there), the same TrackActions-style seam the add flow uses, because
+// runners and daemon status are root-private (views must not import the
+// root package).
 type PaletteModel struct {
 	styles theme.Styles
 	input  textinput.Model
 
-	available   func(id string) bool
-	quiescedNow bool // Mutates rows render greyed while true (spec §15); snapshotted at open, not live
+	available   func(id string) bool // re-bound on every forwarded keypress via SetAvailable, never left to go stale
+	quiescedNow bool                 // Mutates rows render greyed while true (spec §15); snapshotted at open, not live
 
 	filtered []actions.Action
 	cursor   int
@@ -64,6 +66,17 @@ func NewPaletteModel(styles theme.Styles, available func(id string) bool, quiesc
 // never missed rather than silently stuck on the theme it opened with.
 func (p *PaletteModel) SetStyles(styles theme.Styles) {
 	p.styles = styles
+}
+
+// SetAvailable re-binds the availability predicate. The root calls this on
+// every keypress it forwards to an open palette (dashboard.go's handleKey),
+// rather than trusting the value captured once at NewPaletteModel
+// construction to stay current: the root Model has value semantics, so a
+// bound method value closes over a snapshot that a later Update call cannot
+// reach, and would otherwise silently go stale for the rest of the
+// palette's lifetime.
+func (p *PaletteModel) SetAvailable(available func(id string) bool) {
+	p.available = available
 }
 
 // refilter recomputes the visible list from the input's current value:

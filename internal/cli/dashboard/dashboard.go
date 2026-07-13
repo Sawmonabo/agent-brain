@@ -397,8 +397,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// The palette owns the keyboard while open.
+	// The palette owns the keyboard while open. Its availability predicate is
+	// re-bound from the live model on every forwarded keypress, not just at
+	// open time: paletteAvailable is a bound method value on the root's
+	// value-semantics Model, so the copy captured once when the palette
+	// opened would otherwise freeze at whatever was true that instant —
+	// harmless today (nothing paletteAvailable reads changes while the
+	// palette is open) but fragile the moment availability ever depends on
+	// state that does.
 	if m.paletteOpen {
+		m.palette.SetAvailable(m.paletteAvailable)
 		next, cmd := m.palette.Update(msg)
 		m.palette = next
 		if next.Closed {
@@ -408,8 +416,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// The quit prompt owns the keyboard while open (spec §2): y/Y actually
-	// quits, n/N/esc dismiss it and the model keeps running. q still quits
-	// immediately regardless (handled below, unchanged).
+	// quits; n/N/esc dismiss it and the model keeps running. Any other key
+	// — including q — matches neither ConfirmDecision (y/Y/n/N) nor Cancel
+	// (esc) and falls through to this block's own final return: q is inert
+	// while the prompt is open, answered only by y/n/esc.
 	if m.quitPrompt {
 		switch {
 		case keybinding.Matches(msg, views.DashboardKeys.ConfirmDecision):
@@ -582,17 +592,47 @@ func (m *Model) dispatch(id string) tea.Cmd {
 }
 
 // available reports whether action id can actually do something right now.
-// switch-tabs, select, and help are structural — help in particular has no
-// wiring precondition and is never hidden — so all three are unconditionally
-// available; add-project additionally needs both track closures wired (the
-// existing AddAvailable contract, unchanged by this task); every other
-// action is available exactly when it has a registered runner — the
-// mechanism that keeps a not-yet-built feature's registry row (search, until
-// Task 15) invisible in the footer and the palette while the help overlay
-// still documents it.
+// It drives the footer (footerBindings) and dispatch's own pre-run gate —
+// NOT the palette, which uses the stricter paletteAvailable below. switch-
+// tabs and select are structural navigation handled by dedicated key-routing
+// paths in handleKey rather than a runner — dispatch never actually reaches
+// either — so they are unconditionally available here purely to keep
+// advertising their footer/help hints (spec §2); help has no wiring
+// precondition and is never hidden either, but IS genuinely dispatchable
+// (dispatch special-cases it directly). add-project additionally needs both
+// track closures wired (the existing AddAvailable contract, unchanged by
+// this task); every other action is available exactly when it has a
+// registered runner — the mechanism that keeps a not-yet-built feature's
+// registry row (search, until Task 15) invisible in the footer while the
+// help overlay still documents it.
 func (m *Model) available(id string) bool {
 	switch id {
 	case "switch-tabs", "select", "help":
+		return true
+	case "add-project":
+		return m.actions.AddAvailable()
+	default:
+		_, ok := m.runners()[id]
+		return ok
+	}
+}
+
+// paletteAvailable reports whether choosing action id from the palette would
+// actually run something. It is stricter than available: switch-tabs and
+// select are dead ends here even though the footer keeps advertising them,
+// because dispatch never reaches a runner for either (handleKey consumes
+// switch-tabs before the generic dispatch loop ever runs, and select has no
+// dispatch path at all) — choosing either from the palette used to close it
+// and silently do nothing. This is deliberately independent of available
+// (not a filtered wrapper around it): deriving it straight from the runners
+// map, plus the one case dispatch special-cases outside that map (help),
+// means a future registry row added without a runner is automatically
+// absent from the palette even if some later change ever gave available
+// itself a new unconditional-true case — there is no hand-maintained
+// exclusion list here to fall out of sync.
+func (m *Model) paletteAvailable(id string) bool {
+	switch id {
+	case "help":
 		return true
 	case "add-project":
 		return m.actions.AddAvailable()
@@ -632,7 +672,7 @@ func (m *Model) runners() map[string]func() tea.Cmd {
 		},
 		"open-palette": func() tea.Cmd {
 			m.paletteOpen = true
-			palette, cmd := views.NewPaletteModel(m.styles, m.available, m.quiesced())
+			palette, cmd := views.NewPaletteModel(m.styles, m.paletteAvailable, m.quiesced())
 			m.palette = palette
 			return cmd
 		},
@@ -665,12 +705,14 @@ func (m Model) View() tea.View {
 	case m.paletteOpen:
 		body = m.palette.View()
 	default:
-		parts := []string{m.statusHeader(), m.tabBar(), m.activeBody()}
+		header := m.statusHeader()
 		if toastLine := m.toastLine(); toastLine != "" {
-			parts = append(parts, toastLine)
+			// Grouped with the status header, not between body and
+			// footer (spec §2: "status bar: daemon state · version ·
+			// update banner · toasts").
+			header = strings.Join([]string{header, toastLine}, "\n\n")
 		}
-		parts = append(parts, m.footer())
-		body = strings.Join(parts, "\n\n")
+		body = strings.Join([]string{header, m.tabBar(), m.activeBody(), m.footer()}, "\n\n")
 	}
 	view := tea.NewView(body)
 	view.AltScreen = true
@@ -727,9 +769,13 @@ func (m Model) footer() string {
 // footerBindings renders the active scope's live keys straight from the
 // action registry, in registry order: every global action plus the active
 // tab's own scope, filtered to rows that both have a real key to advertise
-// (sync-fleet does not — palette/help only) and are actually available
-// right now (search is not, until Task 15) — the same availability rule the
-// palette applies to its own listing.
+// (sync-fleet does not — palette/help only) and are actually available right
+// now (search is not, until Task 15) via the same available() the footer has
+// always used. This deliberately differs from the palette's own listing
+// (paletteAvailable): switch-tabs and select stay advertised here because
+// the active view's own key-routing honors them directly, even though
+// neither is ever reachable through dispatch — which is exactly why the
+// palette, unlike the footer, must hide both.
 func (m Model) footerBindings() []keybinding.Binding {
 	scope := m.activeScope()
 	var bindings []keybinding.Binding

@@ -128,6 +128,30 @@ func TestPaletteGreysMutatingActionsWhileQuiesced(t *testing.T) {
 	}
 }
 
+// TestPaletteSetAvailableRefreshesFiltering pins the fix for the frozen-
+// predicate hazard: the root's paletteAvailable is a bound method value on
+// a value-semantics Model, so the copy captured once at NewPaletteModel
+// construction time would otherwise never see any later change — harmless
+// today only because nothing paletteAvailable reads is itself mutable while
+// the palette is open. SetAvailable is how the root re-binds it on every
+// forwarded keypress; refilter (which every real keystroke triggers) must
+// honor whatever was most recently bound, not the original.
+func TestPaletteSetAvailableRefreshesFiltering(t *testing.T) {
+	t.Parallel()
+	p := newPalette(alwaysAvailable, false)
+	if got := plain(p.View()); !strings.Contains(got, "sync fleet") {
+		t.Fatalf("setup: view %q should list sync fleet before narrowing availability", got)
+	}
+
+	hideSyncFleet := func(id string) bool { return id != "sync-fleet" }
+	p.SetAvailable(hideSyncFleet)
+	p.refilter()
+
+	if got := plain(p.View()); strings.Contains(got, "sync fleet") {
+		t.Errorf("view %q still lists sync fleet after SetAvailable rebound the predicate", got)
+	}
+}
+
 // TestPaletteTypingIsNeverInterceptedAsNavigation guards the reason the
 // palette cannot reuse DashboardKeys.Select (up/down/k/j): j and k must stay
 // literal characters while a query is being typed, unlike the add picker's

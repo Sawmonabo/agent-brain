@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
@@ -838,6 +839,68 @@ func TestCtrlKPaletteEscClosesWithoutDispatch(t *testing.T) {
 	}
 }
 
+// TestPaletteListsOnlyDispatchableActions is the completeness pin for the
+// palette's availability gate: every action paletteAvailable admits must
+// resolve to either dispatch's help special-case or a real entry in
+// runners() — the two, and only two, things dispatch can actually run. This
+// ranges over the REAL registry and the REAL predicate/runners map (not a
+// synthetic stand-in), so a future action added to the registry without a
+// runner would fail this test the moment it also became paletteAvailable.
+func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	runners := m.runners()
+	for _, action := range actions.Registry() {
+		if !m.paletteAvailable(action.ID) {
+			continue
+		}
+		if action.ID == "help" {
+			continue // dispatch's one non-runner special case
+		}
+		if _, ok := runners[action.ID]; !ok {
+			t.Errorf("paletteAvailable(%q) = true but dispatch has no runner for it (and it is not the help special-case)", action.ID)
+		}
+	}
+}
+
+// TestPaletteHidesDeadEndsFooterAndHelpStillAdvertiseThem pins the palette-
+// scoped fix directly: switch-tabs and select have no runner and are never
+// reachable through dispatch (handleKey consumes switch-tabs before the
+// generic dispatch loop ever runs; select has no dispatch path at all), so
+// choosing either from the palette used to close it and silently do
+// nothing. Both must now be absent from the palette's own listing while the
+// footer and help overlay — which advertise hints for keys the active
+// view's own routing already honors directly, not dispatch — keep naming
+// both (spec §2).
+func TestPaletteHidesDeadEndsFooterAndHelpStillAdvertiseThem(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.active = tabProjects
+
+	m = drive(t, m, key("ctrl+k"))
+	paletteView := plain(m.palette.View())
+	for _, deadEnd := range []string{"switch", "select"} {
+		if strings.Contains(paletteView, deadEnd) {
+			t.Errorf("palette view %q lists %q; it has no runner and dispatch can never reach it", paletteView, deadEnd)
+		}
+	}
+
+	footer := plain(m.footer())
+	for _, want := range []string{"tab/1–4 switch", "↑/↓ select"} {
+		if !strings.Contains(footer, want) {
+			t.Errorf("footer %q missing %q; hiding a dead end from the palette must not hide its footer hint", footer, want)
+		}
+	}
+
+	help := plain(views.NewHelpModel(m.styles).View())
+	for _, want := range []string{"switch", "select"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("help overlay %q missing %q; help documents every registered action unconditionally", help, want)
+		}
+	}
+}
+
 // TestEscAtRootPromptsBeforeQuit pins spec §2's root chrome: esc with
 // nothing else owning the keyboard asks before quitting rather than quitting
 // outright (that stays q's job, still immediate); n dismisses the prompt and
@@ -958,6 +1021,33 @@ func TestToastExpiresOnTick(t *testing.T) {
 	m, _ = step(m, tickMsg(start.Add(6*time.Second)))
 	if m.toast != nil {
 		t.Errorf("toast still set after its TTL elapsed: %+v", m.toast)
+	}
+}
+
+// TestToastRendersInStatusHeaderRegion pins spec §2's placement: "status
+// bar: daemon state · version · update banner · toasts" groups a toast with
+// the persistent header, not between the active view's body and the
+// footer. A pushed toast must render after the header's own daemon-state
+// text and before the tab bar (and therefore before the body/footer that
+// follow it).
+func TestToastRendersInStatusHeaderRegion(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.status = readyStatus()
+	m.pushToast("local refusal notice")
+
+	body := plain(m.View().Content)
+	headerIdx := strings.Index(body, "daemon:")
+	toastIdx := strings.Index(body, "local refusal notice")
+	tabBarIdx := strings.Index(body, "[1 Projects]")
+
+	if headerIdx == -1 || toastIdx == -1 || tabBarIdx == -1 {
+		t.Fatalf("expected header, toast, and tab bar all present in the view; got:\n%s", body)
+	}
+	if headerIdx >= toastIdx || toastIdx >= tabBarIdx {
+		t.Errorf("toast not grouped with the status header (spec §2): header@%d toast@%d tabBar@%d\nview:\n%s",
+			headerIdx, toastIdx, tabBarIdx, body)
 	}
 }
 
