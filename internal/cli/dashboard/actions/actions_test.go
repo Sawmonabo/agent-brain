@@ -163,10 +163,11 @@ func TestBindingWithNoKeysIsDisabled(t *testing.T) {
 
 // TestSeedRegistryShape pins the seed rows Task 5 introduced: stable IDs
 // every later task and the root's dispatch/available/runners keys off of,
-// plus the two rows that task deliberately left inert (sync-fleet has no
-// direct key; search has a key reserved but arrives fully in Task 15 — this
-// test only pins the shape the registry declares, not availability, which
-// is root-private). Later tasks append their own rows as their screens land
+// plus the two rows that task deliberately left inert at the time
+// (sync-fleet has no direct key; search's key was reserved ahead of the
+// overlay that now dispatches it — this test only pins the shape the
+// registry declares, not availability, which is root-private). Later tasks
+// append their own rows as their screens land
 // (spec plan) — TestBrowserRegistryRowsShape below pins Task 11's — so this
 // only asserts Task 5's rows are present with the right shape, not that
 // they are the registry's entire contents.

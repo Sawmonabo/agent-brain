@@ -15,6 +15,7 @@ import (
 	glamourstyles "charm.land/glamour/v2/styles"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/links"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
@@ -184,10 +185,10 @@ type Model struct {
 	activity  views.ActivityView
 	doctor    views.DoctorView
 
-	// Root chrome (spec §14/§2): the palette and help overlays each own the
-	// whole screen and the keyboard while open; the quit prompt is an inline
-	// footer state, not a full overlay. toast is the persistent status-area
-	// notification dispatch uses to explain a local refusal.
+	// Root chrome (spec §14/§2/§7): the palette, help, and search overlays
+	// each own the whole screen and the keyboard while open; the quit prompt
+	// is an inline footer state, not a full overlay. toast is the persistent
+	// status-area notification dispatch uses to explain a local refusal.
 	paletteOpen bool
 	palette     views.PaletteModel
 	helpOpen    bool
@@ -207,6 +208,12 @@ type Model struct {
 	flowModal      *flowModal
 	getenv         func(string) string
 	cacheRoot      string
+
+	// searchOverlay is spec §7's global search. Unlike the palette (a value
+	// plus a paletteOpen flag), the pointer itself is the open flag — nil is
+	// closed — so the two can never disagree; forwardToSearchOverlay is the
+	// one place that drops it once the overlay latches Closed.
+	searchOverlay *views.SearchOverlay
 
 	quitting bool
 }
@@ -243,6 +250,9 @@ func (m Model) withStyles(styles theme.Styles, isDark bool) Model {
 	m.activity.SetStyles(styles)
 	m.doctor.SetStyles(styles)
 	m.palette.SetStyles(styles)
+	if m.searchOverlay != nil {
+		m.searchOverlay.SetStyles(styles)
+	}
 	m.renderMarkdown = newMarkdownRenderer(styleName(isDark))
 	m.applyStackTheme()
 	return m
@@ -577,6 +587,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.PaletteChoiceMsg:
 		return m, m.dispatch(msg.ID)
 
+	case views.SearchDebounceMsg, views.SearchResultsMsg:
+		// The search overlay's own async plumbing (debounce ticks, completed
+		// queries) surfaces at the root because the overlay is chrome, not a
+		// stacked Screen. After a dismissal an in-flight message lands here
+		// with the overlay already gone — dropped by the forward's nil
+		// check, exactly like a stale generation inside the overlay.
+		return m.forwardToSearchOverlay(msg)
+
+	case views.SearchChoiceMsg:
+		// spec §7's enter: the chosen memory opens its reading view. The
+		// overlay latched Closed when it emitted this, so the key forward
+		// already dropped it and the pushed screen owns the keyboard next.
+		return m.openSearchChoice(msg.Memory), nil
+
 	case serviceStartedMsg:
 		m.starting = false
 		m.serviceErr = msg.err
@@ -633,6 +657,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.paletteOpen = false
 		}
 		return m, cmd
+	}
+
+	// The search overlay owns the keyboard while open (spec §7): every key
+	// is the query's or the result cursor's, and esc closes the overlay and
+	// nothing else — reaching neither the quit prompt below nor any global
+	// binding.
+	if m.searchOverlay != nil {
+		return m.forwardToSearchOverlay(msg)
 	}
 
 	// The quit prompt owns the keyboard while open (spec §2): y/Y actually
@@ -716,10 +748,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Every other global action (quit, ctrl+k, ?, and — once Task 15 wires
-	// it — /) shares the one dispatch a palette choice also runs through, so
-	// a direct keypress and picking the same action from the palette can
-	// never behave differently.
+	// Every other global action (quit, ctrl+k, ?, /) shares the one dispatch
+	// a palette choice also runs through, so a direct keypress and picking
+	// the same action from the palette can never behave differently.
 	for _, candidate := range actions.ForScope(actions.ScopeGlobal) {
 		if keybinding.Matches(msg, actions.Binding(candidate)) {
 			return m, m.dispatch(candidate.ID)
@@ -887,6 +918,79 @@ func (m Model) forwardToStack(msg tea.Msg) (Model, tea.Cmd) {
 	return m.replaceStackTop(next), cmd
 }
 
+// forwardToSearchOverlay routes msg to the open search overlay — keys while
+// it owns the keyboard, plus its own SearchDebounceMsg/SearchResultsMsg
+// plumbing — re-binding Collect from the LIVE model first (the palette's
+// SetAvailable discipline, for the identical reason: a closure bound once
+// at open time would freeze that instant's fleet snapshot forever, because
+// Model has value semantics, and the whole point of Collect is enumerating
+// the CURRENT fleet). A nil overlay drops the message: a debounce tick or
+// query result that outlived its overlay is stale by definition. Once the
+// overlay latches Closed (esc, or enter emitting its choice) this is the
+// one place that drops it.
+func (m Model) forwardToSearchOverlay(msg tea.Msg) (Model, tea.Cmd) {
+	if m.searchOverlay == nil {
+		return m, nil
+	}
+	m.searchOverlay.SetCollect(m.collectFleetMemories)
+	cmd := m.searchOverlay.Update(msg)
+	if m.searchOverlay.Closed {
+		m.searchOverlay = nil
+	}
+	return m, cmd
+}
+
+// collectFleetMemories enumerates every tracked project's memories fresh —
+// the search overlay's Collect seam (spec §7: results across every tracked
+// project's provider dirs). One memoryfs.List over the ENTIRE latest fleet
+// snapshot: List resolves each unit through the provider registry and
+// returns entries sorted (Folder, RepoPath), i.e. already grouped by
+// folder. A bound method value freezes this model copy's snapshot, which is
+// why forwardToSearchOverlay re-binds it on every forwarded message.
+func (m Model) collectFleetMemories() ([]memoryfs.Memory, error) {
+	return memoryfs.List(m.registry, m.projects.Units)
+}
+
+// openSearchChoice pushes the chosen memory's reading view (spec §7's
+// enter, root half). The links Index is built lazily — only now, only over
+// the chosen memory's own folder: search itself never needs link graphs,
+// and indexing every tracked folder up front on `/` would read every body
+// in the fleet before the first keystroke. Folder scope matches the Index
+// the browser would have handed the same Reading (links resolve within a
+// project, spec §4). The synchronous List/BuildIndex here is construction
+// I/O under the same documented local-read exception as OpenFolderMsg's
+// NewBrowser above (screen.go's Screen.Update doc). A List failure degrades
+// to a nil Index — every link renders dangling, the posture Reading already
+// documents for a missing index — rather than refusing to open a memory
+// whose body is perfectly readable.
+func (m Model) openSearchChoice(memory memoryfs.Memory) Model {
+	var index *links.Index
+	if memories, err := memoryfs.List(m.registry, unitsForFolder(m.projects.Units, memory.Folder)); err == nil {
+		index = links.BuildIndex(memories, memoryfs.ReadBody)
+	}
+	return m.pushScreen(views.NewReading(views.ReadingDeps{
+		Memory:   memory,
+		Index:    index,
+		ReadBody: memoryfs.ReadBody,
+		Render:   m.renderMarkdown,
+		Styles:   m.styles,
+	}))
+}
+
+// unitsForFolder filters the fleet snapshot down to folder's own units —
+// the same subset openFolderCmd (views/projects.go) computes when a browser
+// is pushed, duplicated as a four-line loop rather than exported across the
+// views boundary just for this.
+func unitsForFolder(units []api.UnitInfo, folder string) []api.UnitInfo {
+	matching := make([]api.UnitInfo, 0, len(units))
+	for _, unit := range units {
+		if unit.Folder == folder {
+			matching = append(matching, unit)
+		}
+	}
+	return matching
+}
+
 // stackScope maps a concrete Screen type to the actions.Scope its footer
 // hints and quiesce/available checks belong to — the one place a footer or
 // help render needs a stack screen's scope, since the Screen interface
@@ -1041,14 +1145,15 @@ func findAction(id string) (actions.Action, bool) {
 // dispatch is the single entry point a matched key press and a chosen
 // palette row both funnel through (spec §14): it resolves the action's
 // metadata, applies the identical quiesce refusal a direct keypress gets,
-// and otherwise runs the action's registered runner. help is handled
-// directly here rather than through runners(): it is the one action that is
-// a pure Model state flip with no async work to schedule, so it has no
-// tea.Cmd to produce — forcing it into runners()'s func() tea.Cmd shape just
-// to return a constant nil is exactly the dead-weight-result smell the
-// unparam linter exists to catch. An unknown id, or one with no registered
-// runner (available's gate), does nothing — the registry stays honest about
-// what actually works right now.
+// and otherwise runs the action's registered runner. help and search are
+// handled directly here rather than through runners(): each is a pure
+// synchronous Model mutation (flipping helpOpen; constructing the overlay)
+// with no async work to schedule, so neither has a tea.Cmd to produce —
+// forcing either into runners()'s func() tea.Cmd shape just to return a
+// constant nil is exactly the dead-weight-result smell the unparam linter
+// exists to catch. An unknown id, or one with no registered runner
+// (available's gate), does nothing — the registry stays honest about what
+// actually works right now.
 func (m *Model) dispatch(id string) tea.Cmd {
 	action, ok := findAction(id)
 	if !ok || !m.available(id) {
@@ -1061,11 +1166,28 @@ func (m *Model) dispatch(id string) tea.Cmd {
 		m.helpOpen = true
 		return nil
 	}
+	if id == "search" {
+		m.openSearchOverlay()
+		return nil
+	}
 	runner, ok := m.runners()[id]
 	if !ok {
 		return nil
 	}
 	return runner()
+}
+
+// openSearchOverlay constructs and installs the global search overlay (spec
+// §7). Styles and the Collect binding are both snapshots of THIS model
+// copy — forwardToSearchOverlay re-binds Collect on every subsequent
+// message and withStyles re-propagates styles on a theme swap, so neither
+// snapshot outlives its accuracy.
+func (m *Model) openSearchOverlay() {
+	m.searchOverlay = views.NewSearchOverlay(views.SearchOverlayDeps{
+		Collect:  m.collectFleetMemories,
+		ReadBody: memoryfs.ReadBody,
+		Styles:   m.styles,
+	})
 }
 
 // available reports whether action id can actually do something right now.
@@ -1075,25 +1197,25 @@ func (m *Model) dispatch(id string) tea.Cmd {
 // handled by dedicated key-routing paths in handleKey rather than a runner
 // — dispatch never actually reaches either — so they are unconditionally
 // available here purely to keep advertising their footer/help hints (spec
-// §2); help has no wiring precondition and is never hidden either, but IS
-// genuinely dispatchable (dispatch special-cases it directly). open-browser
-// and the browser-*/reading-* rows are the identical shape one level down
-// the stack: ProjectsView.Update, Browser.updateKey, and Reading.updateKey
-// match their bindings directly (see actions.go's row comments), so
-// dispatch never reaches any of them either, and they stay unconditionally
-// available so the Projects, browser, and reading footers keep naming
-// them — except the edit-flow rows, whose availability is the live gate
-// flowAvailable computes (editor resolves ∧ fact-class selection ∧ no
-// active handoff, editflow.go): false renders them struck in the stack
-// footer, never hidden. add-project
-// additionally needs both track closures wired (the existing AddAvailable
-// contract, unchanged by this task); every other action is available
-// exactly when it has a registered runner — the mechanism that keeps a
-// not-yet-built feature's registry row (search, until Task 15) invisible in
-// the footer while the help overlay still documents it.
+// §2); help and search have no wiring precondition and are never hidden
+// either, and both ARE genuinely dispatchable (dispatch special-cases each
+// directly). open-browser and the browser-*/reading-* rows are the
+// identical shape one level down the stack: ProjectsView.Update,
+// Browser.updateKey, and Reading.updateKey match their bindings directly
+// (see actions.go's row comments), so dispatch never reaches any of them
+// either, and they stay unconditionally available so the Projects, browser,
+// and reading footers keep naming them — except the edit-flow rows, whose
+// availability is the live gate flowAvailable computes (editor resolves ∧
+// fact-class selection ∧ no active handoff, editflow.go): false renders
+// them struck in the stack footer, never hidden. add-project additionally
+// needs both track closures wired (the existing AddAvailable contract);
+// every other action is available exactly when it has a registered runner —
+// the mechanism that kept the search row invisible until its overlay
+// landed, and does the same for any future row declared ahead of its
+// runner.
 func (m *Model) available(id string) bool {
 	switch id {
-	case "switch-tabs", "select", "help",
+	case "switch-tabs", "select", "help", "search",
 		"open-browser", "browser-read", "browser-order", "browser-filter", "browser-back",
 		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-back":
 		return true
@@ -1115,14 +1237,14 @@ func (m *Model) available(id string) bool {
 // dispatch path at all) — choosing either from the palette used to close it
 // and silently do nothing. This is deliberately independent of available
 // (not a filtered wrapper around it): deriving it straight from the runners
-// map, plus the one case dispatch special-cases outside that map (help),
-// means a future registry row added without a runner is automatically
-// absent from the palette even if some later change ever gave available
-// itself a new unconditional-true case — there is no hand-maintained
-// exclusion list here to fall out of sync.
+// map, plus the cases dispatch special-cases outside that map (help,
+// search), means a future registry row added without a runner is
+// automatically absent from the palette even if some later change ever gave
+// available itself a new unconditional-true case — there is no
+// hand-maintained exclusion list here to fall out of sync.
 func (m *Model) paletteAvailable(id string) bool {
 	switch id {
-	case "help":
+	case "help", "search":
 		return true
 	case "add-project":
 		return m.actions.AddAvailable()
@@ -1195,6 +1317,11 @@ func (m Model) View() tea.View {
 		body = views.NewHelpModel(m.styles).View()
 	case m.paletteOpen:
 		body = m.palette.View()
+	case m.searchOverlay != nil:
+		// Full-screen like the palette; unlike it, the overlay budgets its
+		// result rows against the real terminal height, so it gets both
+		// dimensions (searchoverlay.go's View doc states the floor).
+		body = m.searchOverlay.View(m.width, m.height)
 	default:
 		header := m.statusHeader()
 		if toastLine := m.toastLine(); toastLine != "" {
@@ -1280,8 +1407,8 @@ func (m Model) footer() string {
 // action registry, in registry order: every global action plus the active
 // tab's own scope, filtered to rows that both have a real key to advertise
 // (sync-fleet does not — palette/help only) and are actually available right
-// now (search is not, until Task 15) via the same available() the footer has
-// always used. This deliberately differs from the palette's own listing
+// now via the same available() the footer has always used. This
+// deliberately differs from the palette's own listing
 // (paletteAvailable): switch-tabs and select stay advertised here because
 // the active view's own key-routing honors them directly, even though
 // neither is ever reachable through dispatch — which is exactly why the

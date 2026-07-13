@@ -83,10 +83,10 @@ type Action struct {
 // Seed rows land with this task; later tasks append theirs as their screens
 // land (spec plan). sync-fleet has no Keys — palette/help-only for now, no
 // direct keyboard shortcut — so Binding builds it a disabled binding that
-// can never match a keypress. search's row exists with a real key reserved,
-// but its handler arrives in Task 15; until then the root's available(id)
-// gate (keyed on whether a runner is registered) keeps it out of the footer
-// and palette even though it is declared here.
+// can never match a keypress. search opens the root's global search overlay
+// (spec §7) — dispatched directly by the root like help, with no runners()
+// entry (dashboard.go's dispatch); its key was declared here ahead of the
+// overlay, kept inert until it landed by the root's available(id) gate.
 var registry = []Action{
 	{ID: "switch-tabs", Title: "switch", Keys: []string{"tab", "shift+tab", "right", "left", "l", "h", "1", "2", "3", "4"}, KeyHint: "tab/1–4", Scope: ScopeGlobal},
 	{ID: "select", Title: "select", Keys: []string{"up", "down", "k", "j"}, KeyHint: "↑/↓", Scope: ScopeProjects},

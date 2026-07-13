@@ -846,8 +846,9 @@ func TestCtrlKPaletteEscClosesWithoutDispatch(t *testing.T) {
 
 // TestPaletteListsOnlyDispatchableActions is the completeness pin for the
 // palette's availability gate: every action paletteAvailable admits must
-// resolve to either dispatch's help special-case or a real entry in
-// runners() — the two, and only two, things dispatch can actually run. This
+// resolve to either one of dispatch's direct special-cases (help, search —
+// pure state flips with no Cmd) or a real entry in runners() — the only
+// things dispatch can actually run. This
 // ranges over the REAL registry and the REAL predicate/runners map (not a
 // synthetic stand-in), so a future action added to the registry without a
 // runner would fail this test the moment it also became paletteAvailable.
@@ -889,11 +890,11 @@ func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
 				if !tc.model.paletteAvailable(action.ID) {
 					continue
 				}
-				if action.ID == "help" {
-					continue // dispatch's one non-runner special case
+				if action.ID == "help" || action.ID == "search" {
+					continue // dispatch's non-runner special cases
 				}
 				if _, ok := runners[action.ID]; !ok {
-					t.Errorf("paletteAvailable(%q) = true but dispatch has no runner for it (and it is not the help special-case)", action.ID)
+					t.Errorf("paletteAvailable(%q) = true but dispatch has no runner for it (and it is not a dispatch special-case)", action.ID)
 				}
 			}
 		})
@@ -1611,5 +1612,347 @@ func TestMarkdownRendererPreservesReadingSubstitutionMarkers(t *testing.T) {
 				t.Errorf("no SGR strikethrough (CSI …9m) in the rendered output:\n%q", rendered)
 			}
 		})
+	}
+}
+
+// TestSlashOpensSearchOverlayOnEveryRootTab pins spec §7's entry point: `/`
+// from ANY root view — stack empty, no modal, no other overlay — opens the
+// global search overlay through the same registry dispatch a palette choice
+// runs, and the footer advertises the key on every tab now that the action
+// is genuinely dispatchable.
+func TestSlashOpensSearchOverlayOnEveryRootTab(t *testing.T) {
+	t.Parallel()
+	for _, activeTab := range []tab{tabProjects, tabConflicts, tabActivity, tabDoctor} {
+		t.Run(activeTab.title(), func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+			m.active = activeTab
+
+			if footer := plain(m.footer()); !strings.Contains(footer, "/ search") {
+				t.Errorf("footer %q does not advertise search", footer)
+			}
+
+			m, cmd := step(m, key("/"))
+			if m.searchOverlay == nil {
+				t.Fatal("/ did not open the search overlay")
+			}
+			if cmd != nil {
+				t.Error("opening the overlay produced a Cmd; want none (a pure state flip, like help)")
+			}
+			if got := plain(m.View().Content); !strings.Contains(got, "Global search") {
+				t.Errorf("view does not render the overlay; got:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestSlashWithScreenStackedReachesBrowserFilter pins the other direction of
+// the `/` gate: while a Screen is stacked the key belongs to the screen —
+// the browser's own filter — because handleKey's stack forward runs before
+// the global dispatch loop can ever see the key. Opening the overlay from
+// inside a stacked screen would breach the screen's keyboard ownership the
+// stack footer already promises.
+func TestSlashWithScreenStackedReachesBrowserFilter(t *testing.T) {
+	t.Parallel()
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", Name: "note", RepoPath: "claude/note.md"}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	m, _ = step(m, key("/"))
+	if m.searchOverlay != nil {
+		t.Fatal("/ with a Screen stacked opened the global overlay; it must reach the browser filter instead")
+	}
+	if got := plain(m.View().Content); !strings.Contains(got, "filter:") {
+		t.Errorf("browser filter did not engage; view:\n%s", got)
+	}
+}
+
+// TestSearchChoicePushesReadingWithLazyFolderIndex pins the root's half of
+// spec §7's enter: a SearchChoiceMsg pushes the chosen memory's reading
+// view, and the links Index handed to it is built lazily — at choice time,
+// over the chosen memory's own folder — proven by following a [[link]]
+// from the pushed reading: with a nil or empty index the link would dangle
+// and enter would only toast instead of pushing the target.
+func TestSearchChoicePushesReadingWithLazyFolderIndex(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	folderDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(folderDir, "alpha.md"), []byte("see [[beta]]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(folderDir, "beta.md"), []byte("# beta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: folderDir}}
+	m.projects.SetUnits(units)
+
+	memories, err := memoryfs.List(registry, units)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alpha memoryfs.Memory
+	found := false
+	for _, memory := range memories {
+		if memory.Name == "alpha" {
+			alpha, found = memory, true
+		}
+	}
+	if !found {
+		t.Fatalf("setup: alpha not in listing %v", memories)
+	}
+
+	m = drive(t, m, views.SearchChoiceMsg{Memory: alpha})
+
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after a search choice, want 1", len(m.stack))
+	}
+	reading, ok := m.stack[0].(*views.Reading)
+	if !ok {
+		t.Fatalf("stack top = %T, want *views.Reading", m.stack[0])
+	}
+	if got := reading.Title(); got != "alpha" {
+		t.Errorf("pushed reading Title() = %q, want %q", got, "alpha")
+	}
+	if got := plain(m.View().Content); !strings.Contains(got, "Projects ▸ alpha") {
+		t.Errorf("view missing the breadcrumb; got:\n%s", got)
+	}
+
+	m = drive(t, m, key("tab"))
+	m = drive(t, m, key("enter"))
+	if len(m.stack) != 2 {
+		t.Fatalf("stack depth = %d after following [[beta]], want 2 — the lazily built folder index did not resolve the link", len(m.stack))
+	}
+	followed, ok := m.stack[1].(*views.Reading)
+	if !ok {
+		t.Fatalf("stack top = %T, want *views.Reading", m.stack[1])
+	}
+	if got := followed.Title(); got != "beta" {
+		t.Errorf("followed reading Title() = %q, want %q", got, "beta")
+	}
+}
+
+// TestSearchEndToEndFindsNeedleAcrossProjectsAndOpensRightMemory drives spec
+// §17's acceptance criterion through the REAL pipeline: `/`, one real
+// keystroke whose actual 250ms tea.Tick drive waits out, a genuine
+// memoryfs.List over two on-disk projects, and enter on the second row —
+// proving the debounce wiring, the cross-project Collect, and the
+// choice→Reading push agree end to end with no hand-built messages.
+func TestSearchEndToEndFindsNeedleAcrossProjectsAndOpensRightMemory(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	acmeDir, zenithDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(acmeDir, "apple.md"), []byte("alpha line\nthe needle hides here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(zenithDir, "zebra.md"), []byte("needle again\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.projects.SetUnits([]api.UnitInfo{
+		{Provider: "claude", Folder: "acme", LocalDir: acmeDir},
+		{Provider: "claude", Folder: "zenith", LocalDir: zenithDir},
+	})
+
+	m = drive(t, m, key("/"))
+	if m.searchOverlay == nil {
+		t.Fatal("/ did not open the search overlay")
+	}
+	m = drive(t, m, key("n")) // real debounce: drive waits out the tick and runs the query
+
+	view := plain(m.View().Content)
+	for _, want := range []string{"acme", "zenith", "needle again"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("overlay after searching %q misses %q; view:\n%s", "n", want, view)
+		}
+	}
+
+	// Both hits are body-tier with no name match, so they rank by Name:
+	// apple (acme) first, zebra (zenith) second — down+enter opens zebra.
+	m = drive(t, m, key("down"))
+	m = drive(t, m, key("enter"))
+
+	if m.searchOverlay != nil {
+		t.Error("choosing a result did not close the overlay")
+	}
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after enter, want 1", len(m.stack))
+	}
+	reading, ok := m.stack[0].(*views.Reading)
+	if !ok {
+		t.Fatalf("stack top = %T, want *views.Reading", m.stack[0])
+	}
+	if got := reading.Title(); got != "zebra" {
+		t.Errorf("opened Title() = %q, want %q (the cursor row's memory, across projects)", got, "zebra")
+	}
+	if got := plain(m.View().Content); !strings.Contains(got, "needle again") {
+		t.Errorf("opened reading does not show the needle body; got:\n%s", got)
+	}
+}
+
+// TestSearchOverlayEscClosesOverlayNotQuitPrompt pins the esc contract both
+// ways: inside the overlay, esc dismisses it and NOTHING else — no quit
+// prompt — and once dismissed, the root's ordinary esc behavior is back.
+func TestSearchOverlayEscClosesOverlayNotQuitPrompt(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m = drive(t, m, key("/"))
+	if m.searchOverlay == nil {
+		t.Fatal("setup: / did not open the search overlay")
+	}
+
+	m, cmd := step(m, key("esc"))
+	if m.searchOverlay != nil {
+		t.Fatal("esc did not close the overlay")
+	}
+	if cmd != nil {
+		t.Error("closing the overlay produced a Cmd; want none")
+	}
+	if m.quitPrompt {
+		t.Error("esc inside the overlay must not open the quit prompt")
+	}
+
+	m, _ = step(m, key("esc"))
+	if !m.quitPrompt {
+		t.Error("esc after dismissal did not reopen the root quit prompt")
+	}
+}
+
+// TestSearchMessagesAfterDismissalAreInert covers the in-flight race the
+// debounce leaves behind: a tick or query result whose overlay was
+// dismissed before it landed must be dropped — no panic, no reopen, no Cmd.
+func TestSearchMessagesAfterDismissalAreInert(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m = drive(t, m, key("/"))
+	m, _ = step(m, key("esc"))
+	if m.searchOverlay != nil {
+		t.Fatal("setup: esc did not close the overlay")
+	}
+
+	m, cmd := step(m, views.SearchDebounceMsg{Generation: 1})
+	if cmd != nil {
+		t.Error("a debounce tick after dismissal produced a Cmd")
+	}
+	if m.searchOverlay != nil {
+		t.Error("a debounce tick after dismissal re-opened the overlay")
+	}
+
+	m, cmd = step(m, views.SearchResultsMsg{Generation: 1})
+	if cmd != nil {
+		t.Error("a query result after dismissal produced a Cmd")
+	}
+	if m.searchOverlay != nil {
+		t.Error("a query result after dismissal re-opened the overlay")
+	}
+}
+
+// TestPaletteChoiceSearchOpensOverlay pins spec §14's cannot-diverge rule
+// for the new action: choosing search from the palette runs the identical
+// dispatch the `/` key does.
+func TestPaletteChoiceSearchOpensOverlay(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	m, cmd := step(m, views.PaletteChoiceMsg{ID: "search"})
+	if m.searchOverlay == nil {
+		t.Fatal("choosing search from the palette did not open the overlay")
+	}
+	if cmd != nil {
+		t.Error("opening the overlay produced a Cmd; want none")
+	}
+}
+
+// TestBackgroundColorSwapReachesOpenSearchOverlay extends the withStyles
+// propagation to the one overlay that can hold styles across a swap: an
+// open search overlay must render through the incoming flavour, not the one
+// it opened with.
+func TestBackgroundColorSwapReachesOpenSearchOverlay(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m = drive(t, m, key("/"))
+	if m.searchOverlay == nil {
+		t.Fatal("setup: / did not open the search overlay")
+	}
+
+	dark, _ := step(m, tea.BackgroundColorMsg{Color: color.Black})
+	if dark.searchOverlay == nil {
+		t.Fatal("the background swap dropped the open overlay")
+	}
+	darkView := dark.searchOverlay.View(80, 24)
+
+	light, _ := step(dark, tea.BackgroundColorMsg{Color: color.White})
+	lightView := light.searchOverlay.View(80, 24)
+	if darkView == lightView {
+		t.Error("dark and light renders of the open overlay are byte-identical; the theme swap did not reach its styles")
+	}
+}
+
+// TestSlashInertWhileQuitPromptOpen: the quit prompt owns the keyboard, so a
+// `/` there neither opens the overlay nor decides the prompt — the same
+// dead-key discipline every other non-answer key already gets.
+func TestSlashInertWhileQuitPromptOpen(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m, _ = step(m, key("esc"))
+	if !m.quitPrompt {
+		t.Fatal("setup: esc did not open the quit prompt")
+	}
+
+	m, cmd := step(m, key("/"))
+	if m.searchOverlay != nil {
+		t.Error("/ while the quit prompt owns the keyboard opened the overlay")
+	}
+	if cmd != nil {
+		t.Error("/ at the quit prompt produced a Cmd; want none")
+	}
+	if !m.quitPrompt {
+		t.Error("/ dismissed the quit prompt; only y/n/esc may decide it")
+	}
+}
+
+// TestSearchOverlayOwnsGlobalKeys: while the overlay is open, q types into
+// the query instead of quitting and ? does not open help — the overlay owns
+// the whole keyboard, the same contract as the palette.
+func TestSearchOverlayOwnsGlobalKeys(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m = drive(t, m, key("/"))
+	if m.searchOverlay == nil {
+		t.Fatal("setup: / did not open the search overlay")
+	}
+
+	m, _ = step(m, key("q"))
+	if m.quitting {
+		t.Fatal("q inside the overlay quit the program instead of typing")
+	}
+	if m.searchOverlay == nil {
+		t.Fatal("q inside the overlay closed it")
+	}
+
+	m, _ = step(m, key("?"))
+	if m.helpOpen {
+		t.Error("? inside the overlay opened help instead of typing")
+	}
+	if m.searchOverlay == nil {
+		t.Error("? inside the overlay closed it")
 	}
 }
