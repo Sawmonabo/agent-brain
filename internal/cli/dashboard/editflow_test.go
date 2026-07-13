@@ -1344,6 +1344,13 @@ func newRestoreModel(t *testing.T, dir string) Model {
 func TestRestoreLandsAndPendsCapture(t *testing.T) {
 	t.Parallel()
 	unitDir := t.TempDir()
+	// Seed the target so this pins the common restore-over-a-live-memory path
+	// (an older version brought back as a new capture on a file that still
+	// exists); the resurrect-a-deleted-memory nuance and its index reminder are
+	// TestRestoreResurrectRemindsIndexForClaude's alone.
+	if err := os.WriteFile(filepath.Join(unitDir, "note.md"), []byte("current\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	m := newRestoreModel(t, unitDir)
 
 	m, cmd := step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/note.md", Content: "restored body\n"})
@@ -1421,4 +1428,82 @@ func TestHistoryRestoreAvailabilityGate(t *testing.T) {
 	if m.available("history-restore") {
 		t.Error("history-restore available for a derived index; the class gate must strike it")
 	}
+}
+
+// TestRestoreLandFailureIsSticky pins the restore-land failure tier: a restore
+// whose atomic write cannot land lands in the STICKY (action-required) slot, not
+// the TTL-expiring info slot — the same treatment finishEdit's save failure
+// gets, so a user who walks away is never left believing a restore that silently
+// failed succeeded. A directory squatted on the target path forces the failure.
+func TestRestoreLandFailureIsSticky(t *testing.T) {
+	t.Parallel()
+	unitDir := t.TempDir()
+	m := newRestoreModel(t, unitDir)
+	if err := os.Mkdir(filepath.Join(unitDir, "note.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/note.md", Content: "restored body\n"})
+
+	if m.stickyToast == nil || !strings.Contains(m.stickyToast.text, "restore failed") {
+		t.Errorf("sticky toast = %+v, want the restore-land failure in the sticky slot", m.stickyToast)
+	}
+	if m.toast != nil {
+		t.Errorf("restore-land failure also landed in the info slot: %+v", m.toast)
+	}
+	if m.pendingCapture != nil {
+		t.Error("a failed restore armed a capture wait")
+	}
+}
+
+// TestRestoreResurrectRemindsIndexForClaude pins spec §5's discoverability
+// reminder for restore: recreating a since-deleted claude memory (absent on disk
+// before the land) earns the same MEMORY.md index reminder editNew+claude does,
+// because the index line was presumably removed with the file. A restore over a
+// live claude file, or any non-claude restore, stays a bare "restored".
+func TestRestoreResurrectRemindsIndexForClaude(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resurrected claude memory reminds the index", func(t *testing.T) {
+		t.Parallel()
+		unitDir := t.TempDir() // note.md absent on disk
+		m := newRestoreModel(t, unitDir)
+		m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/note.md", Content: "body\n"})
+		if got := plain(m.toastLine()); got != "restored — remember the MEMORY.md index line" {
+			t.Errorf("toast = %q, want the resurrect index reminder", got)
+		}
+	})
+
+	t.Run("restore over a live claude file stays bare", func(t *testing.T) {
+		t.Parallel()
+		unitDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(unitDir, "note.md"), []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		m := newRestoreModel(t, unitDir)
+		m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/note.md", Content: "body\n"})
+		if got := plain(m.toastLine()); got != "restored" {
+			t.Errorf("toast = %q, want a bare restored for a file that already existed", got)
+		}
+	})
+
+	t.Run("resurrected non-claude memory stays bare", func(t *testing.T) {
+		t.Parallel()
+		codexDir := t.TempDir()
+		codexFake := providertest.New("codex", provider.ScopePerProject, []provider.Pattern{
+			{Glob: "memories/MEMORY.md", Class: provider.ClassRegenerated},
+		})
+		registry, err := provider.NewRegistry(codexFake)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := New(Config{Data: &fakeData{}, Registry: registry})
+		m.now = flowT0
+		m.projects.SetUnits([]api.UnitInfo{{Provider: "codex", Folder: "acme", LocalDir: codexDir, RepoSubdir: "memories"}})
+
+		m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "codex/memories/note.md", Content: "body\n"})
+		if got := plain(m.toastLine()); got != "restored" {
+			t.Errorf("toast = %q, want a bare restored for a non-claude provider", got)
+		}
+	})
 }

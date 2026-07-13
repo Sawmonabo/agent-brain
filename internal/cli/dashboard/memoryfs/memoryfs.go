@@ -173,14 +173,42 @@ func repoPath(providerName, repoSubdir, rel string) string {
 	return path.Join(providerName, repoSubdir, rel)
 }
 
-// ReadBody returns the file's content, capped at maxBodyBytes. The cap is
-// enforced strictly against the bytes actually read (via io.LimitReader),
-// not a Stat size checked ahead of a separate ReadFile call — a file that
-// grows between those two calls would otherwise let a stale size check pass
-// while the real read exceeds the cap.
+// ReadBody returns a listed memory's content, capped at maxBodyBytes.
 func ReadBody(m Memory) (string, error) {
-	fullPath := m.Path()
-	f, err := os.Open(fullPath) //nolint:gosec // G304: fullPath is composed from an enrolled unit's LocalDir + a RelPath this package's own List produced, not untrusted input
+	return readBodyAt(m.LocalDir, m.RelPath)
+}
+
+// LiveContent reads the current on-disk content of a repo path (as /v0/history
+// reports it: <provider>[/<repo_subdir>]/<rel>) — the diff-vs-live seam for a
+// History screen with no listing snapshot, chiefly the deleted-recovery variant
+// whose file may since have been restored on disk. It maps the path to a local
+// target exactly as restore's write does (LocalTarget), then reads it through
+// the same capped body read ReadBody uses. It returns ("", nil) — nothing to
+// diff against, not an error — when no enrolled unit maps the path, or when the
+// mapped file is simply absent (a still-deleted memory): a missing file is the
+// expected steady state here, distinct from a real read failure (permissions,
+// over-cap) which surfaces.
+func LiveContent(units []api.UnitInfo, folder, repoPath string) (string, error) {
+	dir, rel, ok := LocalTarget(units, folder, repoPath)
+	if !ok {
+		return "", nil
+	}
+	content, err := readBodyAt(dir, rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return content, err
+}
+
+// readBodyAt reads the file at dir/rel (OS-native joined), capped at
+// maxBodyBytes — the shared read behind ReadBody (a listed memory) and
+// LiveContent (a repo-path-mapped target). The cap is enforced strictly against
+// the bytes actually read (via io.LimitReader), not a Stat size checked ahead
+// of a separate ReadFile call — a file that grows between those two calls would
+// otherwise let a stale size check pass while the real read exceeds the cap.
+func readBodyAt(dir, rel string) (string, error) {
+	fullPath := localPath(dir, rel)
+	f, err := os.Open(fullPath) //nolint:gosec // G304: fullPath is composed from an enrolled unit's LocalDir + a RelPath this package itself derives (List / LocalTarget), never untrusted input
 	if err != nil {
 		return "", fmt.Errorf("memoryfs: open %s: %w", fullPath, err)
 	}

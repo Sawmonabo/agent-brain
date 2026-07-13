@@ -74,9 +74,11 @@ type BrowserDeps struct {
 	// Data is the read-only version surface (spec §6): threaded into every
 	// History screen this browser opens (h on a row, or a deleted-recovery
 	// row) and used directly for the folder-wide scan that finds deleted
-	// memories (x). A nil Data disables both — the h/x rows still render, but
-	// the scan Cmd is a no-op and a pushed History has nothing to fetch
-	// through; production always wires it (dashboard.go's buildBrowserDeps).
+	// memories (x). A nil Data disables both without a panic — the h/x rows
+	// still render, the scan Cmd is a no-op (deletedScanCmd), and a pushed
+	// History issues no fetch either (its versionsCmd/blobCmd nil-guard), so it
+	// simply sits on its loading notice; production always wires it
+	// (dashboard.go's buildBrowserDeps).
 	Data HistoryDataSource
 }
 
@@ -138,8 +140,14 @@ type Browser struct {
 	showDeleted   bool
 	deletedLoaded bool
 	deletedErr    error
-	deletedPaths  []string
-	deletedCursor int
+	// deletedVersions is the last folder-wide scan's versions, retained (not
+	// just consumed into deletedPaths) so a RefreshMsg can re-subtract the
+	// CURRENT on-disk listing without a fresh daemon scan — a restored memory
+	// drops out of the deleted list within a tick (redetectDeleted) — and so its
+	// length drives the truncation disclosure (deletedView).
+	deletedVersions []api.HistoryVersion
+	deletedPaths    []string
+	deletedCursor   int
 }
 
 // previewCache is renderPreview's memoized result, valid only for the exact
@@ -293,6 +301,14 @@ func (b *Browser) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	case RefreshMsg:
 		b.now = msg.Now
 		b.refresh()
+		// While the deleted list is showing, re-subtract the freshly relisted
+		// on-disk set from the retained scan so a memory restored (or otherwise
+		// recreated) since the scan drops off within a tick, without waiting for
+		// an x-toggle rescan. Only over a successful scan — an errored or not-
+		// yet-loaded one has no versions to re-derive from.
+		if b.showDeleted && b.deletedLoaded && b.deletedErr == nil {
+			b.redetectDeleted()
+		}
 		return b, nil
 	case HistoryVersionsMsg:
 		// Only the folder-wide deleted scan (RepoPath "") is ours: a per-memory
@@ -540,10 +556,10 @@ func (b *Browser) deletedScanCmd() tea.Cmd {
 	}
 }
 
-// adoptDeletedScan turns a folder-wide history scan into the deleted set: every
-// path any version touched, minus the paths HEAD still has on disk (b.memories,
-// the current listing). The result is the memories that once existed here but
-// no longer do — recoverable via their History screen (spec §6).
+// adoptDeletedScan records a folder-wide history scan and derives the deleted
+// set from it. It retains the scan's versions (redetectDeleted re-subtracts the
+// live on-disk set from them on later refreshes) rather than only the derived
+// paths.
 func (b *Browser) adoptDeletedScan(msg HistoryVersionsMsg) {
 	b.deletedLoaded = true
 	if msg.Err != nil {
@@ -551,14 +567,25 @@ func (b *Browser) adoptDeletedScan(msg HistoryVersionsMsg) {
 		return
 	}
 	b.deletedErr = nil
+	b.deletedVersions = msg.Versions
+	b.redetectDeleted()
+}
 
+// redetectDeleted derives the deleted set from the retained scan: every path
+// any scanned version touched, minus the paths HEAD still has on disk
+// (b.memories, the current listing). The result is the memories that once
+// existed here but no longer do — recoverable via their History screen (spec
+// §6). Split from adoptDeletedScan so a RefreshMsg can re-run just the
+// subtraction over the freshly relisted on-disk set, no daemon round trip, and
+// so a restored memory stops being listed as deleted within a tick.
+func (b *Browser) redetectDeleted() {
 	onDisk := make(map[string]bool, len(b.memories))
 	for _, memory := range b.memories {
 		onDisk[memory.RepoPath] = true
 	}
 	seen := make(map[string]bool)
 	var deleted []string
-	for _, version := range msg.Versions {
+	for _, version := range b.deletedVersions {
 		for _, repoPath := range version.Paths {
 			if onDisk[repoPath] || seen[repoPath] {
 				continue
@@ -573,19 +600,24 @@ func (b *Browser) adoptDeletedScan(msg HistoryVersionsMsg) {
 }
 
 // openDeletedHistory pushes the selected deleted path's History screen, or
-// nothing with no row. The screen has no live snapshot — the file is gone from
-// HEAD — so Memory is zero and Live returns empty; the History header falls
-// back to the path's base name and diff-vs-live shows the whole blob as
-// removed, both honest for a deleted memory.
+// nothing with no row. The screen has no listing snapshot — the memory is gone
+// from HEAD — so Memory is zero and the header falls back to the path's base
+// name. Live is bound to the CURRENT on-disk file via memoryfs.LiveContent (the
+// same LocalTarget mapping restore writes through), not a frozen empty: while
+// the memory is still deleted it reads absent and diff-vs-live shows the whole
+// blob as removed, but the moment a restore lands the file the diff reflects
+// its real content — no stale empty side outliving the resurrection it exists
+// to show.
 func (b *Browser) openDeletedHistory() tea.Cmd {
 	if b.deletedCursor < 0 || b.deletedCursor >= len(b.deletedPaths) {
 		return nil
 	}
 	repoPath := b.deletedPaths[b.deletedCursor]
+	folder, units := b.deps.Folder, b.deps.Units
 	history := NewHistory(HistoryDeps{
-		Folder:   b.deps.Folder,
+		Folder:   folder,
 		RepoPath: repoPath,
-		Live:     func() (string, error) { return "", nil },
+		Live:     func() (string, error) { return memoryfs.LiveContent(units, folder, repoPath) },
 		Data:     b.deps.Data,
 		Render:   b.deps.Render,
 		Styles:   b.deps.Styles,
@@ -717,6 +749,11 @@ func (b *Browser) deletedView(height int) string {
 	body.WriteString(sectionTitle(b.deps.Styles, "Deleted memories: "+b.deps.Folder))
 	body.WriteString("\n\n")
 
+	// A scan that came back at the fetch cap read only the newest slice of
+	// history, so the deleted set below (and any "nothing deleted" claim) is
+	// bounded to that slice, not the whole timeline — disclosed either way.
+	truncated := len(b.deletedVersions) == historyVersionLimit
+
 	switch {
 	case b.deletedErr != nil:
 		fmt.Fprintf(&body, "history unavailable: %v", b.deletedErr)
@@ -725,13 +762,21 @@ func (b *Browser) deletedView(height int) string {
 		body.WriteString(b.deps.Styles.Dim.Render("scanning history…"))
 		return strings.TrimRight(body.String(), "\n")
 	case len(b.deletedPaths) == 0:
-		body.WriteString(b.deps.Styles.Dim.Render("no deleted memories in this project's history"))
+		if truncated {
+			body.WriteString(b.deps.Styles.Dim.Render("no deleted memories in the newest " +
+				strconv.Itoa(historyVersionLimit) + " commits — older history not scanned"))
+		} else {
+			body.WriteString(b.deps.Styles.Dim.Render("no deleted memories in this project's history"))
+		}
 		return strings.TrimRight(body.String(), "\n")
 	}
 
 	budget := max(height-2, 1) // title line + its trailing blank
+	if truncated {
+		budget = max(budget-1, 1) // the disclosure row
+	}
 	start, end := visibleWindow(b.deletedCursor, len(b.deletedPaths), budget)
-	lines := make([]string, 0, end-start)
+	lines := make([]string, 0, end-start+1)
 	for row := start; row < end; row++ {
 		marker := "  "
 		if row == b.deletedCursor {
@@ -742,6 +787,9 @@ func (b *Browser) deletedView(height int) string {
 			line = b.deps.Styles.Selected.Render(line)
 		}
 		lines = append(lines, line)
+	}
+	if truncated {
+		lines = append(lines, b.deps.Styles.Dim.Render(historyTruncationNotice()))
 	}
 	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")

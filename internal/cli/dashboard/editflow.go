@@ -53,9 +53,6 @@ const (
 	editExisting editKind = iota
 	// editNew is spec §5's n: a provider skeleton staged for a first save.
 	editNew
-	// editRestore is reserved for Task 14's history restore, which re-runs
-	// this exact session machinery over a historical blob.
-	editRestore
 )
 
 // editSession is one in-flight handoff. The root holds at most one — a
@@ -796,14 +793,34 @@ func (m Model) startRestoreFlow(request views.RestoreRequestMsg) Model {
 		m.pushToast("no enrolled unit maps this path — cannot restore")
 		return m
 	}
+	// Whether the target file is on disk right now decides the success wording
+	// below: a restore that RESURRECTS a since-deleted memory needs the same
+	// discoverability reminder a new one does. Checked before the land (which
+	// creates it) via Lstat — this package's symlink-averse posture — and only a
+	// positively-confirmed absence counts as a resurrect, so a stat that fails
+	// for any other reason degrades to the plain notice rather than over-promise.
+	_, statErr := os.Lstat(filepath.Join(targetDir, filepath.FromSlash(targetRel)))
+	resurrected := errors.Is(statErr, fs.ErrNotExist)
 	if err := m.landMutation(targetDir, targetRel, request.Folder, []byte(request.Content)); err != nil {
-		m.pushToast("restore failed: " + err.Error())
+		// The historical blob is intact in git, but the user asked for it on
+		// disk and it is not there — an unresolved state to act on, so the
+		// sticky (action-required) slot, never a 5s info toast a walked-away
+		// user would miss (finishEdit's save-failure tier).
+		m.pushStickyToast("restore failed: " + err.Error())
 		return m
 	}
 	// Parallels the edit flow's "saved": the file is written and the capture
 	// wait armed, and checkPendingCapture posts the "✓ captured" confirmation
-	// once the daemon's cycle commits it.
-	m.pushToast("restored")
+	// once the daemon's cycle commits it. A resurrected claude memory earns the
+	// same MEMORY.md index-line reminder editNew+claude gives (spec §5): its
+	// index entry was presumably removed with the file, and that index is a
+	// derived file this flow refuses to edit — so remind, don't rewrite.
+	providerName, _, _ := strings.Cut(request.RepoPath, "/")
+	if resurrected && providerName == "claude" {
+		m.pushToast("restored — remember the MEMORY.md index line")
+	} else {
+		m.pushToast("restored")
+	}
 	return m
 }
 

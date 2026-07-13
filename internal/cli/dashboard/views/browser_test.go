@@ -1282,6 +1282,148 @@ func TestBrowserShowDeletedEscReturnsToBrowser(t *testing.T) {
 	}
 }
 
+// driveDeletedScan toggles the deleted view on and drains the folder-wide scan
+// Cmd back through the browser — the shared setup for the deleted-mode tests.
+func driveDeletedScan(t *testing.T, browser *Browser) *Browser {
+	t.Helper()
+	next, cmd := browser.Update(key("x"))
+	browser = next.(*Browser)
+	for _, msg := range drain(cmd) {
+		next, _ := browser.Update(msg)
+		browser = next.(*Browser)
+	}
+	return browser
+}
+
+// TestBrowserDeletedViewDisclosesTruncation pins the deleted-mode half of the
+// silent-cap disclosure: a folder-wide scan that came back at exactly
+// historyVersionLimit discloses that older history was not read, and its empty
+// state stops making an unqualified whole-history claim.
+func TestBrowserDeletedViewDisclosesTruncation(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	when := time.Now()
+
+	cappedScan := func(paths []string) *fakeHistoryData {
+		versions := make([]api.HistoryVersion, historyVersionLimit)
+		for i := range versions {
+			versions[i] = api.HistoryVersion{Rev: fmt.Sprintf("r%03d", i), Timestamp: &when, Paths: paths}
+		}
+		return &fakeHistoryData{historyResp: api.HistoryResponse{Versions: versions}}
+	}
+	newDeletedBrowser := func(t *testing.T, fake *fakeHistoryData) *Browser {
+		t.Helper()
+		browser := NewBrowser(BrowserDeps{
+			Registry: registry, Units: units, Folder: "acme", Now: when,
+			ReadBody: fakeReadBody(nil),
+			List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+			Data:     fake,
+		})
+		return driveDeletedScan(t, browser)
+	}
+
+	t.Run("capped scan with deleted rows discloses", func(t *testing.T) {
+		t.Parallel()
+		browser := newDeletedBrowser(t, cappedScan([]string{"claude/gone.md"}))
+		got := plain(browser.View(120, 30))
+		if !strings.Contains(got, "claude/gone.md") {
+			t.Fatalf("deleted row missing; got:\n%s", got)
+		}
+		if !strings.Contains(got, "older history not scanned") {
+			t.Errorf("capped deleted scan did not disclose truncation; got:\n%s", got)
+		}
+	})
+
+	t.Run("capped scan with zero deleted qualifies the empty state", func(t *testing.T) {
+		t.Parallel()
+		browser := newDeletedBrowser(t, cappedScan([]string{"claude/alive.md"})) // only the on-disk file
+		got := plain(browser.View(120, 30))
+		if strings.Contains(got, "in this project's history") {
+			t.Errorf("empty state made an unqualified whole-history claim after a capped scan; got:\n%s", got)
+		}
+		if !strings.Contains(got, "older history not scanned") {
+			t.Errorf("capped empty state did not qualify the scan bound; got:\n%s", got)
+		}
+	})
+}
+
+// TestBrowserDeletedListRefreshesAfterRestore pins the deleted-mode staleness
+// fix: once a deleted memory is restored (it reappears on disk), a RefreshMsg
+// re-subtracts the on-disk set and drops it from the deleted list within a tick
+// — without an x-toggle rescan.
+func TestBrowserDeletedListRefreshesAfterRestore(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	when := time.Now()
+	fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: []api.HistoryVersion{
+		{Rev: "v1", Timestamp: &when, Paths: []string{"claude/alive.md", "claude/gone.md"}},
+	}}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry, Units: units, Folder: "acme", Now: when,
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     fake,
+	})
+	browser = driveDeletedScan(t, browser)
+	if got := plain(browser.View(120, 30)); !strings.Contains(got, "claude/gone.md") {
+		t.Fatalf("setup: deleted view missing gone.md; got:\n%s", got)
+	}
+
+	// The deleted memory is restored on disk; a RefreshMsg re-lists and must drop
+	// it from the deleted set without a rescan.
+	writeBrowserFile(t, dir, "gone.md", "---\nname: Gone\n---\n", when)
+	next, _ := browser.Update(RefreshMsg{Now: when})
+	browser = next.(*Browser)
+	if got := plain(browser.View(120, 30)); strings.Contains(got, "claude/gone.md") {
+		t.Errorf("restored memory still listed as deleted after a refresh; got:\n%s", got)
+	}
+}
+
+// TestBrowserDeletedHistoryReadsLiveContent pins the deleted-history live seam:
+// opening a deleted memory's history binds its diff-vs-live to the CURRENT file
+// on disk (mapped via the same LocalTarget restore uses), so a memory restored
+// while still listed diffs against its real content — not a frozen empty side.
+func TestBrowserDeletedHistoryReadsLiveContent(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	when := time.Now()
+	fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: []api.HistoryVersion{
+		{Rev: "v1", Timestamp: &when, Paths: []string{"claude/gone.md"}},
+	}}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry, Units: units, Folder: "acme", Now: when,
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     fake,
+	})
+	browser = driveDeletedScan(t, browser)
+
+	// The deleted memory is restored on disk while its row is still listed.
+	writeBrowserFile(t, dir, "gone.md", "restored on disk\n", when)
+	_, openCmd := browser.Update(key("enter"))
+	push, ok := openCmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("enter produced %#v, want PushScreenMsg", openCmd())
+	}
+	history := push.Screen.(*History)
+	live, err := history.deps.Live()
+	if err != nil {
+		t.Fatalf("deleted history Live() errored: %v", err)
+	}
+	if !strings.Contains(live, "restored on disk") {
+		t.Errorf("deleted history Live() = %q, want the on-disk restored content", live)
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

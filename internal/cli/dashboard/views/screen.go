@@ -93,13 +93,15 @@ type DeleteRequestMsg struct{ Memory memoryfs.Memory }
 // emit-only discipline as the other four: the History screen produces it as a
 // Cmd's result, and the root — the sole holder of the write path, the capture
 // wait, the provider registry (for the derived-class gate), and the toast
-// chrome — gates it through the same refuseFlowStart every mutation start
-// passes and lands it through the edit flow's own finish machinery (kind
-// editRestore, editflow.go). No editor, no scratch: the blob IS the final
-// content. RepoPath is the /v0/history path key (<provider>[/<repo_subdir>]/
-// <rel>); the root maps it to a local write target via memoryfs.LocalTarget
-// and classifies it via memoryfs.ClassifyRepoPath, so restore works
-// identically for a live memory and a resurrected deleted one.
+// chrome — passes it through the same refuseFlowStart every mutation start
+// does, the same refuseDerivedClass gate the edit flow's own refuseNonFact
+// defers to, and the same landMutation atomic-write-then-arm-capture seam
+// finishEdit's save lands through (all in editflow.go). No editor and no
+// scratch: the blob IS the final content, and the confirm already happened on
+// the History screen. RepoPath is the /v0/history path key
+// (<provider>[/<repo_subdir>]/<rel>); the root maps it to a local write target
+// via memoryfs.LocalTarget and classifies it via memoryfs.ClassifyRepoPath, so
+// restore works identically for a live memory and a resurrected deleted one.
 type RestoreRequestMsg struct {
 	Folder   string
 	RepoPath string

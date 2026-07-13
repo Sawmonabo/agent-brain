@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
@@ -392,14 +393,20 @@ func TestHistoryRestoreConfirmEmitsRequest(t *testing.T) {
 // first, and only pops the screen when nothing internal is open.
 func TestHistoryEscOrdering(t *testing.T) {
 	t.Parallel()
-	fake := &fakeHistoryData{
-		historyResp: api.HistoryResponse{Versions: captureVersions()},
-		blobs:       map[string]string{"aaaaaaaaaaaa1111": "body\n"},
+	// Each parallel subtest builds its OWN fake: the fixture's InitCmd fetch
+	// appends to fake.historyCalls/blobCalls, so a shared fake would have three
+	// goroutines writing its slices unsynchronised (a real data race under
+	// -race). Every sibling History test already constructs its own.
+	newFake := func() *fakeHistoryData {
+		return &fakeHistoryData{
+			historyResp: api.HistoryResponse{Versions: captureVersions()},
+			blobs:       map[string]string{"aaaaaaaaaaaa1111": "body\n"},
+		}
 	}
 
 	t.Run("esc leaves the blob view for the list, no pop", func(t *testing.T) {
 		t.Parallel()
-		history := newHistoryFixture(t, fake, nil)
+		history := newHistoryFixture(t, newFake(), nil)
 		history = pressHistory(t, history, "enter")
 		next, cmd := history.Update(key("esc"))
 		history = next.(*History)
@@ -415,7 +422,7 @@ func TestHistoryEscOrdering(t *testing.T) {
 
 	t.Run("esc closes the restore confirm, no pop", func(t *testing.T) {
 		t.Parallel()
-		history := newHistoryFixture(t, fake, nil)
+		history := newHistoryFixture(t, newFake(), nil)
 		history = pressHistory(t, history, "R")
 		next, cmd := history.Update(key("esc"))
 		history = next.(*History)
@@ -431,7 +438,7 @@ func TestHistoryEscOrdering(t *testing.T) {
 
 	t.Run("esc on the bare list pops", func(t *testing.T) {
 		t.Parallel()
-		history := newHistoryFixture(t, fake, nil)
+		history := newHistoryFixture(t, newFake(), nil)
 		_, cmd := history.Update(key("esc"))
 		if cmd == nil {
 			t.Fatal("esc on the bare list produced no Cmd; want a PopScreenMsg")
@@ -531,6 +538,160 @@ func TestHistoryListHeightBudget(t *testing.T) {
 	got := plain(history.View(80, height))
 	if lineCount := strings.Count(got, "\n") + 1; lineCount > height {
 		t.Errorf("list view rendered %d lines, want <= %d (height budget); got:\n%s", lineCount, height, got)
+	}
+}
+
+// stampedVersions builds n capture versions with distinct revs and stamps — a
+// helper for the truncation and height-budget tests that need a specific count.
+func stampedVersions(n int) []api.HistoryVersion {
+	versions := make([]api.HistoryVersion, n)
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	for i := range versions {
+		stamp := base.Add(time.Duration(i) * time.Hour)
+		versions[i] = api.HistoryVersion{
+			Rev:       strings.Repeat("0", 11) + string(rune('a'+i%26)) + "xxxx",
+			Subject:   "memory: host acme stamp",
+			Host:      "host",
+			Timestamp: new(stamp),
+		}
+	}
+	return versions
+}
+
+// TestHistoryListDisclosesTruncation pins the silent-cap disclosure: a version
+// list that came back at exactly historyVersionLimit says older history was not
+// scanned (the scan is capped there), while a shorter list makes no such claim.
+// The disclosure must also respect the height budget — it reserves its own row.
+func TestHistoryListDisclosesTruncation(t *testing.T) {
+	t.Parallel()
+	t.Run("at the limit discloses, within budget", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: stampedVersions(historyVersionLimit)}}
+		history := newHistoryFixture(t, fake, nil)
+		const height = 20
+		got := plain(history.View(120, height))
+		if !strings.Contains(got, "older history not scanned") {
+			t.Errorf("a capped list did not disclose the truncation; got:\n%s", got)
+		}
+		if lineCount := strings.Count(got, "\n") + 1; lineCount > height {
+			t.Errorf("capped list overflowed its height budget: %d lines > %d", lineCount, height)
+		}
+	})
+	t.Run("below the limit does not disclose", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: stampedVersions(historyVersionLimit - 1)}}
+		history := newHistoryFixture(t, fake, nil)
+		if got := plain(history.View(120, 40)); strings.Contains(got, "older history not scanned") {
+			t.Errorf("a full-but-uncapped list wrongly disclosed truncation; got:\n%s", got)
+		}
+	})
+}
+
+// TestHistoryConfirmFillsHeightExactly pins the restore confirm's honest-height
+// contract: like the blob/diff viewports, it renders EXACTLY the height it was
+// handed — even at the tight budgets a short terminal produces (4 and 6) — so it
+// can never push the footer, or its own y/N prompt, off-frame.
+func TestHistoryConfirmFillsHeightExactly(t *testing.T) {
+	t.Parallel()
+	fake := &fakeHistoryData{
+		historyResp: api.HistoryResponse{Versions: captureVersions()},
+		blobs:       map[string]string{"aaaaaaaaaaaa1111": "body\n"},
+	}
+	for _, height := range []int{4, 6, 12} {
+		history := newHistoryFixture(t, fake, nil)
+		history = pressHistory(t, history, "R") // open the restore confirm
+		got := history.View(80, height)
+		if lineCount := strings.Count(got, "\n") + 1; lineCount != height {
+			t.Errorf("restore confirm rendered %d lines at height %d, want exact fill; got:\n%s", lineCount, height, plain(got))
+		}
+		if !strings.Contains(plain(got), "cancel") {
+			t.Errorf("restore confirm dropped its y/N prompt at height %d; got:\n%s", height, plain(got))
+		}
+	}
+}
+
+// TestHistoryDiffThemingAndLabels pins two otherwise-unpinned diff properties:
+// each +/- line is coloured through the theme (Styles.OK / Styles.Fail), and a
+// diff side's label carries the <shortRev> (<stamp>) shape. Asserted on the raw
+// (unstripped) diff content so neutering styleDiff — or dropping the stamp from
+// revLabel — actually fails here.
+func TestHistoryDiffThemingAndLabels(t *testing.T) {
+	t.Parallel()
+	styles := theme.Default(true)
+	versions := []api.HistoryVersion{
+		{Rev: "sel000000000aaaa", Subject: "memory: host acme 2026-07-13T11:00:00Z", Host: "host", Timestamp: new(historyNow.Add(-time.Hour))},
+	}
+	fake := &fakeHistoryData{
+		historyResp: api.HistoryResponse{Versions: versions},
+		blobs:       map[string]string{"sel000000000aaaa": "keep\nREMOVED\n"},
+	}
+	history := newHistoryFixture(t, fake, func(deps *HistoryDeps) {
+		deps.Styles = styles
+		deps.Live = func() (string, error) { return "keep\nADDED\n", nil }
+	})
+	history = pressHistory(t, history, "d")
+
+	content, _ := history.diffContent()
+	if !strings.Contains(content, styles.OK.Render("+ADDED")) {
+		t.Errorf("added line not themed through Styles.OK; raw diff:\n%q", content)
+	}
+	if !strings.Contains(content, styles.Fail.Render("-REMOVED")) {
+		t.Errorf("removed line not themed through Styles.Fail; raw diff:\n%q", content)
+	}
+	if !strings.Contains(plain(content), "sel000000000 (2026-07-13 11:00)") {
+		t.Errorf("diff label missing the <shortRev> (<stamp>) shape; got:\n%s", plain(content))
+	}
+}
+
+// TestHistoryNilDataIssuesNoFetch pins the nil-Data guard: a History built with
+// no Data (reachable only in a test — production always wires it) issues no
+// fetch Cmd, rather than one that nil-derefs Data the moment it runs.
+func TestHistoryNilDataIssuesNoFetch(t *testing.T) {
+	t.Parallel()
+	history := NewHistory(HistoryDeps{Folder: "acme", RepoPath: "claude/notes.md", Now: historyNow})
+	if cmd := history.InitCmd(); cmd != nil {
+		t.Errorf("InitCmd with nil Data returned a Cmd; want nil (nothing to fetch through)")
+	}
+	if cmd := history.versionsCmd(); cmd != nil {
+		t.Errorf("versionsCmd with nil Data returned a Cmd; want nil")
+	}
+	if cmd := history.blobCmd("aaaaaaaaaaaa1111"); cmd != nil {
+		t.Errorf("blobCmd with nil Data returned a Cmd; want nil")
+	}
+}
+
+// TestHistoryDiffVsLiveRefreshesChangedError pins the live-side refresh nit: when
+// a diff-vs-live's live read starts failing with a DIFFERENT error that has the
+// same (empty) rendered text, onRefresh must still update the displayed message
+// rather than leave the stale first error on screen.
+func TestHistoryDiffVsLiveRefreshesChangedError(t *testing.T) {
+	t.Parallel()
+	liveErr := errors.New("first live error")
+	versions := []api.HistoryVersion{
+		{Rev: "sel000000000aaaa", Subject: "memory: host acme 2026-07-13T11:00:00Z", Host: "host", Timestamp: new(historyNow.Add(-time.Hour))},
+	}
+	fake := &fakeHistoryData{
+		historyResp: api.HistoryResponse{Versions: versions},
+		blobs:       map[string]string{"sel000000000aaaa": "body\n"},
+	}
+	history := newHistoryFixture(t, fake, func(deps *HistoryDeps) {
+		deps.Live = func() (string, error) { return "", liveErr }
+	})
+	history = pressHistory(t, history, "d")
+	if got := plain(history.View(120, 30)); !strings.Contains(got, "first live error") {
+		t.Fatalf("diff-vs-live did not surface the first live error; got:\n%s", got)
+	}
+
+	liveErr = errors.New("second live error") // a different failure, same empty text
+	next, _ := history.Update(RefreshMsg{Now: historyNow})
+	history = next.(*History)
+
+	got := plain(history.View(120, 30))
+	if strings.Contains(got, "first live error") {
+		t.Errorf("diff still shows the stale first error after refresh; got:\n%s", got)
+	}
+	if !strings.Contains(got, "second live error") {
+		t.Errorf("diff did not update to the new live error after refresh; got:\n%s", got)
 	}
 }
 

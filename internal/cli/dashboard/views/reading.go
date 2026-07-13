@@ -61,7 +61,10 @@ type ReadingDeps struct {
 	// Data is the read-only version surface threaded into any History screen
 	// this reading view pushes (spec §6's h). The reading view never fetches
 	// through it itself — it only hands it to a constructed History — so a nil
-	// Data (tests that never press h) is harmless here.
+	// Data is harmless: even a History pushed with a nil Data issues no fetch
+	// (its versionsCmd/blobCmd nil-guard) and sits on its loading notice rather
+	// than nil-dereferencing, so a test that presses h without wiring Data is
+	// safe, not just one that never presses it.
 	Data HistoryDataSource
 	// Now seeds the clock a pushed History screen renders its relative ages
 	// against (screen.go's seed-at-construction rule): the reading view has no

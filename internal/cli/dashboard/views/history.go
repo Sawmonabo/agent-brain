@@ -95,8 +95,11 @@ type HistoryDeps struct {
 	// It returns "" for a deleted memory (nothing live to diff against). A nil
 	// Live (some tests) diffs against empty.
 	Live func() (string, error)
-	// Data is the read-only version/blob surface; only ever called inside a
-	// returned Cmd.
+	// Data is the read-only version/blob surface, only ever called inside a
+	// returned Cmd. A nil Data is reachable only in tests (production always
+	// wires it, via the browser/reading Data seam): versionsCmd and blobCmd then
+	// return a nil Cmd rather than a closure that would nil-deref when run, so
+	// InitCmd is a no-op and the screen holds its loading notice — never a panic.
 	Data HistoryDataSource
 	// Render markdown-renders a blob body at a width — the root-owned glamour
 	// seam shared with the browser preview and reading view. nil (some tests)
@@ -311,12 +314,27 @@ func (h *History) onRefresh(now time.Time) (Screen, tea.Cmd) {
 	}
 	if h.mode == modeDiff && h.diffKind == diffVsLive {
 		text, err := h.readLive()
-		if text != h.liveText || (err == nil) != (h.liveErr == nil) {
+		// Compare the error's MESSAGE, not just its presence: a live read can
+		// start failing with a DIFFERENT error whose rendered diff text is the
+		// same empty string as the last one (both errors render "" content), and
+		// an (err == nil) != (h.liveErr == nil) test would see no change and
+		// leave the stale first message on screen.
+		if text != h.liveText || errorText(err) != errorText(h.liveErr) {
 			h.liveText, h.liveErr = text, err
 			h.detailCache.valid = false
 		}
 	}
 	return h, tea.Batch(h.versionsCmd(), h.ensureDetailCmd())
+}
+
+// errorText is an error's message, or "" for nil — a comparable summary of an
+// error's identity, so two different non-nil errors register as a change even
+// when both drive the same (empty) rendered body.
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // adoptVersions installs a successful fetch's versions and clamps the cursor.
@@ -542,6 +560,9 @@ func (h *History) ensureDetailCmd() tea.Cmd {
 
 func (h *History) versionsCmd() tea.Cmd {
 	data, folder, repoPath := h.deps.Data, h.deps.Folder, h.deps.RepoPath
+	if data == nil {
+		return nil // nothing to fetch through (see HistoryDeps.Data) — never a closure that would nil-deref when run
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
@@ -552,6 +573,9 @@ func (h *History) versionsCmd() tea.Cmd {
 
 func (h *History) blobCmd(rev string) tea.Cmd {
 	data, folder, repoPath := h.deps.Data, h.deps.Folder, h.deps.RepoPath
+	if data == nil {
+		return nil // nothing to fetch through (see HistoryDeps.Data) — never a closure that would nil-deref when run
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
@@ -566,7 +590,7 @@ func (h *History) blobCmd(rev string) tea.Cmd {
 func (h *History) View(width, height int) string {
 	switch {
 	case h.confirming:
-		return h.confirmView()
+		return h.confirmView(height)
 	case h.mode == modeBlob, h.mode == modeDiff:
 		return h.detailView(width, height)
 	default:
@@ -595,14 +619,35 @@ func (h *History) listView(height int) string {
 		return strings.TrimRight(body.String(), "\n")
 	}
 
+	// A list that came back at exactly the fetch cap is (over-)approximated as
+	// truncated: older history was not scanned, so the newest-slice-only view is
+	// disclosed rather than passed off as the whole timeline. The disclosure
+	// reserves its own row out of the height budget so it never overflows.
+	truncated := len(h.versions) == historyVersionLimit
 	budget := max(height-2, 1) // title line + its trailing blank
+	if truncated {
+		budget = max(budget-1, 1) // the disclosure row
+	}
 	start, end := visibleWindow(h.cursor, len(h.versions), budget)
-	lines := make([]string, 0, end-start)
+	lines := make([]string, 0, end-start+1)
 	for row := start; row < end; row++ {
 		lines = append(lines, h.renderVersionRow(row))
 	}
+	if truncated {
+		lines = append(lines, h.deps.Styles.Dim.Render(historyTruncationNotice()))
+	}
 	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")
+}
+
+// historyTruncationNotice discloses that a version list came back at the fetch
+// cap (historyVersionLimit) — the newest slice only, older commits not scanned.
+// Shared by the per-memory list and the folder-wide deleted scan, whose cap is
+// the same. The count is the limit itself, so the wording stays exactly true at
+// the len == limit boundary this fires on (an over-approximation: a memory with
+// exactly limit commits and no more is disclosed too, the safe direction).
+func historyTruncationNotice() string {
+	return fmt.Sprintf("showing the newest %d commits — older history not scanned", historyVersionLimit)
 }
 
 func (h *History) renderVersionRow(row int) string {
@@ -644,8 +689,11 @@ func (h *History) versionSummary(version api.HistoryVersion) string {
 
 // confirmView renders the restore confirm: the always-visible warning, the
 // target version, and a state line — fetching, a load failure, or ready — so y
-// is never a blind keystroke over content the screen does not yet hold.
-func (h *History) confirmView() string {
+// is never a blind keystroke over content the screen does not yet hold. Like
+// the blob/diff viewports it honours the honest-height contract, rendering
+// EXACTLY height rows (fitLinesToHeight) so a short terminal can never push the
+// footer — or the confirm's own y/N prompt — off-frame.
+func (h *History) confirmView(height int) string {
 	version, _ := h.versionForRev(h.confirmRev)
 	lines := []string{
 		sectionTitle(h.deps.Styles, "History: "+h.memoryName()),
@@ -662,6 +710,27 @@ func (h *History) confirmView() string {
 		lines = append(lines, h.deps.Styles.OK.Render("ready to restore"))
 	}
 	lines = append(lines, "", h.deps.Styles.Dim.Render("y restore · N cancel"))
+	return fitLinesToHeight(lines, height)
+}
+
+// fitLinesToHeight renders lines to EXACTLY height rows: blank-padded at the
+// bottom when it has fewer (the viewport modes' space-fill, so a short body can
+// never leave the footer floating over dead space), and — when a tight terminal
+// budgets fewer rows than it has — trimmed to the leading height-1 lines plus
+// the LAST, so a trailing prompt line survives the trim rather than scrolling
+// off with the content above it.
+func fitLinesToHeight(lines []string, height int) string {
+	if height < 1 {
+		height = 1
+	}
+	switch {
+	case len(lines) < height:
+		lines = append(lines, make([]string, height-len(lines))...)
+	case len(lines) > height && height == 1:
+		lines = lines[len(lines)-1:]
+	case len(lines) > height:
+		lines = append(lines[:height-1:height-1], lines[len(lines)-1])
+	}
 	return strings.Join(lines, "\n")
 }
 
