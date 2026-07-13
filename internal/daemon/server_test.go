@@ -413,6 +413,63 @@ func TestBlobEndpointParsesQuery(t *testing.T) {
 	})
 }
 
+// TestMapHistoryErrorTaxonomy pins mapHistoryError's full case table
+// directly, independent of any route: the four named engine sentinels each
+// land on their documented status code, a canceled/expired context is an
+// honest 500 (never folded into either extreme), and — the fix this test
+// exists to guard — an unrecognized error (standing in for a genuine
+// git/infrastructure failure surfacing after existence is already
+// confirmed, per history.go's guard order) passes through UNCHANGED rather
+// than being caught by a catch-all 400. The passthrough case is asserted by
+// TYPE (errors.AsType[statusError] against the result), not just by code or
+// message: a catch-all default re-added later would still produce SOME
+// error, but it would be a statusError, which this test would then catch.
+// Likewise a mutation swapping the 413/415 (or 400/500) codes fails the
+// corresponding exact-code assertion.
+func TestMapHistoryErrorTaxonomy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int    // 0 means "must NOT be a statusError"
+		wantMsg  string // checked only when wantCode != 0
+	}{
+		{"blob too large maps to 413", engine.ErrBlobTooLarge, http.StatusRequestEntityTooLarge, engine.ErrBlobTooLarge.Error()},
+		{"blob binary maps to 415", engine.ErrBlobBinary, http.StatusUnsupportedMediaType, engine.ErrBlobBinary.Error()},
+		{"bad history input maps to 400", engine.ErrBadHistoryInput, http.StatusBadRequest, engine.ErrBadHistoryInput.Error()},
+		{"history not found maps to 400", engine.ErrHistoryNotFound, http.StatusBadRequest, engine.ErrHistoryNotFound.Error()},
+		{"a canceled context maps to an honest 500", context.Canceled, http.StatusInternalServerError, "history read interrupted"},
+		{"a deadline-exceeded context maps to an honest 500", context.DeadlineExceeded, http.StatusInternalServerError, "history read interrupted"},
+		{"an unrecognized error passes through, not a catch-all 400", errors.New("git exploded"), 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mapHistoryError(tt.err)
+			se, isStatusError := errors.AsType[statusError](got)
+
+			if tt.wantCode == 0 {
+				if isStatusError {
+					t.Fatalf("mapHistoryError(%v) = %#v, want a plain passthrough error, not a statusError", tt.err, got)
+				}
+				if !errors.Is(got, tt.err) {
+					t.Fatalf("mapHistoryError(%v) = %v, want the same error returned unchanged", tt.err, got)
+				}
+				return
+			}
+			if !isStatusError {
+				t.Fatalf("mapHistoryError(%v) = %v (%T), want a statusError with code %d", tt.err, got, got, tt.wantCode)
+			}
+			if se.code != tt.wantCode {
+				t.Fatalf("mapHistoryError(%v) code = %d, want %d", tt.err, se.code, tt.wantCode)
+			}
+			if se.msg != tt.wantMsg {
+				t.Fatalf("mapHistoryError(%v) msg = %q, want %q", tt.err, se.msg, tt.wantMsg)
+			}
+		})
+	}
+}
+
 func TestListenSocketReplacesStaleSocket(t *testing.T) {
 	t.Parallel()
 	socketPath := filepath.Join(shortSocketDir(t), "agent-brain.sock")

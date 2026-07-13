@@ -492,6 +492,70 @@ func TestBlobAtRejectsBadRev(t *testing.T) {
 	}
 }
 
+// TestBlobAtUnknownRevOrPathIsNotFound pins the honesty-taxonomy fix: a
+// syntactically-valid rev that was never a real commit, and a real rev
+// whose path was never tracked, both reach git (unlike
+// TestBlobAtRejectsBadRev's shape-invalid revs, which never do) and both
+// fail BlobAt's `rev-parse --verify --quiet` existence probe there, mapping
+// to the SAME ErrHistoryNotFound sentinel via exit code alone — never by
+// matching git's stderr text. The daemon (mapHistoryError) maps this
+// sentinel to a 400: the caller named something that does not exist, an
+// ordinary bad-input outcome, not a server failure.
+func TestBlobAtUnknownRevOrPathIsNotFound(t *testing.T) {
+	t.Parallel()
+	checkout, _ := newTestCheckout(t)
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	writeCheckout(t, checkout, "projA/claude/notes.md", "notes\n")
+	mustGit(t, checkout, "add", "-A")
+	mustGit(t, checkout, "commit", "--quiet", "-m", "memory: host-a projA "+fixedStamp)
+	rev := strings.TrimSpace(mustGit(t, checkout, "rev-parse", "HEAD").Stdout)
+
+	tests := []struct {
+		name string
+		path string
+		rev  string
+	}{
+		{"unknown rev, syntactically valid 40-hex", "claude/notes.md", strings.Repeat("a", 40)},
+		{"valid rev, path never tracked at it", "claude/missing.md", rev},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := engine.BlobAt(ctx, "projA", tt.path, tt.rev)
+			if !errors.Is(err, ErrHistoryNotFound) {
+				t.Fatalf("BlobAt(path=%q, rev=%q) error = %v, want errors.Is(_, ErrHistoryNotFound)", tt.path, tt.rev, err)
+			}
+		})
+	}
+}
+
+// TestHistoryEmptyForUnbornHEAD pins the unborn-HEAD guard directly, as
+// distinct from TestHistoryEmptyForPathWithNoCommits (an ordinary checkout
+// whose pathspec merely never matched a real commit): a freshly `git
+// init`'d checkout with zero commits has no HEAD to resolve at all, so
+// `git log` would itself fail rather than emit an empty reply. History's
+// own `rev-parse --verify --quiet HEAD` probe must catch that first and
+// report the same honest "no history yet" outcome — an empty slice and a
+// nil error — never leaking an unborn-HEAD git failure through as an
+// infrastructure error.
+func TestHistoryEmptyForUnbornHEAD(t *testing.T) {
+	t.Parallel()
+	checkout := t.TempDir()
+	mustGit(t, checkout, "init", "--quiet", "-b", "main")
+	engine := newTestEngine(t, checkout)
+	ctx := context.Background()
+
+	versions, err := engine.History(ctx, "projA", "claude/notes.md", 0)
+	if err != nil {
+		t.Fatalf("History on an unborn HEAD = %v, want nil error", err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("len(versions) = %d, want 0 for an unborn HEAD", len(versions))
+	}
+}
+
 // TestParseHistoryRecordsHandlesZeroPathsAndHostileSubjects unit-tests the
 // raw `--format=%x01%H%x00%s --name-only -z` parser directly (byte layout
 // confirmed against real git output), independent of git: a merge-shaped

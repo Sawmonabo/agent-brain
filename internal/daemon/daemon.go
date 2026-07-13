@@ -1132,24 +1132,51 @@ func (d *Daemon) Blob(ctx context.Context, folder, path, rev string) (api.BlobRe
 }
 
 // mapHistoryError translates a History/BlobAt failure into the controller's
-// HTTP status, shared by both since History can only ever produce the
-// "everything else" case below (ErrBlobTooLarge/ErrBlobBinary are
-// BlobAt-specific). Guard order: the two content caps are checked first;
-// everything else — Task 1's shape validation (engine.ErrBadHistoryInput:
-// a malformed folder/path/rev) and a git failure resolving an unknown rev
-// or path (BlobAt's cat-file surfaces that verbatim, by design) — is the
-// caller naming something that does not exist, a 400 like any other bad
-// --project name (TriggerSync). A genuine infrastructure failure cannot
-// reach here: submitRead's refreshState gate already refused an unhealthy
-// checkout before the engine goroutine ever ran this call.
+// HTTP status, shared by both endpoints (History can only ever produce the
+// engine.ErrBadHistoryInput/engine.ErrHistoryNotFound/context cases below —
+// ErrBlobTooLarge/ErrBlobBinary are BlobAt-specific).
+//
+// Every case named here is one the engine can honestly attribute to the
+// CALLER: the two content caps, the shape-validation sentinel, and
+// engine.ErrHistoryNotFound. Why ErrHistoryNotFound is a 400 rather than a
+// 404 or a 500: an unknown rev or a path never tracked at that rev is the
+// same class of mistake as naming an unknown --project folder (TriggerSync)
+// — the caller asked for something that does not exist — even though
+// resolving that takes a git subprocess (history.go's rev-parse existence
+// probe) rather than failing shape validation before one ever runs.
+// context.Canceled/context.DeadlineExceeded are the daemon's OWN caller
+// giving up mid-read; that is not the engine's fault, but it is not the
+// caller naming bad input either, so it gets an honest 500 message instead
+// of being folded into either extreme.
+//
+// There is deliberately NO catch-all/default 400. Once existence is
+// confirmed — BlobAt's rev-parse probe, History's HEAD probe, both in
+// history.go — any LATER git failure (cat-file, textconv, log, a size
+// parse) is a genuine infrastructure problem: the checkout broke or
+// corrupted mid-read. submitRead's refreshState gate (checkoutState calling
+// doctor.SafetyGate) only confirms the checkout was initialized before this
+// call started; it is not a per-call git health probe, so a failure of that
+// kind CAN reach here. The default case therefore returns err UNCHANGED
+// rather than wrapped in a statusError: writeError (server.go) already
+// renders any error that is not a statusError as a 500, so passing the
+// error through — instead of inventing a status for a failure this
+// function has no sentinel to name — is both correct and honest. A future
+// engine-level error class becomes a 500 by default, never a silently-wrong
+// 400.
 func mapHistoryError(err error) error {
 	switch {
 	case errors.Is(err, engine.ErrBlobTooLarge):
 		return statusError{code: http.StatusRequestEntityTooLarge, msg: err.Error()}
 	case errors.Is(err, engine.ErrBlobBinary):
 		return statusError{code: http.StatusUnsupportedMediaType, msg: err.Error()}
-	default:
+	case errors.Is(err, engine.ErrBadHistoryInput):
 		return statusError{code: http.StatusBadRequest, msg: err.Error()}
+	case errors.Is(err, engine.ErrHistoryNotFound):
+		return statusError{code: http.StatusBadRequest, msg: err.Error()}
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		return statusError{code: http.StatusInternalServerError, msg: "history read interrupted"}
+	default:
+		return err
 	}
 }
 

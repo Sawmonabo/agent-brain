@@ -44,6 +44,16 @@ var (
 	// malformed, not a server failure — rather than pattern-matching
 	// message text.
 	ErrBadHistoryInput = errors.New("history: invalid input")
+	// ErrHistoryNotFound means a syntactically-valid rev or folder/path did
+	// not resolve to a real git object: an unknown rev, or a path never
+	// tracked at that rev. BlobAt detects this with a `rev-parse --verify
+	// --quiet` existence probe (exit code as data via gitx.RunStatus, never
+	// git's stderr text — see BlobAt's own doc comment). The daemon maps
+	// this to a 400 via errors.Is, same as ErrBadHistoryInput: the caller
+	// named something that does not exist, which is honestly their mistake,
+	// not a server failure — distinct from any LATER git failure once an
+	// object is confirmed to exist, which IS a server failure.
+	ErrHistoryNotFound = errors.New("history: not found")
 )
 
 // revPattern is the only shape BlobAt accepts for rev: a full or
@@ -63,10 +73,20 @@ type HistoryVersion struct {
 }
 
 // History lists commits touching folder (path == "", folder-wide mode) or
-// folder/path (path-mode), newest first, capped at limit. It runs exactly
-// one `git log` subprocess and parses its output once; path mode follows up
-// with the Live resolution (one `rev-parse` per returned version, plus one
-// for HEAD) since content identity cannot be read off the log line itself.
+// folder/path (path-mode), newest first, capped at limit. Before running
+// `git log`, it probes HEAD itself via `rev-parse --verify --quiet`
+// (gitx.RunStatus, exit code as data — never git's stderr text, the same
+// pattern markLive already uses for a single ref). A non-zero exit means an
+// unborn HEAD — a checkout with zero commits — which is an honestly empty
+// history, not a failure, so History returns (nil, nil) rather than ever
+// running `git log` against a ref that cannot resolve. Once HEAD is
+// confirmed born, it runs exactly one `git log` subprocess and parses its
+// output once; path mode follows up with the Live resolution (one
+// `rev-parse` per returned version, plus one for HEAD) since content
+// identity cannot be read off the log line itself. Any failure from this
+// point on (the log itself, or markLive's resolves) is a genuine
+// infrastructure error and returns as-is — never repackaged, so the daemon
+// (Task 2) can tell it apart from an ordinary empty/not-found outcome.
 //
 // Folder-wide versions carry their changed Paths and never set Live
 // (Live is a path-mode question: "is THIS path's content live", which is
@@ -78,6 +98,14 @@ func (e *Engine) History(ctx context.Context, folder, path string, limit int) ([
 		return nil, err
 	}
 	limit = clampHistoryLimit(limit)
+
+	headResult, err := gitx.RunStatus(ctx, e.checkout, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if headResult.ExitCode != 0 {
+		return nil, nil // unborn HEAD (zero commits yet) — an empty history is data, not a failure
+	}
 
 	pathspec := folder
 	if path != "" {
@@ -168,14 +196,23 @@ func (e *Engine) markLive(ctx context.Context, pathspec string, versions []Histo
 // gitx.InstallFilters) — BlobAt never implements a decrypt path of its
 // own, so its output is only ever as trustworthy as that wiring already is.
 //
-// Guard order matters: the size probe reads the STORED (pre-textconv) blob
-// size and runs BEFORE any content leaves git — cheaper than decrypting
-// first, and a safe proxy for plaintext size because AES-SIV overhead is a
-// small additive constant, never a multiplier, so an oversize ciphertext
-// blob implies an oversize plaintext too. The UTF-8/NUL check runs only
-// after a successful content fetch. A missing rev or path surfaces as the
-// git error verbatim — never replaced with a bespoke message — so the
-// daemon (Task 2) can pattern-match it to a 400.
+// Guard order matters, and draws a hard line between "the caller asked for
+// something that doesn't exist" and "git itself failed". First, a
+// `rev-parse --verify --quiet` existence probe resolves blobRef via
+// gitx.RunStatus — exit code as data, never git's stderr text (message-
+// matching on git output is a recorded incident pattern in this repo) — and
+// a non-zero exit is ErrHistoryNotFound: an ordinary, caller-facing outcome
+// (an unknown rev, or a path never tracked at that rev), not a server
+// failure. Only once existence is confirmed does the size probe run: it
+// reads the STORED (pre-textconv) blob size before any content leaves git —
+// cheaper than decrypting first, and a safe proxy for plaintext size
+// because AES-SIV overhead is a small additive constant, never a
+// multiplier, so an oversize ciphertext blob implies an oversize plaintext
+// too. The UTF-8/NUL check runs only after a successful content fetch. Any
+// failure from this point on (the size probe, cat-file --textconv, or its
+// size parse) is a genuine infrastructure error on an object git already
+// confirmed exists, and returns as-is — never repackaged — so the daemon
+// (Task 2) maps it to a 500 rather than blaming the caller.
 func (e *Engine) BlobAt(ctx context.Context, folder, path, rev string) ([]byte, error) {
 	if rev == "" {
 		return nil, fmt.Errorf("history: rev is required")
@@ -184,6 +221,14 @@ func (e *Engine) BlobAt(ctx context.Context, folder, path, rev string) ([]byte, 
 		return nil, err
 	}
 	blobRef := fmt.Sprintf("%s:%s/%s", rev, folder, path)
+
+	resolveResult, err := gitx.RunStatus(ctx, e.checkout, "rev-parse", "--verify", "--quiet", blobRef)
+	if err != nil {
+		return nil, err
+	}
+	if resolveResult.ExitCode != 0 {
+		return nil, fmt.Errorf("%w: %s/%s@%s", ErrHistoryNotFound, folder, path, rev)
+	}
 
 	sizeResult, err := gitx.Run(ctx, e.checkout, "cat-file", "-s", blobRef)
 	if err != nil {

@@ -240,8 +240,7 @@ func postHandler[Req, Resp any](handle func(context.Context, Req) (Resp, error))
 // everything else is a 500.
 func writeError(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
-	var se statusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[statusError](err); ok {
 		code = se.code
 	}
 	http.Error(w, err.Error(), code)
