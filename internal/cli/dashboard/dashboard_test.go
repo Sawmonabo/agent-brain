@@ -3,25 +3,30 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"image/color"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/google/go-cmp/cmp"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
+	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
 
-// csiPattern matches the CSI escape sequences lipgloss emits — ESC '[', numeric
-// parameters, a letter terminator (SGR colour/attributes end in 'm'). The views
-// render only styled text, so this is the whole escape surface in a View string.
+// csiPattern matches the CSI escape sequences lipgloss emits — ESC '[',
+// numeric parameters, a letter terminator (SGR colour/attributes end in
+// 'm'). The views render only styled text, so this is the whole escape
+// surface in a View string.
 var csiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
-// plain strips styling so assertions match the visible text. This realises the
-// brief's "styling forced plain in tests": lipgloss v2 emits ANSI
+// plain strips styling so assertions match the visible text. This realises
+// the brief's "styling forced plain in tests": lipgloss v2 emits ANSI
 // unconditionally at Render and has no plain-render mode — colour downgrade
 // happens only at the colorprofile writer (verified against the resolved module
 // 2026-07-09, where lipgloss.Writer *is* a colorprofile writer). Stripping the
@@ -31,9 +36,9 @@ func plain(s string) string {
 	return csiPattern.ReplaceAllString(s, "")
 }
 
-// fakeData is an injectable dashboardData: canned reads, and recorded mutating
-// calls so a test can prove what a key press actually did. No socket, no
-// filesystem, no doctor battery.
+// fakeData is an injectable views.DataSource: canned reads, and recorded
+// mutating calls so a test can prove what a key press actually did. No
+// socket, no filesystem, no doctor battery.
 type fakeData struct {
 	status       api.StatusResponse
 	statusErr    error
@@ -136,8 +141,23 @@ func containsMsg[T tea.Msg](msgs []tea.Msg) bool {
 	return false
 }
 
-func newTestModel(data dashboardData) Model {
+func newTestModel(data views.DataSource) Model {
 	return New(Config{Data: data, StartService: func() error { return nil }})
+}
+
+// readyStatus is a ready-daemon status fixture shared by the tests below and
+// by views.ProjectsView's own test suite (duplicated there rather than
+// exported: views must not import this package, so a views-level fixture
+// cannot come from here, and it is small enough that duplicating it is
+// cheaper than inventing a shared export just for test fixtures).
+func readyStatus() api.StatusResponse {
+	return api.StatusResponse{
+		State:     "ready",
+		Version:   "dev",
+		PID:       4242,
+		StartedAt: time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC),
+		LastSync:  &api.SyncSummary{At: time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC), Pushed: true},
+	}
 }
 
 func TestTabCycling(t *testing.T) {
@@ -478,24 +498,24 @@ func TestFooterInModalStatesAdvertisesOnlyLiveKeys(t *testing.T) {
 	tests := []struct {
 		name       string
 		confirming bool
-		stage      addStage
+		stage      views.AddStage
 		want       string
 	}{
-		{name: "untrack confirm", confirming: true, stage: addNone, want: "y/n decide · esc cancel"},
-		{name: "add discovering", stage: addDiscovering, want: "esc cancel"},
-		{name: "add picking", stage: addPicking, want: "↑/↓ select · enter confirm · esc cancel"},
-		{name: "add confirm path", stage: addConfirmPath, want: "enter confirm · esc cancel"},
-		{name: "add identifying", stage: addIdentifying, want: "esc cancel"},
-		{name: "add naming folder", stage: addNamingFolder, want: "enter confirm · esc cancel"},
-		{name: "add tracking", stage: addTracking, want: "esc cancel"},
+		{name: "untrack confirm", confirming: true, stage: views.AddNone, want: "y/n decide · esc cancel"},
+		{name: "add discovering", stage: views.AddDiscovering, want: "esc cancel"},
+		{name: "add picking", stage: views.AddPicking, want: "↑/↓ select · enter confirm · esc cancel"},
+		{name: "add confirm path", stage: views.AddConfirmPath, want: "enter confirm · esc cancel"},
+		{name: "add identifying", stage: views.AddIdentifying, want: "esc cancel"},
+		{name: "add naming folder", stage: views.AddNamingFolder, want: "enter confirm · esc cancel"},
+		{name: "add tracking", stage: views.AddTracking, want: "esc cancel"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			m := newTestModel(&fakeData{})
 			m.active = tabProjects
-			m.projects.confirming = testCase.confirming
-			m.projects.adding = testCase.stage
+			m.projects.Confirming = testCase.confirming
+			m.projects.Adding = testCase.stage
 
 			got := plain(m.footer())
 			if got != testCase.want {
@@ -507,5 +527,249 @@ func TestFooterInModalStatesAdvertisesOnlyLiveKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBackgroundColorSwapsPalette pins the theme re-derive wiring: sending a
+// dark tea.BackgroundColorMsg then a light one through Update must not panic
+// and must leave the model renderable — View non-empty — proving m.styles
+// (and every view's copy of it, propagated through withStyles) is rebuilt
+// from theme.Default on each swap rather than left stale or zeroed.
+func TestBackgroundColorSwapsPalette(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{status: readyStatus(), projects: api.ProjectsResponse{}})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+
+	dark, cmd := step(m, tea.BackgroundColorMsg{Color: color.Black})
+	if cmd != nil {
+		t.Error("BackgroundColorMsg produced a Cmd; want none")
+	}
+	if body := dark.View().Content; body == "" {
+		t.Error("model unrenderable after a dark BackgroundColorMsg")
+	}
+
+	light, cmd := step(dark, tea.BackgroundColorMsg{Color: color.White})
+	if cmd != nil {
+		t.Error("BackgroundColorMsg produced a Cmd; want none")
+	}
+	if body := light.View().Content; body == "" {
+		t.Error("model unrenderable after a light BackgroundColorMsg")
+	}
+}
+
+// addConfig builds a Config whose discovery closure returns the given
+// candidates and whose identity closure always resolves to the zero
+// identity — no root-level add test below drives far enough to make the
+// resolved identity's value observable (global candidates track directly,
+// skipping Identify; the one per-project candidate below never advances
+// past the picker).
+func addConfig(fake *fakeData, candidates []views.TrackCandidate) Config {
+	return Config{
+		Data: fake,
+		Discover: func(context.Context) ([]views.TrackCandidate, error) {
+			return candidates, nil
+		},
+		Identify: func(_ context.Context, _ string, _ views.TrackRoot, _ string) (provider.Identity, error) {
+			return provider.Identity{}, nil
+		},
+	}
+}
+
+// drive feeds one message through the root model and executes any returned
+// Cmd synchronously — flattening tea.Batch the way a running program would —
+// feeding every produced message back in until the model goes quiet. It lets
+// a test walk the full a → discover → pick → confirm → identify → track
+// chain without a running program.
+func drive(t *testing.T, m Model, msg tea.Msg) Model {
+	t.Helper()
+	queue := []tea.Msg{msg}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next == nil {
+			continue
+		}
+		if batch, ok := next.(tea.BatchMsg); ok {
+			for _, cmd := range batch {
+				if cmd != nil {
+					queue = append(queue, cmd())
+				}
+			}
+			continue
+		}
+		model, cmd := m.Update(next)
+		m = model.(Model)
+		if cmd != nil {
+			queue = append(queue, cmd())
+		}
+	}
+	return m
+}
+
+// TestFooterAdvertisesAddOnlyWhenWired and TestFooterAndDispatchGateAddOnBothClosures
+// and the three TestProjectsAdd*Sync* tests below stay at root (rather than
+// moving to views.ProjectsView's own test suite) because they pin ROOT-level
+// orchestration: the root's footer() gating on m.actions.AddAvailable(), and
+// the root's Update deciding — from views.TrackResultMsg.Err — whether a
+// completed enrollment also fires a whole-fleet views.SyncCmd. Neither
+// concern is reachable by driving a bare views.ProjectsView.
+
+func TestFooterAdvertisesAddOnlyWhenWired(t *testing.T) {
+	t.Parallel()
+	wired := New(addConfig(&fakeData{}, nil))
+	wired.active = tabProjects
+	if got := plain(wired.footer()); !strings.Contains(got, "a add") {
+		t.Fatalf("Projects footer %q missing %q with discovery wired", got, "a add")
+	}
+	wired.active = tabDoctor
+	if got := plain(wired.footer()); strings.Contains(got, "a add") {
+		t.Fatalf("Doctor footer %q must not advertise add", got)
+	}
+	unwired := New(Config{Data: &fakeData{}})
+	unwired.active = tabProjects
+	if got := plain(unwired.footer()); strings.Contains(got, "a add") {
+		t.Fatalf("footer %q advertises add with no discovery closure wired", got)
+	}
+}
+
+// TestFooterAndDispatchGateAddOnBothClosures pins that add availability gates on
+// BOTH injected closures, not discovery alone. A build wiring Discover without
+// Identify would panic the moment a per-project candidate is picked (identifyCmd
+// calls identify on nil), so with Identify unwired the a key must be dead and
+// unadvertised — never a key the footer names but the dispatch cannot honor.
+func TestFooterAndDispatchGateAddOnBothClosures(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	m := New(Config{
+		Data: fake,
+		Discover: func(context.Context) ([]views.TrackCandidate, error) {
+			return nil, nil
+		},
+		// Identify deliberately unwired: discovery alone must not enable add.
+	})
+	m.active = tabProjects
+
+	if got := plain(m.footer()); strings.Contains(got, "a add") {
+		t.Errorf("footer %q advertises add with identify unwired", got)
+	}
+
+	m = drive(t, m, key("a"))
+	if m.projects.Adding != views.AddNone {
+		t.Errorf("Adding = %v, want AddNone: a must be dead with identify unwired", m.projects.Adding)
+	}
+	if got := plain(m.projects.View()); !strings.Contains(got, "add is unavailable") {
+		t.Errorf("view = %q, want the 'add is unavailable' notice", got)
+	}
+	if len(fake.trackCalls) != 0 {
+		t.Errorf("a with identify unwired still reached the daemon: %v", fake.trackCalls)
+	}
+}
+
+func TestProjectsAddGlobalTracksAllRootsAndSyncs(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{trackResp: api.TrackResponse{Folder: "_global"}}
+	candidates := []views.TrackCandidate{{
+		Provider: "codex",
+		Label:    "codex  global memories",
+		Global:   true,
+		Roots: []views.TrackRoot{
+			{LocalDir: "/home/u/.codex/memories"},
+			{LocalDir: "/home/u/.codex/notes", RepoSubdir: "notes"},
+		},
+	}}
+	m := New(addConfig(fake, candidates))
+	m.active = tabProjects
+
+	m = drive(t, m, key("a"))     // discover → picker (one row)
+	m = drive(t, m, key("enter")) // global: track directly, then fleet sync
+
+	if len(fake.trackCalls) != 2 {
+		t.Fatalf("trackCalls = %d, want 2 (both roots of the grouped global candidate)", len(fake.trackCalls))
+	}
+	for i, call := range fake.trackCalls {
+		if call.Provider != "codex" || call.ProjectID != "" {
+			t.Fatalf("trackCalls[%d] = %+v, want codex with empty ProjectID (global scope)", i, call)
+		}
+	}
+	if fake.trackCalls[1].RepoSubdir != "notes" {
+		t.Fatalf("trackCalls[1].RepoSubdir = %q, want %q", fake.trackCalls[1].RepoSubdir, "notes")
+	}
+	if len(fake.syncCalls) != 1 || fake.syncCalls[0] != "" {
+		t.Fatalf("syncCalls = %v, want one whole-fleet sync after a successful track", fake.syncCalls)
+	}
+}
+
+// TestProjectsAddTrackFailureSurfacesAndSkipsSync covers the track error
+// branch: when the daemon rejects the enrollment, the root surfaces the
+// reason and fires NO fleet sync — there is nothing new to mirror in, so
+// syncing would be a lie. The recorded calls prove exactly one track attempt
+// and zero syncs.
+func TestProjectsAddTrackFailureSurfacesAndSkipsSync(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{trackErr: errors.New("daemon refused: quiesced")}
+	candidates := []views.TrackCandidate{{
+		Provider: "codex",
+		Label:    "codex  global memories",
+		Global:   true,
+		Roots:    []views.TrackRoot{{LocalDir: "/home/u/.codex/memories"}},
+	}}
+	m := New(addConfig(fake, candidates))
+	m.active = tabProjects
+
+	m = drive(t, m, key("a"))     // discover → picker (one global row)
+	m = drive(t, m, key("enter")) // global: track directly (fails)
+
+	if len(fake.trackCalls) != 1 {
+		t.Fatalf("trackCalls = %d, want 1 (the attempted enrollment)", len(fake.trackCalls))
+	}
+	if len(fake.syncCalls) != 0 {
+		t.Fatalf("a failed track must not fire a fleet sync: %v", fake.syncCalls)
+	}
+	if got := plain(m.projects.View()); !strings.Contains(got, "track failed") ||
+		!strings.Contains(got, "quiesced") {
+		t.Fatalf("view = %q, want a 'track failed' notice carrying the reason", got)
+	}
+}
+
+// TestProjectsStaleTrackResultKeepsNewFlow pins the OnTrackResult reset guard
+// together with root's unconditional-on-success fleet sync: a prior
+// enrollment's in-flight views.TrackResultMsg can land after the user esc'd
+// and reopened the add flow. drive is synchronous, so that interleaving is
+// constructed directly — reach a real AddPicking state through key events,
+// then deliver the stale result through the model's Update. The view's reset
+// must be skipped (the new picker survives untouched) while the notice and
+// root's fleet sync still fire, because the stale enrollment genuinely
+// happened.
+func TestProjectsStaleTrackResultKeepsNewFlow(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	candidates := []views.TrackCandidate{
+		{Provider: "claude", Label: "claude  one  → /g/one", PathGuess: "/g/one", Roots: []views.TrackRoot{{LocalDir: "/x/one"}}},
+		{Provider: "claude", Label: "claude  two  → /g/two", PathGuess: "/g/two", Roots: []views.TrackRoot{{LocalDir: "/x/two"}}},
+	}
+	m := New(addConfig(fake, candidates))
+	m.active = tabProjects
+
+	// Reach a real AddPicking state through key events, then move the cursor off
+	// row 0 so "cursor untouched" is a meaningful claim.
+	m = drive(t, m, key("a"))
+	m = drive(t, m, key("j"))
+	if m.projects.Adding != views.AddPicking {
+		t.Fatalf("setup: Adding = %v, want AddPicking", m.projects.Adding)
+	}
+
+	// The prior enrollment's result lands now. It is no longer AddTracking, so
+	// it must not stomp the new picker — but it is still a real outcome.
+	next, cmd := step(m, views.TrackResultMsg{Folders: []string{"agent-brain"}})
+
+	if next.projects.Adding != views.AddPicking {
+		t.Fatalf("Adding = %v, want AddPicking (a stale result must not reset the new flow)", next.projects.Adding)
+	}
+	if got := plain(next.projects.View()); !strings.Contains(got, "tracked agent-brain") {
+		t.Fatalf("view = %q, want the stale enrollment's notice still set", got)
+	}
+	drain(cmd)
+	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
+		t.Fatalf("a stale success did not fire the whole-fleet sync (-want +got):\n%s", diff)
 	}
 }

@@ -9,8 +9,9 @@ import (
 
 	keybinding "charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
@@ -21,11 +22,6 @@ import (
 // idiomatic bubbletea pattern for a local daemon: no push channel exists, and
 // inventing one would violate the no-new-seams rule (spec §7 / task brief).
 const pollInterval = 2 * time.Second
-
-// requestTimeout bounds each background data Cmd so a wedged daemon cannot hang
-// a poll. It is well under the UDS client's own 120s ceiling so the UI stays
-// responsive even when a request is doomed.
-const requestTimeout = 10 * time.Second
 
 // tab identifies the active view, in tab-bar order (spec §7).
 type tab int
@@ -54,7 +50,10 @@ func (t tab) title() string {
 }
 
 // Messages. Every one is produced by a background Cmd; Update and View never
-// perform I/O directly (model purity, enforced by the Q3 gate).
+// perform I/O directly (model purity, enforced by the Q3 gate). Sync/untrack/
+// discover/identify/track results are views.SyncResultMsg etc. — produced by
+// Cmds that live with the Projects view (spec §15) — switched on below
+// alongside these root-owned messages.
 type (
 	tickMsg   time.Time
 	statusMsg struct {
@@ -73,22 +72,12 @@ type (
 		report doctor.Report
 		err    error
 	}
-	syncResultMsg struct {
-		folder string
-		resp   api.SyncResponse
-		err    error
-	}
-	untrackResultMsg struct {
-		folder string
-		resp   api.UntrackResponse
-		err    error
-	}
 	serviceStartedMsg struct{ err error }
 )
 
 // Config is what the cli root command supplies to build the root model.
 type Config struct {
-	Data dashboardData
+	Data views.DataSource
 	// StartService starts the login daemon service — the same
 	// service.Controller.Start path the CLI uses — offered on the daemon-down
 	// screen (spec §7). nil disables the offer.
@@ -99,16 +88,17 @@ type Config struct {
 	// pattern as the doctor runner) because provider/registry composition
 	// lives outside this package's import allowlist. nil disables the
 	// Projects tab's add action.
-	Discover func(context.Context) ([]TrackCandidate, error)
-	Identify func(ctx context.Context, providerName string, root TrackRoot, projectPath string) (provider.Identity, error)
+	Discover func(context.Context) ([]views.TrackCandidate, error)
+	Identify func(ctx context.Context, providerName string, root views.TrackRoot, projectPath string) (provider.Identity, error)
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
 // by one shared tick.
 type Model struct {
-	data         dashboardData
+	data         views.DataSource
 	startService func() error
-	actions      trackActions
+	actions      views.TrackActions
+	styles       theme.Styles
 
 	active tab
 	width  int
@@ -122,28 +112,43 @@ type Model struct {
 	starting   bool // a service-start Cmd is in flight
 	serviceErr error
 
-	projects  projectsView
-	conflicts conflictsView
-	activity  activityView
-	doctor    doctorView
+	projects  views.ProjectsView
+	conflicts views.ConflictsView
+	activity  views.ActivityView
+	doctor    views.DoctorView
 
 	quitting bool
 }
 
 // New builds the root model.
 func New(cfg Config) Model {
-	return Model{
+	m := Model{
 		data:         cfg.Data,
 		startService: cfg.StartService,
-		actions:      trackActions{discover: cfg.Discover, identify: cfg.Identify},
+		actions:      views.TrackActions{Discover: cfg.Discover, Identify: cfg.Identify},
 		now:          time.Now(),
-		projects:     newProjectsView(),
+		projects:     views.NewProjectsView(),
 	}
+	return m.withStyles(theme.Default(true)) // dark until the terminal answers (Init requests it)
 }
 
-// Init loads the active view once and starts the shared tick.
+// withStyles installs styles on the root and propagates them to every view
+// in one call — construction and every tea.BackgroundColorMsg both route
+// through here, so a palette swap is one place, not four.
+func (m Model) withStyles(styles theme.Styles) Model {
+	m.styles = styles
+	m.projects.SetStyles(styles)
+	m.conflicts.SetStyles(styles)
+	m.activity.SetStyles(styles)
+	m.doctor.SetStyles(styles)
+	return m
+}
+
+// Init loads the active view once, starts the shared tick, and requests the
+// terminal's background color so the theme can pick Mocha vs Latte
+// (tea.BackgroundColorMsg, handled in Update; default dark until it answers).
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.tickCmd())
+	return tea.Batch(m.reloadCmd(), m.tickCmd(), tea.RequestBackgroundColor)
 }
 
 func (m Model) tickCmd() tea.Cmd {
@@ -201,7 +206,7 @@ func (m Model) switchCmd() tea.Cmd {
 func (m Model) statusCmd() tea.Cmd {
 	data := m.data
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), views.RequestTimeout)
 		defer cancel()
 		resp, err := data.Status(ctx)
 		return statusMsg{resp: resp, err: err}
@@ -211,7 +216,7 @@ func (m Model) statusCmd() tea.Cmd {
 func (m Model) projectsCmd() tea.Cmd {
 	data := m.data
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), views.RequestTimeout)
 		defer cancel()
 		resp, err := data.Projects(ctx)
 		return projectsMsg{resp: resp, err: err}
@@ -229,7 +234,7 @@ func (m Model) conflictsCmd() tea.Cmd {
 func (m Model) doctorCmd() tea.Cmd {
 	data := m.data
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), views.RequestTimeout)
 		defer cancel()
 		report, err := data.Doctor(ctx)
 		return doctorMsg{report: report, err: err}
@@ -253,8 +258,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.projects.setSize(msg.Width, msg.Height)
+		m.projects.SetSize(msg.Width, msg.Height)
 		return m, nil
+
+	case tea.BackgroundColorMsg:
+		return m.withStyles(theme.Default(msg.IsDark())), nil
 
 	case tickMsg:
 		m.now = time.Time(msg)
@@ -267,38 +275,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case projectsMsg:
 		if msg.err != nil {
-			m.projects.setLoadErr(msg.err)
+			m.projects.SetLoadErr(msg.err)
 		} else {
-			m.projects.setUnits(msg.resp.Units)
+			m.projects.SetUnits(msg.resp.Units)
 		}
 		return m, nil
 
 	case conflictsMsg:
-		m.conflicts.set(msg.records, msg.err)
+		m.conflicts.Set(msg.records, msg.err)
 		return m, nil
 
 	case doctorMsg:
-		m.doctor.set(msg.report, msg.err)
+		m.doctor.Set(msg.report, msg.err)
 		return m, nil
 
-	case syncResultMsg:
-		m.projects.onSyncResult(msg)
+	case views.SyncResultMsg:
+		m.projects.OnSyncResult(msg)
 		return m, m.projectsCmd() // reflect the post-sync fleet state
 
-	case untrackResultMsg:
-		m.projects.onUntrackResult(msg)
+	case views.UntrackResultMsg:
+		m.projects.OnUntrackResult(msg)
 		return m, tea.Batch(m.projectsCmd(), m.statusCmd())
 
-	case discoverMsg:
-		m.projects.onDiscover(msg)
+	case views.DiscoverMsg:
+		m.projects.OnDiscover(msg)
 		return m, nil
 
-	case identifyMsg:
-		return m, m.projects.onIdentify(msg, m.data)
+	case views.IdentifyMsg:
+		return m, m.projects.OnIdentify(msg, m.data)
 
-	case trackResultMsg:
-		failed := msg.err != nil
-		m.projects.onTrackResult(msg)
+	case views.TrackResultMsg:
+		failed := msg.Err != nil
+		m.projects.OnTrackResult(msg)
 		if failed {
 			return m, m.projectsCmd()
 		}
@@ -306,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (the same lesson track.go's syncAfterTrack records): an explicit
 		// whole-fleet sync is what makes the enrollment's first mirror-in
 		// visible here rather than landing silently later.
-		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), syncCmd(m.data, ""))
+		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), views.SyncCmd(m.data, ""))
 
 	case serviceStartedMsg:
 		m.starting = false
@@ -343,15 +351,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// A modal confirm on the Projects view consumes keys before the globals,
 	// so a `y`/`n` answer is never mistaken for a tab jump.
-	if m.active == tabProjects && m.projects.modalOpen() {
-		return m, m.projects.update(msg, m.data, m.actions)
+	if m.active == tabProjects && m.projects.ModalOpen() {
+		return m, m.projects.Update(msg, m.data, m.actions)
 	}
 
 	switch {
-	case keybinding.Matches(msg, dashboardKeys.Quit):
+	case keybinding.Matches(msg, views.DashboardKeys.Quit):
 		m.quitting = true
 		return m, tea.Quit
-	case keybinding.Matches(msg, dashboardKeys.TabSwitch):
+	case keybinding.Matches(msg, views.DashboardKeys.TabSwitch):
 		// The binding is the membership gate; the concrete key picks the
 		// direction. "1"–"4" are the only single-rune members left after the
 		// named cases, so the default is exact, not a catch-all.
@@ -368,7 +376,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	// Everything else belongs to the active view (table nav, s/t on Projects).
 	if m.active == tabProjects {
-		return m, m.projects.update(msg, m.data, m.actions)
+		return m, m.projects.Update(msg, m.data, m.actions)
 	}
 	return m, nil
 }
@@ -392,13 +400,13 @@ func (m Model) View() tea.View {
 func (m Model) activeBody() string {
 	switch m.active {
 	case tabProjects:
-		return m.projects.view()
+		return m.projects.View()
 	case tabConflicts:
-		return m.conflicts.view()
+		return m.conflicts.View()
 	case tabActivity:
-		return m.activity.view(m.status, m.statusErr, m.projects.units, m.now)
+		return m.activity.View(m.status, m.statusErr, m.projects.Units, m.now)
 	case tabDoctor:
-		return m.doctor.view()
+		return m.doctor.View()
 	default:
 		return ""
 	}
@@ -409,9 +417,9 @@ func (m Model) tabBar() string {
 	for t := range tabCount {
 		label := fmt.Sprintf("%d %s", int(t)+1, t.title())
 		if t == m.active {
-			parts[t] = activeTabStyle.Render("[" + label + "]")
+			parts[t] = m.styles.ActiveTab.Render("[" + label + "]")
 		} else {
-			parts[t] = inactiveTabStyle.Render(" " + label + " ")
+			parts[t] = m.styles.InactiveTab.Render(" " + label + " ")
 		}
 	}
 	return strings.Join(parts, " ")
@@ -419,17 +427,17 @@ func (m Model) tabBar() string {
 
 // footer advertises exactly the keys that dispatch on the active surface,
 // rendered from the same bindings handleKey and the Projects modals match
-// (keymap.go): the tab-level set on a bare tab, or the active modal's subset
-// while an untrack confirm or the add flow owns the keyboard — never the
-// tab-level keys the modal would swallow or type into its input.
+// (views.DashboardKeys): the tab-level set on a bare tab, or the active
+// modal's subset while an untrack confirm or the add flow owns the keyboard —
+// never the tab-level keys the modal would swallow or type into its input.
 func (m Model) footer() string {
 	var bindings []keybinding.Binding
-	if m.projects.modalOpen() {
-		bindings = dashboardKeys.forModal(m.projects.confirming, m.projects.adding)
+	if m.projects.ModalOpen() {
+		bindings = views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
 	} else {
-		bindings = dashboardKeys.forTab(m.active, m.actions.addAvailable())
+		bindings = views.DashboardKeys.ForTab(m.active == tabProjects, m.actions.AddAvailable())
 	}
-	return dimStyle.Render(helpLine(bindings))
+	return m.styles.Dim.Render(views.HelpLine(bindings))
 }
 
 // statusHeader renders the fleet-level facts once, persistently above the tab
@@ -439,14 +447,14 @@ func (m Model) footer() string {
 // state, quiesce, the last fleet cycle), never repeated down every identical row.
 func (m Model) statusHeader() string {
 	if m.statusErr != nil {
-		return dimStyle.Render("daemon status unavailable")
+		return m.styles.Dim.Render("daemon status unavailable")
 	}
 	segments := []string{"daemon: " + watchState(m.status, m.now)}
 	if quiesce := m.status.QuiescedUntil; quiesce != nil && quiesce.After(m.now) {
 		segments = append(segments, "quiesced until "+quiesce.Format("15:04:05"))
 	}
 	segments = append(segments, "last cycle: "+lastCycle(m.status))
-	return dimStyle.Render(strings.Join(segments, " · "))
+	return m.styles.Dim.Render(strings.Join(segments, " · "))
 }
 
 // watchState derives the fleet's watch posture from the daemon status. A live
@@ -488,37 +496,20 @@ func lastCycle(status api.StatusResponse) string {
 
 func (m Model) daemonDownView() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("agent-brain daemon is not running"))
+	b.WriteString(m.styles.Title.Render("agent-brain daemon is not running"))
 	b.WriteString("\n\n")
 	b.WriteString("The dashboard reads a live daemon over its socket; nothing is answering.\n\n")
 	switch {
 	case m.starting:
-		b.WriteString(dimStyle.Render("starting the service…"))
+		b.WriteString(m.styles.Dim.Render("starting the service…"))
 		b.WriteString("\n\n")
 	case m.serviceErr != nil:
-		b.WriteString(failStyle.Render(fmt.Sprintf("start failed: %v", m.serviceErr)))
+		b.WriteString(m.styles.Fail.Render(fmt.Sprintf("start failed: %v", m.serviceErr)))
 		b.WriteString("\n\n")
 	}
 	b.WriteString("  s   start the login service, then re-check\n")
 	b.WriteString("  q   quit\n")
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("(or start it yourself: `agent-brain service install` / `agent-brain daemon run`)"))
+	b.WriteString(m.styles.Dim.Render("(or start it yourself: `agent-brain service install` / `agent-brain daemon run`)"))
 	return b.String()
 }
-
-// Shared styles. The visible glyphs and text — not colour — carry every signal
-// a test asserts on: tests strip the styling to plain (see the test helper), and
-// bubbletea downgrades colour for non-colour terminals in production.
-var (
-	titleStyle       = lipgloss.NewStyle().Bold(true)
-	headerStyle      = lipgloss.NewStyle().Bold(true)
-	dimStyle         = lipgloss.NewStyle().Faint(true)
-	okStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	warnStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	failStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	infoStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	activeTabStyle   = lipgloss.NewStyle().Bold(true)
-	inactiveTabStyle = lipgloss.NewStyle().Faint(true)
-)
-
-func sectionTitle(title string) string { return titleStyle.Render(title) }

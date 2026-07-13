@@ -1,9 +1,10 @@
-package dashboard
+package views
 
 import (
 	"fmt"
 	"strings"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 )
 
@@ -13,24 +14,34 @@ import (
 // data adapter already reversed them), so the cap keeps the most recent events.
 const maxConflictRows = 200
 
-// conflictsView lists retained retain-both conflict records (spec §7), loaded
-// from the read-only conflict log via dashboardData.Conflicts. It owns its
+// ConflictsView lists retained retain-both conflict records (spec §7), loaded
+// from the read-only conflict log via DataSource.Conflicts. It owns its
 // snapshot because no other view or root-level decision needs it.
-type conflictsView struct {
+type ConflictsView struct {
+	styles  theme.Styles
 	records []config.ConflictRecord
 	err     error
 	loaded  bool
 }
 
-func (v *conflictsView) set(records []config.ConflictRecord, err error) {
+// SetStyles installs the palette-derived style set this view renders
+// through. Root calls it once on construction and again on every
+// tea.BackgroundColorMsg — never per render.
+func (v *ConflictsView) SetStyles(styles theme.Styles) {
+	v.styles = styles
+}
+
+// Set installs a freshly-fetched conflict log snapshot.
+func (v *ConflictsView) Set(records []config.ConflictRecord, err error) {
 	v.records = records
 	v.err = err
 	v.loaded = true
 }
 
-func (v conflictsView) view() string {
+// View renders the Conflicts tab from the last Set snapshot.
+func (v ConflictsView) View() string {
 	var b strings.Builder
-	b.WriteString(sectionTitle("Conflicts"))
+	b.WriteString(sectionTitle(v.styles, "Conflicts"))
 	b.WriteString("\n\n")
 
 	switch {
@@ -38,10 +49,10 @@ func (v conflictsView) view() string {
 		fmt.Fprintf(&b, "conflict log unavailable: %v", v.err)
 		return b.String()
 	case !v.loaded:
-		b.WriteString(dimStyle.Render("loading…"))
+		b.WriteString(v.styles.Dim.Render("loading…"))
 		return b.String()
 	case len(v.records) == 0:
-		b.WriteString(dimStyle.Render("no retained conflicts — nothing to reconcile"))
+		b.WriteString(v.styles.Dim.Render("no retained conflicts — nothing to reconcile"))
 		return b.String()
 	}
 
@@ -52,13 +63,13 @@ func (v conflictsView) view() string {
 		records = records[:maxConflictRows]
 	}
 
-	b.WriteString(headerStyle.Render(fmt.Sprintf("%-25s %-44s %s", "TIME", "PATH", "MODE")))
+	b.WriteString(v.styles.Header.Render(fmt.Sprintf("%-25s %-44s %s", "TIME", "PATH", "MODE")))
 	b.WriteString("\n")
 	for _, record := range records {
 		fmt.Fprintf(&b, "%-25s %-44s %s\n", record.Time, record.Path, record.Mode)
 	}
 	if truncated > 0 {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("… and %d older record(s) — see `agent-brain conflicts list`", truncated)))
+		b.WriteString(v.styles.Dim.Render(fmt.Sprintf("… and %d older record(s) — see `agent-brain conflicts list`", truncated)))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

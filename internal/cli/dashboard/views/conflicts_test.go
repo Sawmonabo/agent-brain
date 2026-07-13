@@ -1,4 +1,4 @@
-package dashboard
+package views
 
 import (
 	"errors"
@@ -45,11 +45,11 @@ func TestConflictsView(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			var view conflictsView
+			var view ConflictsView
 			if testCase.loaded {
-				view.set(testCase.records, testCase.err)
+				view.Set(testCase.records, testCase.err)
 			}
-			body := plain(view.view())
+			body := plain(view.View())
 			for _, want := range testCase.wantSubstr {
 				if !strings.Contains(body, want) {
 					t.Errorf("conflicts view missing %q; got:\n%s", want, body)

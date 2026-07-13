@@ -1,4 +1,4 @@
-package dashboard
+package views
 
 import (
 	"errors"
@@ -56,7 +56,7 @@ func TestActivityView(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			body := plain(activityView{}.view(testCase.status, testCase.statusErr, nil, now))
+			body := plain(ActivityView{}.View(testCase.status, testCase.statusErr, nil, now))
 			for _, want := range testCase.wantSubstr {
 				if !strings.Contains(body, want) {
 					t.Errorf("activity view missing %q; got:\n%s", want, body)
@@ -76,7 +76,7 @@ func TestActivityDropsStaleQuiesce(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	past := now.Add(-time.Minute)
 	// A deadline already in the past must not render as an active hold.
-	body := plain(activityView{}.view(api.StatusResponse{State: "ready", QuiescedUntil: &past}, nil, nil, now))
+	body := plain(ActivityView{}.View(api.StatusResponse{State: "ready", QuiescedUntil: &past}, nil, nil, now))
 	if strings.Contains(body, "quiesced until") {
 		t.Errorf("stale quiesce deadline rendered as active; got:\n%s", body)
 	}
@@ -96,7 +96,7 @@ func TestActivityShowsFleetTriggerMax(t *testing.T) {
 		{Provider: "claude", Folder: "a", LocalDir: "/l/a", WatchTriggers: 12},
 		{Provider: "codex", Folder: "b", LocalDir: "/l/b", WatchTriggers: 30},
 	}
-	body := plain(activityView{}.view(status, nil, units, now))
+	body := plain(ActivityView{}.View(status, nil, units, now))
 	if !strings.Contains(body, "watch triggers: 30") {
 		t.Errorf("activity view missing max fleet trigger count 30; got:\n%s", body)
 	}
@@ -104,7 +104,7 @@ func TestActivityShowsFleetTriggerMax(t *testing.T) {
 		t.Errorf("activity view summed instead of maxing the fleet triggers; got:\n%s", body)
 	}
 
-	empty := plain(activityView{}.view(status, nil, nil, now))
+	empty := plain(ActivityView{}.View(status, nil, nil, now))
 	if strings.Contains(empty, "watch triggers") {
 		t.Errorf("activity view showed a trigger line for an empty fleet; got:\n%s", empty)
 	}
@@ -116,7 +116,7 @@ func TestActivityShowsOfflineCycle(t *testing.T) {
 		State: "ready", Version: "test", PID: 1,
 		LastSync: &api.SyncSummary{Offline: true, PushQueued: true},
 	}
-	got := plain(activityView{}.view(status, nil, nil, time.Now()))
+	got := plain(ActivityView{}.View(status, nil, nil, time.Now()))
 	if !strings.Contains(got, "offline: remote unreachable") {
 		t.Fatalf("Activity view %q missing the offline line", got)
 	}

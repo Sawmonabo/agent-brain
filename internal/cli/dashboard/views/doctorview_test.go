@@ -1,4 +1,4 @@
-package dashboard
+package views
 
 import (
 	"errors"
@@ -17,9 +17,9 @@ func TestDoctorViewGlyphsAndSummary(t *testing.T) {
 		{Name: "keyset-decrypt", Status: doctor.StatusInfo, Detail: "no encrypted content in the checkout yet — nothing to probe"},
 	}}
 
-	var view doctorView
-	view.set(report, nil)
-	body := plain(view.view())
+	var view DoctorView
+	view.Set(report, nil)
+	body := plain(view.View())
 
 	wants := []string{
 		"✓", "settings", "config.toml parsed",
@@ -40,19 +40,19 @@ func TestDoctorViewStates(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(*doctorView)
+		setup func(*DoctorView)
 		want  string
 	}{
-		{name: "not loaded", setup: func(*doctorView) {}, want: "running checks"},
-		{name: "error", setup: func(v *doctorView) { v.set(doctor.Report{}, errors.New("no paths")) }, want: "doctor checks unavailable"},
-		{name: "empty report", setup: func(v *doctorView) { v.set(doctor.Report{}, nil) }, want: "no checks reported"},
+		{name: "not loaded", setup: func(*DoctorView) {}, want: "running checks"},
+		{name: "error", setup: func(v *DoctorView) { v.Set(doctor.Report{}, errors.New("no paths")) }, want: "doctor checks unavailable"},
+		{name: "empty report", setup: func(v *DoctorView) { v.Set(doctor.Report{}, nil) }, want: "no checks reported"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			var view doctorView
+			var view DoctorView
 			testCase.setup(&view)
-			if got := plain(view.view()); !strings.Contains(got, testCase.want) {
+			if got := plain(view.View()); !strings.Contains(got, testCase.want) {
 				t.Errorf("doctor view missing %q; got:\n%s", testCase.want, got)
 			}
 		})

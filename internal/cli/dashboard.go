@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
@@ -132,8 +133,8 @@ func isInteractiveTTY(cmd *cobra.Command) bool {
 // cannot import cli or compose providers itself (ADR 05 amendment). Deps are
 // rebuilt per call so every `a` press sees the current registry and
 // enrollment; a root tracked since the last press disappears from the offer.
-func dashboardDiscover() func(context.Context) ([]dashboard.TrackCandidate, error) {
-	return func(ctx context.Context) ([]dashboard.TrackCandidate, error) {
+func dashboardDiscover() func(context.Context) ([]views.TrackCandidate, error) {
+	return func(ctx context.Context) ([]views.TrackCandidate, error) {
 		deps, err := buildTrackDeps()
 		if err != nil {
 			return nil, err
@@ -146,18 +147,18 @@ func dashboardDiscover() func(context.Context) ([]dashboard.TrackCandidate, erro
 		if err != nil {
 			return nil, err
 		}
-		out := make([]dashboard.TrackCandidate, 0, len(candidates))
+		out := make([]views.TrackCandidate, 0, len(candidates))
 		for _, candidate := range candidates {
-			roots := make([]dashboard.TrackRoot, len(candidate.discovered))
+			roots := make([]views.TrackRoot, len(candidate.discovered))
 			for i, discovered := range candidate.discovered {
-				roots[i] = dashboard.TrackRoot{LocalDir: discovered.LocalDir, RepoSubdir: discovered.RepoSubdir}
+				roots[i] = views.TrackRoot{LocalDir: discovered.LocalDir, RepoSubdir: discovered.RepoSubdir}
 			}
 			global := candidate.provider.Scope() == provider.ScopeGlobal
 			pathGuess := ""
 			if !global {
 				pathGuess = candidate.discovered[0].PathGuess
 			}
-			out = append(out, dashboard.TrackCandidate{
+			out = append(out, views.TrackCandidate{
 				Provider:  candidate.provider.Name(),
 				Label:     candidate.label,
 				PathGuess: pathGuess,
@@ -172,8 +173,8 @@ func dashboardDiscover() func(context.Context) ([]dashboard.TrackCandidate, erro
 // dashboardIdentify resolves one candidate root's cross-machine identity for
 // a human-confirmed project path — the enrollOne Identify step, reached
 // through the registry so the dashboard names providers by string only.
-func dashboardIdentify() func(context.Context, string, dashboard.TrackRoot, string) (provider.Identity, error) {
-	return func(ctx context.Context, providerName string, root dashboard.TrackRoot, projectPath string) (provider.Identity, error) {
+func dashboardIdentify() func(context.Context, string, views.TrackRoot, string) (provider.Identity, error) {
+	return func(ctx context.Context, providerName string, root views.TrackRoot, projectPath string) (provider.Identity, error) {
 		deps, err := buildTrackDeps()
 		if err != nil {
 			return provider.Identity{}, err

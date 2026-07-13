@@ -8,50 +8,44 @@
 // and the read-only conflict-log file — and adds ZERO daemon endpoints. Every
 // view refreshes on one shared tick; no view path performs I/O except through
 // a bubbletea Cmd (model purity, enforced by the Q3 gate).
+//
+// The four tab views and their shared keymap live in the views subpackage,
+// and the catppuccin-derived palette lives in theme (spec §15, split ahead of
+// the dashboard-hub wave so every new screen lands in its final home from the
+// start); this package is the tab-switching reducer that owns the shared
+// status poll, the daemon-down/service-start flow, and this file's
+// views.DataSource implementation.
 package dashboard
 
 import (
 	"context"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
 
-// dashboardData is the read/command seam every view renders from. The
-// production implementation (apiData) wraps *api.Client for the daemon calls,
-// runs the doctor battery through an injected closure, and reads the conflict
-// log through config.ReadConflictLog (the same format owner the `conflicts`
-// command reads). Tests inject a fake so no view test touches a socket, the
-// filesystem, or the doctor battery — the reason the models stay pure and
-// logic-heavy (task brief testing strategy).
-//
-// Track is part of the mirrored client mutation surface (spec §7); the current
-// interactive toggle only ever calls Untrack, because the Projects view lists
-// only already-enrolled units (there is no untracked row for Track to act on —
-// the interactive re-track path is the `track` command). It stays on the
-// interface so the seam is the full client surface the brief names.
-type dashboardData interface {
-	Status(context.Context) (api.StatusResponse, error)
-	Projects(context.Context) (api.ProjectsResponse, error)
-	Sync(ctx context.Context, project string) (api.SyncResponse, error)
-	Track(context.Context, api.TrackRequest) (api.TrackResponse, error)
-	Untrack(context.Context, api.UntrackRequest) (api.UntrackResponse, error)
-	Doctor(context.Context) (doctor.Report, error)
-	Conflicts() ([]config.ConflictRecord, error)
-}
-
-// apiData is the production dashboardData.
+// apiData is the production views.DataSource: it wraps *api.Client for the
+// daemon calls, runs the doctor battery through an injected closure, and
+// reads the conflict log through config.ReadConflictLog (the same format
+// owner the `conflicts` command reads). Tests inject a fake DataSource so no
+// view test touches a socket, the filesystem, or the doctor battery — the
+// reason the views stay pure and logic-heavy (task brief testing strategy).
 type apiData struct {
 	client    *api.Client
 	runDoctor func(context.Context) (doctor.Report, error)
 }
 
+// var _ documents that apiData satisfies views.DataSource at compile time,
+// rather than only where NewData happens to return it.
+var _ views.DataSource = (*apiData)(nil)
+
 // NewData builds the production data source. runDoctor is injected by the cli
 // root command because a faithful doctor.Deps needs provider/ghx/registry
 // composition that lives outside this package's import allowlist; the dashboard
 // only ever sees the resulting doctor.Report.
-func NewData(client *api.Client, runDoctor func(context.Context) (doctor.Report, error)) dashboardData {
+func NewData(client *api.Client, runDoctor func(context.Context) (doctor.Report, error)) views.DataSource {
 	return &apiData{client: client, runDoctor: runDoctor}
 }
 

@@ -1,33 +1,48 @@
-package dashboard
+package views
 
 import (
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
 
-// activityView renders the daemon status snapshot (spec §7): uptime, state
-// detail, quiesced-until (Task 2), the fleet watch-trigger total, and the last
-// SyncSummary. It holds no state of its own — the daemon status and the unit
-// list are owned by the root model and passed in at render.
+// ActivityView renders the daemon status snapshot (spec §7): uptime, state
+// detail, quiesced-until (Task 2), the fleet watch-trigger total, and the
+// last SyncSummary. It holds no state of its own beyond its styles — the
+// daemon status and the unit list are owned by the root model and passed in
+// at render.
 //
-// The fleet's watch-trigger count (spec §7's "watch trigger counts") is the MAX
-// of the per-unit WatchTriggers the Projects payload now carries (Task 6.5) —
-// the raw trigger count, since triggers are fleet-global (the WHY is at the call
-// site) — so the units are passed in at render, still zero new daemon endpoints.
-type activityView struct{}
+// The fleet's watch-trigger count (spec §7's "watch trigger counts") is the
+// MAX of the per-unit WatchTriggers the Projects payload now carries (Task
+// 6.5) — the raw trigger count, since triggers are fleet-global (the WHY is
+// at the call site) — so the units are passed in at render, still zero new
+// daemon endpoints.
+type ActivityView struct {
+	styles theme.Styles
+}
 
-func (activityView) view(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
+// SetStyles installs the palette-derived style set this view renders
+// through. Root calls it once on construction and again on every
+// tea.BackgroundColorMsg — never per render.
+func (v *ActivityView) SetStyles(styles theme.Styles) {
+	v.styles = styles
+}
+
+// View renders the Activity tab from the daemon status snapshot and the
+// current unit list, passed in fresh at every render (this view holds no
+// data of its own beyond its styles).
+func (v ActivityView) View(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
 	if statusErr != nil {
 		// Daemon-down is handled by the root before any view renders; a
 		// non-down error here is some other read failure worth showing plainly.
-		return sectionTitle("Activity") + "\n\n" + fmt.Sprintf("status unavailable: %v", statusErr)
+		return sectionTitle(v.styles, "Activity") + "\n\n" + fmt.Sprintf("status unavailable: %v", statusErr)
 	}
 
 	var b strings.Builder
-	b.WriteString(sectionTitle("Activity"))
+	b.WriteString(sectionTitle(v.styles, "Activity"))
 	b.WriteString("\n\n")
 
 	fmt.Fprintf(&b, "daemon: %s (version %s, pid %d%s)\n",
