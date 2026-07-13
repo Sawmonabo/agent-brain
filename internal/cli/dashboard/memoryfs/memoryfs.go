@@ -236,6 +236,11 @@ func Delete(m Memory) error {
 //
 // The move itself never clobbers an existing file at newRel: renameNoClobber
 // returns ErrTargetExists instead of silently overwriting another memory.
+// The atomic-single-transition property belongs to WriteFileAtomic, not to
+// Rename: link-then-remove briefly exposes the file under both names to a
+// concurrent watcher — debounce-masked and self-healing, like the paired
+// move events a plain rename already emits — in exchange for the no-clobber
+// guarantee.
 func Rename(m Memory, newRel string) error {
 	if err := repo.ValidateRelPath(newRel); err != nil {
 		return fmt.Errorf("memoryfs: rename target %q: %w", newRel, err)
