@@ -260,3 +260,84 @@ func TestLoadSettingsProviderOverridesValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultSettingsLintDefaults pins lint.stale_after_days' documented
+// default: memories unmodified for more than 90 days are flagged stale
+// absent a [lint] override (spec §8).
+func TestDefaultSettingsLintDefaults(t *testing.T) {
+	t.Parallel()
+	want := config.LintSettings{StaleAfterDays: 90}
+	if diff := cmp.Diff(want, config.DefaultSettings().Lint); diff != "" {
+		t.Fatalf("default lint settings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadSettingsLintParses proves a [lint] table overrides the default
+// exactly like [sync]/[migrate]/[editor] do, and that 0 round-trips as an
+// ordinary override rather than being special-cased at load time — it is
+// the lint package's own Check that treats 0 as "disabled".
+func TestLoadSettingsLintParses(t *testing.T) {
+	t.Parallel()
+	write := func(t *testing.T, content string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	cases := []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{"override", "[lint]\nstale_after_days = 30\n", 30},
+		{"zero is accepted at load time", "[lint]\nstale_after_days = 0\n", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := config.LoadSettings(write(t, tc.content))
+			if err != nil {
+				t.Fatalf("LoadSettings() error = %v", err)
+			}
+			if got.Lint.StaleAfterDays != tc.want {
+				t.Fatalf("lint.stale_after_days = %d, want %d", got.Lint.StaleAfterDays, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadSettingsLintRejectsNegative proves a negative stale_after_days is
+// a strict load-time error naming the offending value (ADR 17: an ignored
+// setting is worse than a loud refusal) — never silently clamped.
+func TestLoadSettingsLintRejectsNegative(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[lint]\nstale_after_days = -1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.LoadSettings(p)
+	if err == nil {
+		t.Fatal("LoadSettings() accepted a negative lint.stale_after_days; want error")
+	}
+	wantSubstr := "lint.stale_after_days = -1 must not be negative"
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Fatalf("LoadSettings() error = %q, want it to contain %q", err, wantSubstr)
+	}
+}
+
+// TestLoadSettingsLintRejectsUnknownKey proves [lint] gets the same strict
+// TOML treatment as every other section: a typo'd key is a load-time
+// error, never a silently-ignored setting.
+func TestLoadSettingsLintRejectsUnknownKey(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[lint]\nstale_afterdays = 30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadSettings(p); err == nil {
+		t.Fatal("LoadSettings() accepted an unknown [lint] key; want error")
+	}
+}

@@ -58,6 +58,15 @@ type EditorSettings struct {
 	InTerminal bool `toml:"in_terminal"`
 }
 
+// LintSettings is the [lint] config.toml section: advisory memory-doctor
+// tuning (spec §8) — lint never gates sync, it only informs the dashboard
+// hub's memory browser badges (internal/cli/dashboard/lint).
+type LintSettings struct {
+	// StaleAfterDays flags memories unmodified longer than this many days;
+	// 0 disables the staleness rule entirely.
+	StaleAfterDays int `toml:"stale_after_days"`
+}
+
 // ClassifyRule overrides one classification pattern for a provider.
 // Class is one of provider.Class.String()'s exact values ("fact",
 // "derived-index", "regenerated", "ignore") — LoadSettings rejects
@@ -83,6 +92,7 @@ type Settings struct {
 	Sync    SyncSettings    `toml:"sync"`
 	Migrate MigrateSettings `toml:"migrate"`
 	Editor  EditorSettings  `toml:"editor"`
+	Lint    LintSettings    `toml:"lint"`
 	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.
 	Providers map[string]ProviderSettings `toml:"providers"`
 }
@@ -101,6 +111,9 @@ func DefaultSettings() Settings {
 		Editor: EditorSettings{
 			Command:    "",
 			InTerminal: true,
+		},
+		Lint: LintSettings{
+			StaleAfterDays: 90,
 		},
 	}
 }
@@ -170,6 +183,13 @@ func (s Settings) validate() error {
 	}
 	if preflightTimeout > migratePreflightTimeoutCeiling {
 		return fmt.Errorf("migrate.preflight_timeout = %s exceeds the %s ceiling", preflightTimeout, migratePreflightTimeoutCeiling)
+	}
+
+	// stale_after_days has no upper bound (an operator may legitimately
+	// want a multi-year staleness horizon) and 0 is a valid, documented
+	// "disabled" value — only negative values are nonsensical.
+	if s.Lint.StaleAfterDays < 0 {
+		return fmt.Errorf("lint.stale_after_days = %d must not be negative", s.Lint.StaleAfterDays)
 	}
 	return nil
 }
