@@ -69,6 +69,40 @@ func TestRebuildWatcherSwapsRootsAndClosesOld(t *testing.T) {
 	}
 }
 
+// TestRebuildWatcherGenuineDeathReachesWatchDied pins the detection half
+// of death recovery: when the watcher's streams close while BOTH contexts
+// are live, the goroutine wrapping Run must deliver the death on
+// watchDied so loop's handler can rebuild. Closing the manager without
+// cancelling anything forces exactly that shape — fsnotify signals a
+// spontaneous death and a deliberate Close identically (readEvents exits
+// and closes both streams, no error value attached), so this is the
+// observable form of fd exhaustion or WSL2 teardown. Deterministic: with
+// no poll ticker, no writes, and no cancellation, the stream close is the
+// only thing that can ever wake Run's select.
+func TestRebuildWatcherGenuineDeathReachesWatchDied(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	cfg := watch.Config{Debounce: 20 * time.Millisecond, Poll: 0}
+	watchDied := make(chan error, 1)
+
+	live := rebuildWatcher(t.Context(), cfg, nil, []string{t.TempDir()}, watchDied, logger, discardWatchStates)
+	if live.manager == nil {
+		t.Fatal("rebuild produced no manager")
+	}
+
+	if err := live.manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-watchDied:
+		if err == nil {
+			t.Fatal("watchDied delivered a nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher death never reached watchDied")
+	}
+}
+
 // TestRebuildWatcherBuildFailureFallsBackToBackstop pins the degraded
 // path: when watch.New rejects the config, rebuildWatcher returns a
 // manager-less state (nil triggers, so loop's select blocks on it and the

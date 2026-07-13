@@ -153,12 +153,18 @@ func TestPollBackstopFires(t *testing.T) {
 // shutdown paths do exactly this), so Run's select can observe the closed
 // event/error stream instead of ctx.Done. Once shutdown was requested,
 // that observation is orderly teardown and must read as nil — never as a
-// watcher death. Cancelling and closing BEFORE Run makes every select
-// case ready at once; the runtime picks among ready cases at random, so
-// the loop drives the pick through the closed-stream arms.
+// watcher death. Close tears the streams down asynchronously, so most
+// iterations still see only ctx.Done ready and return nil without ever
+// reaching the guarded arms; only a few percent of iterations find the
+// closed streams ready alongside ctx.Done, where the runtime's random
+// pick lands on a closed-stream arm two-thirds of the time. The loop
+// count is sized to that rate, not to the pick odds: 256 iterations make
+// a single run near-certain to catch a regression that turns the
+// post-cancel closed-stream observation back into an error, while every
+// conforming path returns nil, so the pass stays deterministic.
 func TestRunReturnsNilOnceCancelledEvenIfWatcherClosed(t *testing.T) {
 	t.Parallel()
-	for range 64 {
+	for range 256 {
 		manager, err := watch.New(watch.Config{Debounce: testDebounce})
 		if err != nil {
 			t.Fatal(err)
