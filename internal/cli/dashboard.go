@@ -12,6 +12,7 @@ import (
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
+	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
@@ -63,12 +64,17 @@ func launchHub(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	settings, err := loadDashboardSettings()
+	if err != nil {
+		return err
+	}
 
 	model := dashboard.New(dashboard.Config{
 		Data:     dashboard.NewData(client, offlineDoctorRunner()),
 		Discover: dashboardDiscover(),
 		Identify: dashboardIdentify(),
 		Registry: deps.registry,
+		Settings: settings,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting
@@ -97,6 +103,24 @@ func launchHub(cmd *cobra.Command) error {
 		return err
 	}
 	return nil
+}
+
+// loadDashboardSettings loads config.toml independently of buildTrackDeps
+// (which loads its own copy internally, only to feed buildRegistry — it
+// never keeps the Settings value around): the dashboard package composes
+// its own Config at the edge, the same as Registry above, and a later
+// task's memory-browser staleness threshold and $EDITOR choice both read
+// from Settings, not from anything buildTrackDeps exposes. A failure here
+// propagates exactly like buildTrackDeps' own internal LoadSettings call —
+// this command already treats an unparseable config.toml as fatal one line
+// above, so a second, more lenient policy for the identical file would be
+// inconsistent, not more robust.
+func loadDashboardSettings() (config.Settings, error) {
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		return config.Settings{}, err
+	}
+	return config.LoadSettings(paths.SettingsFile())
 }
 
 // offlineDoctorRunner assembles the full doctor.Deps (the same registry/gh

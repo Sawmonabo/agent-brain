@@ -161,12 +161,15 @@ func TestBindingWithNoKeysIsDisabled(t *testing.T) {
 	}
 }
 
-// TestSeedRegistryShape pins the seed rows this task owns (later tasks
-// append their own, spec plan Task 5): stable IDs every later task and the
-// root's dispatch/available/runners keys off of, plus the two rows this task
-// deliberately leaves inert (sync-fleet has no direct key; search has a key
-// reserved but arrives fully in Task 15 — this test only pins the shape the
-// registry declares, not availability, which is root-private).
+// TestSeedRegistryShape pins the seed rows Task 5 introduced: stable IDs
+// every later task and the root's dispatch/available/runners keys off of,
+// plus the two rows that task deliberately left inert (sync-fleet has no
+// direct key; search has a key reserved but arrives fully in Task 15 — this
+// test only pins the shape the registry declares, not availability, which
+// is root-private). Later tasks append their own rows as their screens land
+// (spec plan) — TestBrowserRegistryRowsShape below pins Task 11's — so this
+// only asserts Task 5's rows are present with the right shape, not that
+// they are the registry's entire contents.
 func TestSeedRegistryShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -213,7 +216,53 @@ func TestSeedRegistryShape(t *testing.T) {
 			}
 		})
 	}
-	if len(Registry()) != len(tests) {
-		t.Errorf("Registry() has %d actions, want exactly %d seed rows this task owns", len(Registry()), len(tests))
+}
+
+// TestBrowserRegistryRowsShape pins Task 11's own registry additions: the
+// Projects tab's entry point into the memory browser (open-browser) and the
+// browser's own in-screen keys (ScopeBrowser). None Mutates, and none has a
+// root-level runner — they are handled by direct view-level key routing,
+// the same "select"/"switch-tabs" discipline Task 5 established — so they
+// are footer/help-only and correctly absent from the palette
+// (TestPaletteListsOnlyDispatchableActions, in the dashboard package, pins
+// that half; this test only pins the declared shape).
+func TestBrowserRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id    string
+		keys  []string
+		scope Scope
+	}{
+		{id: "open-browser", keys: []string{"enter"}, scope: ScopeProjects},
+		{id: "browser-order", keys: []string{"o"}, scope: ScopeBrowser},
+		{id: "browser-filter", keys: []string{"/"}, scope: ScopeBrowser},
+		{id: "browser-back", keys: []string{"esc"}, scope: ScopeBrowser},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff(testCase.keys, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if action.Mutates {
+				t.Error("Mutates = true, want false")
+			}
+			if action.Scope != testCase.scope {
+				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
 	}
 }

@@ -36,7 +36,19 @@ type DashboardKeymap struct {
 	Sync    keybinding.Binding // Projects tab only
 	Untrack keybinding.Binding // Projects tab only — spec §13 rebind: u, not t
 	Add     keybinding.Binding // Projects tab only
-	Quit    keybinding.Binding
+	// Open enters the memory browser for the selected unit row's folder
+	// (Projects tab only). Unlike Sync/Untrack/Add it has no root-level
+	// dispatch runner — see actions.go's "open-browser" row comment — it is
+	// matched directly by ProjectsView.Update the same way Select is.
+	Open keybinding.Binding
+	Quit keybinding.Binding
+	// Browser* bindings own the keyboard while a memory browser Screen is
+	// on the root's navigation stack (Task 11+); Select above is reused
+	// verbatim for its list cursor, the same cross-context reuse ForModal
+	// already applies to the add picker.
+	BrowserOrder  keybinding.Binding
+	BrowserFilter keybinding.Binding
+	BrowserBack   keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
 	// subset each modal state honors, and the tab-level set above never
@@ -54,14 +66,18 @@ type DashboardKeymap struct {
 // bindings never change at runtime; per-tab, per-quiesce availability is the
 // root's footer/palette job, not this package's.
 var DashboardKeys = DashboardKeymap{
-	TabSwitch: bindingFor("switch-tabs"),
-	Select:    bindingFor("select"),
-	Sync:      bindingFor("sync-project"),
-	Untrack:   bindingFor("untrack"),
-	Add:       bindingFor("add-project"),
-	Quit:      bindingFor("quit"),
-	Cancel:    keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
-	Accept:    keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	TabSwitch:     bindingFor("switch-tabs"),
+	Select:        bindingFor("select"),
+	Sync:          bindingFor("sync-project"),
+	Untrack:       bindingFor("untrack"),
+	Add:           bindingFor("add-project"),
+	Open:          bindingFor("open-browser"),
+	Quit:          bindingFor("quit"),
+	BrowserOrder:  bindingFor("browser-order"),
+	BrowserFilter: bindingFor("browser-filter"),
+	BrowserBack:   bindingFor("browser-back"),
+	Cancel:        keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:        keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),

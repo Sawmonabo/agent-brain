@@ -13,11 +13,13 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
 
 // csiPattern matches the CSI escape sequences lipgloss emits — ESC '[',
@@ -1102,5 +1104,206 @@ func TestHelpOpensAndAnyKeyCloses(t *testing.T) {
 	m, _ = step(m, key("x"))
 	if m.helpOpen {
 		t.Error("an arbitrary key did not close the help overlay")
+	}
+}
+
+// browserRegistry builds a minimal one-provider registry good enough to
+// exercise the root's enter-to-browse wiring (buildBrowserDeps →
+// memoryfs.List) end to end. Duplicated from views' own browser_test.go
+// fixture rather than exported for tests only — the same rule readyStatus
+// above states: dashboard_test.go is a different package, and this fixture
+// is small enough that duplicating it beats inventing a test-only export.
+func browserRegistry(t *testing.T) *provider.Registry {
+	t.Helper()
+	fake := providertest.New("claude", provider.ScopePerProject, nil)
+	registry, err := provider.NewRegistry(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+// TestEnterOnProjectsPushesBrowser pins the Screen stack's one entry point
+// from a tab view: enter on a selected Projects row cannot build a
+// *views.Browser itself (views.ProjectsView has none of Registry/Styles/
+// memoryfs/glamour) — it emits views.OpenFolderMsg, and the root, the only
+// place with all of those, resolves it into an actual Screen and pushes it.
+// This is the seam every later screen's own drill-in (Task 12's Reading,
+// Task 14's History) will reuse.
+func TestEnterOnProjectsPushesBrowser(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.active = tabProjects
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}})
+
+	m = drive(t, m, key("enter"))
+
+	if len(m.stack) != 1 {
+		t.Fatalf("stack depth = %d after enter, want 1", len(m.stack))
+	}
+	browser, ok := m.stack[0].(*views.Browser)
+	if !ok {
+		t.Fatalf("stack top = %T, want *views.Browser", m.stack[0])
+	}
+	if got := browser.Title(); got != "acme" {
+		t.Errorf("pushed browser Title() = %q, want %q", got, "acme")
+	}
+	body := plain(m.View().Content)
+	if !strings.Contains(body, "Projects ▸ acme") {
+		t.Errorf("view missing the breadcrumb; got:\n%s", body)
+	}
+	if !strings.Contains(body, "Memory browser: acme") {
+		t.Errorf("view missing the pushed browser's own body; got:\n%s", body)
+	}
+}
+
+// TestStackForwardsTick pins that the shared 2s poll keeps a pushed screen
+// live: RefreshMsg reaches the top of the stack on every tick (proved here
+// by a List call count that only a forwarded refresh can advance beyond
+// construction's own first call), the root's own reload still runs
+// alongside it, and forwarding neither pushes nor pops anything on its own.
+func TestStackForwardsTick(t *testing.T) {
+	t.Parallel()
+	var listCalls int
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			listCalls++
+			return nil, nil
+		},
+	})
+	afterConstruct := listCalls
+	if afterConstruct == 0 {
+		t.Fatal("setup: NewBrowser did not call List")
+	}
+
+	m := newTestModel(&fakeData{})
+	m, cmd := step(m, views.PushScreenMsg{Screen: browser})
+	if cmd != nil {
+		t.Fatal("PushScreenMsg produced a Cmd; want none")
+	}
+
+	next, tickCmd := step(m, tickMsg(time.Now()))
+	msgs := drain(tickCmd)
+	if !containsMsg[tickMsg](msgs) {
+		t.Error("tick while browsing did not reschedule the next tick")
+	}
+	if !containsMsg[statusMsg](msgs) {
+		t.Error("tick while browsing did not still refresh root status")
+	}
+	if listCalls <= afterConstruct {
+		t.Errorf("List calls = %d after a tick, want more than %d (construction alone) — RefreshMsg was not forwarded to the pushed screen", listCalls, afterConstruct)
+	}
+	if len(next.stack) != 1 {
+		t.Errorf("stack depth = %d after a tick, want 1 (a tick must not itself push or pop)", len(next.stack))
+	}
+}
+
+// TestPopScreenOnEmptyStackIsNoOp covers the brief's named edge case
+// directly: PopScreenMsg arriving with nothing on the stack (a stray or
+// duplicate pop, or simply a program that never pushed anything) must not
+// panic on an out-of-range slice and must leave the stack empty.
+func TestPopScreenOnEmptyStackIsNoOp(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	if len(m.stack) != 0 {
+		t.Fatalf("setup: stack depth = %d, want 0", len(m.stack))
+	}
+
+	next, cmd := step(m, views.PopScreenMsg{})
+	if cmd != nil {
+		t.Error("popping an empty stack produced a Cmd; want none")
+	}
+	if len(next.stack) != 0 {
+		t.Errorf("stack depth = %d after popping an empty stack, want 0", len(next.stack))
+	}
+}
+
+// TestBackgroundColorSwapsWhileBrowsing extends TestBackgroundColorSwapsPalette
+// to a pushed screen: SetStyles/SetRender are not part of the Screen
+// interface (Update/View/Title only), so the root reaches an
+// already-pushed *Browser through applyStackTheme, the same explicit
+// propagation withStyles already gives every tab view. The dark and light
+// renders of the identical preview content must differ at the byte level
+// (proving the swap actually reached the pushed browser's render seam, not
+// just a freshly constructed one) while the visible text survives both.
+func TestBackgroundColorSwapsWhileBrowsing(t *testing.T) {
+	t.Parallel()
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "# Heading", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", Name: "Note", RepoPath: "claude/note.md"}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, cmd := step(m, views.PushScreenMsg{Screen: browser})
+	if cmd != nil {
+		t.Fatal("PushScreenMsg produced a Cmd; want none")
+	}
+	if len(m.stack) != 1 {
+		t.Fatalf("setup: stack depth = %d, want 1", len(m.stack))
+	}
+
+	dark, cmd := step(m, tea.BackgroundColorMsg{Color: color.Black})
+	if cmd != nil {
+		t.Error("BackgroundColorMsg while browsing produced a Cmd; want none")
+	}
+	if len(dark.stack) != 1 {
+		t.Fatal("BackgroundColorMsg dropped the pushed browser from the stack")
+	}
+	darkRaw := dark.View().Content
+	if !strings.Contains(plain(darkRaw), "Heading") {
+		t.Fatalf("dark view lost the preview content; got:\n%s", plain(darkRaw))
+	}
+
+	light, cmd := step(dark, tea.BackgroundColorMsg{Color: color.White})
+	if cmd != nil {
+		t.Error("BackgroundColorMsg while browsing produced a Cmd; want none")
+	}
+	lightRaw := light.View().Content
+	if !strings.Contains(plain(lightRaw), "Heading") {
+		t.Fatalf("light view lost the preview content; got:\n%s", plain(lightRaw))
+	}
+
+	if darkRaw == lightRaw {
+		t.Error("dark and light preview renders are byte-identical; the theme swap did not reach the pushed browser's render seam")
+	}
+}
+
+// TestStackFooterAdvertisesScopedKeys pins the footer's scope switch: while
+// a screen is pushed, the footer must name exactly that screen's own keys
+// (ScopeBrowser's o/(/)/esc) and nothing from the tab level or
+// ScopeGlobal — a pushed screen intercepts every key before either would
+// ever be reached (handleKey), so naming them would advertise dead keys,
+// exactly the dishonesty TestFooterInModalStatesAdvertisesOnlyLiveKeys
+// already forbids for a Projects modal.
+func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
+	t.Parallel()
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	got := plain(m.footer())
+	for _, want := range []string{"o order", "/ filter", "esc back"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stack footer %q missing %q", got, want)
+		}
+	}
+	for _, deadHint := range []string{"tab/1–4", "ctrl+k palette", "? help", "s sync", "↑/↓ select"} {
+		if strings.Contains(got, deadHint) {
+			t.Errorf("stack footer %q leaks a tab-level or global hint %q; a pushed screen owns the whole keyboard", got, deadHint)
+		}
 	}
 }

@@ -208,6 +208,12 @@ func (v *ProjectsView) Update(msg tea.KeyPressMsg, data DataSource, actions Trac
 		v.Adding = AddDiscovering
 		v.notice = ""
 		return discoverCmd(actions)
+	case keybinding.Matches(msg, DashboardKeys.Open):
+		unit, ok := v.SelectedUnit()
+		if !ok {
+			return nil
+		}
+		return openFolderCmd(unit.Folder, v.Units)
 	}
 
 	var cmd tea.Cmd
@@ -242,6 +248,17 @@ type (
 		folder string
 		resp   api.UntrackResponse
 		err    error
+	}
+	// OpenFolderMsg is produced by openFolderCmd — this view's own
+	// enter-to-browse action — and exported so the root's Update switches on
+	// it directly to push a memory browser Screen (spec §3). Units carries
+	// every fleet row that shares Folder, not just the row the cursor was on:
+	// a project tracked by more than one provider shows one table row per
+	// provider, but the browser groups every provider's memories under that
+	// one project, so BrowserDeps needs the whole matching subset.
+	OpenFolderMsg struct {
+		Folder string
+		Units  []api.UnitInfo
 	}
 )
 
@@ -378,5 +395,23 @@ func untrackCmd(data DataSource, unit api.UnitInfo) tea.Cmd {
 		defer cancel()
 		resp, err := data.Untrack(ctx, api.UntrackRequest{Provider: unit.Provider, LocalDir: unit.LocalDir})
 		return UntrackResultMsg{folder: unit.Folder, resp: resp, err: err}
+	}
+}
+
+// openFolderCmd emits OpenFolderMsg for folder, pre-filtering fleetUnits down
+// to the rows that share it. Wrapped in a Cmd — even though building the
+// message involves no I/O — so Update keeps its "returned Cmd, never inline"
+// rule with no special case: the root's Update switches on the resulting
+// message the same way it already does for SyncResultMsg/UntrackResultMsg,
+// so pushing the browser screen stays entirely the root's decision.
+func openFolderCmd(folder string, fleetUnits []api.UnitInfo) tea.Cmd {
+	matching := make([]api.UnitInfo, 0, len(fleetUnits))
+	for _, unit := range fleetUnits {
+		if unit.Folder == folder {
+			matching = append(matching, unit)
+		}
+	}
+	return func() tea.Msg {
+		return OpenFolderMsg{Folder: folder, Units: matching}
 	}
 }
