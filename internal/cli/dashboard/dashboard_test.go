@@ -1124,12 +1124,14 @@ func browserRegistry(t *testing.T) *provider.Registry {
 }
 
 // TestEnterOnProjectsPushesBrowser pins the Screen stack's one entry point
-// from a tab view: enter on a selected Projects row cannot build a
-// *views.Browser itself (views.ProjectsView has none of Registry/Styles/
-// memoryfs/glamour) — it emits views.OpenFolderMsg, and the root, the only
-// place with all of those, resolves it into an actual Screen and pushes it.
-// This is the seam every later screen's own drill-in (Task 12's Reading,
-// Task 14's History) will reuse.
+// from a tab view and its own exit back out: enter on a selected Projects
+// row cannot build a *views.Browser itself (views.ProjectsView has none of
+// Registry/Styles/memoryfs/glamour) — it emits views.OpenFolderMsg, and the
+// root, the only place with all of those, resolves it into an actual Screen
+// and pushes it. This is the seam every later screen's own drill-in
+// (Task 12's Reading, Task 14's History) will reuse. esc then pops the
+// identical round trip back to the Projects tab, proving the stack is not
+// just push-only.
 func TestEnterOnProjectsPushesBrowser(t *testing.T) {
 	t.Parallel()
 	registry := browserRegistry(t)
@@ -1156,6 +1158,23 @@ func TestEnterOnProjectsPushesBrowser(t *testing.T) {
 	}
 	if !strings.Contains(body, "Memory browser: acme") {
 		t.Errorf("view missing the pushed browser's own body; got:\n%s", body)
+	}
+
+	// esc must pop the full round trip back to the Projects tab: the
+	// pushed Browser's own esc key produces a Cmd whose message is
+	// PopScreenMsg (Browser.updateKey, browser.go), and the root — the
+	// only place that ever mutates m.stack — must act on that message,
+	// not just accept the key.
+	m = drive(t, m, key("esc"))
+	if len(m.stack) != 0 {
+		t.Fatalf("stack depth = %d after esc, want 0 (esc must pop back to the tab)", len(m.stack))
+	}
+	restored := plain(m.View().Content)
+	if strings.Contains(restored, "Memory browser: acme") {
+		t.Errorf("view still shows the browser after esc popped it; got:\n%s", restored)
+	}
+	if !strings.Contains(restored, "Projects") {
+		t.Errorf("view missing the Projects tab body after esc popped back; got:\n%s", restored)
 	}
 }
 
