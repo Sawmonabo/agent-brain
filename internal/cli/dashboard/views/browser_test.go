@@ -358,6 +358,95 @@ func TestBrowserPreviewUnavailableOnReadError(t *testing.T) {
 	}
 }
 
+// TestBrowserPreviewRenderIsCached pins M1: View runs on every keypress and
+// on every ~2s RefreshMsg tick while the browser sits open idle, so without
+// a cache, renderPreview would re-read the selected memory's full body (up
+// to memoryfs.ReadBody's own size cap) and re-run glamour over it that
+// often — real, avoidable cost at any real project's body sizes. The cache
+// is keyed on (RepoPath, ModTime, width); this proves a repeated View with
+// none of the three changed costs one read, and each one changing on its
+// own forces exactly one more.
+func TestBrowserPreviewRenderIsCached(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base)
+	writeBrowserFile(t, dir, "zulu.md", "---\nname: Zulu\n---\n", base.Add(time.Hour))
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+
+	var readCalls int
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(m memoryfs.Memory) (string, error) {
+			readCalls++
+			return "body of " + m.Name, nil
+		},
+		List: func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+	// Construction's own refresh() already ran links.BuildIndex and
+	// lint.Check over both memories, each of which calls ReadBody in its
+	// own right — every assertion below counts up from this baseline
+	// rather than from zero, so it stays a pure preview-cache seam.
+	base0 := readCalls
+	if base0 == 0 {
+		t.Fatal("setup: construction never scanned any memory body")
+	}
+
+	_ = browser.View(120, 30)
+	if readCalls != base0+1 {
+		t.Fatalf("readCalls = %d after the first View, want %d", readCalls, base0+1)
+	}
+
+	_ = browser.View(120, 30)
+	if readCalls != base0+1 {
+		t.Errorf("readCalls = %d after a second identical View, want still %d (cache hit)", readCalls, base0+1)
+	}
+
+	next, _ := browser.Update(key("down"))
+	browser = next.(*Browser)
+	_ = browser.View(120, 30)
+	if readCalls != base0+2 {
+		t.Errorf("readCalls = %d after the selection changed, want %d", readCalls, base0+2)
+	}
+	_ = browser.View(120, 30)
+	if readCalls != base0+2 {
+		t.Errorf("readCalls = %d after a second identical View post-selection-change, want still %d (cache hit)", readCalls, base0+2)
+	}
+
+	_ = browser.View(140, 30)
+	if readCalls != base0+3 {
+		t.Errorf("readCalls = %d after the width changed, want %d", readCalls, base0+3)
+	}
+	_ = browser.View(140, 30)
+	if readCalls != base0+3 {
+		t.Errorf("readCalls = %d after a second identical View post-width-change, want still %d (cache hit)", readCalls, base0+3)
+	}
+
+	// The selected file (Alpha, cursor 1) rewritten with a later ModTime
+	// that still keeps it sorted after Zulu — base+30m, short of Zulu's
+	// own base+1h — so the cursor still lands back on Alpha after refresh
+	// re-sorts, isolating a genuine ModTime-only change from a
+	// selection-changed-by-resort one. RefreshMsg is how refresh's own doc
+	// says a rewrite reaches the browser in production; that same refresh
+	// also re-scans both bodies for lint, adding its own two calls on top
+	// of the one the subsequent View below adds for the preview cache miss.
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base.Add(30*time.Minute))
+	next, cmd := browser.Update(RefreshMsg{Now: base})
+	if cmd != nil {
+		t.Fatal("RefreshMsg produced a Cmd; want none")
+	}
+	browser = next.(*Browser)
+	afterRefresh := readCalls
+	_ = browser.View(140, 30)
+	if readCalls != afterRefresh+1 {
+		t.Errorf("readCalls = %d after the selected file's ModTime changed, want %d", readCalls, afterRefresh+1)
+	}
+}
+
 // TestBrowserEscClearsFilterThenPops pins the Screen contract's consumption
 // rule directly: while the in-browser filter is open, esc clears it and
 // produces NO PopScreenMsg-bearing Cmd (the screen consumed the key); the

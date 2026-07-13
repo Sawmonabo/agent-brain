@@ -112,6 +112,29 @@ type Browser struct {
 	// scanned from lint.Check's own []Result on every row render.
 	lintFlags       map[string]bool
 	lintFingerprint string // last (memories, StaleAfterDays, now-day-bucket) set the lint scan ran over
+
+	// preview memoizes the last glamour-rendered preview: View runs on every
+	// keypress and every RefreshMsg (roughly every 2s while idle), and
+	// without this, each of those would re-read the selected memory's full
+	// body (up to memoryfs.ReadBody's size cap) and re-run glamour over it
+	// even when nothing about the selection has changed.
+	preview previewCache
+}
+
+// previewCache is renderPreview's memoized result, valid only for the exact
+// (RepoPath, ModTime, width) it was computed from — any of the three
+// changing (a different row selected, the file rewritten, or the pane
+// resized) is a cache miss. It deliberately does not key on the Render seam
+// itself: a func value has no cheap, correct equality check, so instead
+// SetRender clears validity unconditionally, guaranteeing a theme swap
+// always forces exactly one fresh render rather than risking a silent stale
+// hit keyed on inputs that did not change.
+type previewCache struct {
+	valid    bool
+	repoPath string
+	modTime  time.Time
+	width    int
+	rendered string
 }
 
 // NewBrowser builds a ready Browser and performs its first load. Construction
@@ -153,6 +176,12 @@ func (b *Browser) SetStyles(styles theme.Styles) {
 // that was current when the browser was opened.
 func (b *Browser) SetRender(render func(md string, width int) string) {
 	b.deps.Render = render
+	// A func value cannot be compared for equality, so renderPreview's
+	// cache cannot tell "same Render" from "different Render" on its own —
+	// unconditionally invalidating here is what forces the very next
+	// preview render to actually re-run the new renderer instead of
+	// serving a hit computed under the old theme.
+	b.preview.valid = false
 }
 
 // refresh re-lists the folder's memories and clamps the cursor into range.
@@ -445,15 +474,35 @@ func (b *Browser) renderList(rows []memoryfs.Memory, _ int) string {
 // renderPreview markdown-renders the selected memory's body through the
 // injected Render seam, or a plain unavailable notice if reading its body
 // failed (a file removed mid-browse, or over memoryfs's size cap).
+//
+// Checks the render cache first (see previewCache's doc for the key and why
+// Render itself is not part of it). A read/render failure is deliberately
+// never cached: an error is rare enough that re-attempting on every render
+// costs nothing worth memoizing, and caching it would risk a stale error
+// notice outliving a since-fixed transient failure.
 func (b *Browser) renderPreview(selected memoryfs.Memory, width int) string {
+	if b.preview.valid && b.preview.repoPath == selected.RepoPath &&
+		b.preview.modTime.Equal(selected.ModTime) && b.preview.width == width {
+		return b.preview.rendered
+	}
+
 	content, err := b.deps.ReadBody(selected)
 	if err != nil {
 		return b.deps.Styles.Fail.Render(fmt.Sprintf("preview unavailable: %v", err))
 	}
-	if b.deps.Render == nil {
-		return content
+
+	rendered := content
+	if b.deps.Render != nil {
+		rendered = b.deps.Render(content, width)
 	}
-	return b.deps.Render(content, width)
+	b.preview = previewCache{
+		valid:    true,
+		repoPath: selected.RepoPath,
+		modTime:  selected.ModTime,
+		width:    width,
+		rendered: rendered,
+	}
+	return rendered
 }
 
 // truncate shortens s to at most maxRunes runes, marking the cut with an
