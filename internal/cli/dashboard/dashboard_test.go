@@ -1248,10 +1248,17 @@ func TestPopScreenOnEmptyStackIsNoOp(t *testing.T) {
 // to a pushed screen: SetStyles/SetRender are not part of the Screen
 // interface (Update/View/Title only), so the root reaches an
 // already-pushed *Browser through applyStackTheme, the same explicit
-// propagation withStyles already gives every tab view. The dark and light
-// renders of the identical preview content must differ at the byte level
-// (proving the swap actually reached the pushed browser's render seam, not
-// just a freshly constructed one) while the visible text survives both.
+// propagation withStyles already gives every tab view.
+//
+// This asserts on the pushed *Browser's OWN View() output, not the root's
+// overall rendered frame: the root's header/footer/border chrome recolors
+// on every BackgroundColorMsg regardless of whether applyStackTheme's
+// browser case runs at all, so comparing m.View().Content dark vs light
+// would still pass even with that case deleted entirely — root chrome
+// alone supplies the byte difference. Reaching m.stack[0] directly and
+// comparing its own View() output isolates the seam actually under test:
+// the preview pane's glamour render, which only changes across the swap
+// if SetStyles/SetRender actually reached this specific *Browser instance.
 func TestBackgroundColorSwapsWhileBrowsing(t *testing.T) {
 	t.Parallel()
 	browser := views.NewBrowser(views.BrowserDeps{
@@ -1279,22 +1286,30 @@ func TestBackgroundColorSwapsWhileBrowsing(t *testing.T) {
 	if len(dark.stack) != 1 {
 		t.Fatal("BackgroundColorMsg dropped the pushed browser from the stack")
 	}
-	darkRaw := dark.View().Content
+	darkBrowser, ok := dark.stack[0].(*views.Browser)
+	if !ok {
+		t.Fatalf("setup: stack[0] is %T, want *views.Browser", dark.stack[0])
+	}
+	darkRaw := darkBrowser.View(dark.width, dark.stackBodyHeight())
 	if !strings.Contains(plain(darkRaw), "Heading") {
-		t.Fatalf("dark view lost the preview content; got:\n%s", plain(darkRaw))
+		t.Fatalf("dark browser view lost the preview content; got:\n%s", plain(darkRaw))
 	}
 
 	light, cmd := step(dark, tea.BackgroundColorMsg{Color: color.White})
 	if cmd != nil {
 		t.Error("BackgroundColorMsg while browsing produced a Cmd; want none")
 	}
-	lightRaw := light.View().Content
+	lightBrowser, ok := light.stack[0].(*views.Browser)
+	if !ok {
+		t.Fatalf("setup: stack[0] is %T, want *views.Browser", light.stack[0])
+	}
+	lightRaw := lightBrowser.View(light.width, light.stackBodyHeight())
 	if !strings.Contains(plain(lightRaw), "Heading") {
-		t.Fatalf("light view lost the preview content; got:\n%s", plain(lightRaw))
+		t.Fatalf("light browser view lost the preview content; got:\n%s", plain(lightRaw))
 	}
 
 	if darkRaw == lightRaw {
-		t.Error("dark and light preview renders are byte-identical; the theme swap did not reach the pushed browser's render seam")
+		t.Error("dark and light renders of the pushed *Browser's own View() are byte-identical; the theme swap did not reach this *Browser's SetStyles/SetRender")
 	}
 }
 
