@@ -50,14 +50,16 @@ type DashboardKeymap struct {
 	// the root's — and stay typable literals while the in-browser filter
 	// owns input focus (updateFiltering forwards them to the text input
 	// before these bindings are ever matched).
-	BrowserRead   keybinding.Binding
-	BrowserOrder  keybinding.Binding
-	BrowserFilter keybinding.Binding
-	BrowserEdit   keybinding.Binding
-	BrowserNew    keybinding.Binding
-	BrowserRename keybinding.Binding
-	BrowserDelete keybinding.Binding
-	BrowserBack   keybinding.Binding
+	BrowserRead        keybinding.Binding
+	BrowserOrder       keybinding.Binding
+	BrowserFilter      keybinding.Binding
+	BrowserEdit        keybinding.Binding
+	BrowserNew         keybinding.Binding
+	BrowserRename      keybinding.Binding
+	BrowserDelete      keybinding.Binding
+	BrowserHistory     keybinding.Binding
+	BrowserShowDeleted keybinding.Binding
+	BrowserBack        keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
 	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
 	// one hint; Reading.updateKey matches it for membership, then picks the
@@ -70,7 +72,18 @@ type DashboardKeymap struct {
 	ReadingBacklinks  keybinding.Binding
 	ReadingCopyPath   keybinding.Binding
 	ReadingEdit       keybinding.Binding
+	ReadingHistory    keybinding.Binding
 	ReadingBack       keybinding.Binding
+	// History* bindings own the keyboard while a version-history Screen is on
+	// the stack (Task 14). View/Diff/DiffOlder/Restore/Back are matched
+	// directly by History.updateKey; the list cursor reuses Select verbatim
+	// (the browser precedent) and the restore confirm reuses ConfirmDecision
+	// (y/Y/n/N), so neither needs a binding of its own here.
+	HistoryView      keybinding.Binding
+	HistoryDiff      keybinding.Binding
+	HistoryDiffOlder keybinding.Binding
+	HistoryRestore   keybinding.Binding
+	HistoryBack      keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
 	// subset each modal state honors, and the tab-level set above never
@@ -88,29 +101,37 @@ type DashboardKeymap struct {
 // bindings never change at runtime; per-tab, per-quiesce availability is the
 // root's footer/palette job, not this package's.
 var DashboardKeys = DashboardKeymap{
-	TabSwitch:         bindingFor("switch-tabs"),
-	Select:            bindingFor("select"),
-	Sync:              bindingFor("sync-project"),
-	Untrack:           bindingFor("untrack"),
-	Add:               bindingFor("add-project"),
-	Open:              bindingFor("open-browser"),
-	Quit:              bindingFor("quit"),
-	BrowserRead:       bindingFor("browser-read"),
-	BrowserOrder:      bindingFor("browser-order"),
-	BrowserFilter:     bindingFor("browser-filter"),
-	BrowserEdit:       bindingFor("browser-edit"),
-	BrowserNew:        bindingFor("browser-new"),
-	BrowserRename:     bindingFor("browser-rename"),
-	BrowserDelete:     bindingFor("browser-delete"),
-	BrowserBack:       bindingFor("browser-back"),
-	ReadingCycleLinks: bindingFor("reading-links"),
-	ReadingFollow:     bindingFor("reading-follow"),
-	ReadingBacklinks:  bindingFor("reading-backlinks"),
-	ReadingCopyPath:   bindingFor("reading-copy-path"),
-	ReadingEdit:       bindingFor("reading-edit"),
-	ReadingBack:       bindingFor("reading-back"),
-	Cancel:            keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
-	Accept:            keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	TabSwitch:          bindingFor("switch-tabs"),
+	Select:             bindingFor("select"),
+	Sync:               bindingFor("sync-project"),
+	Untrack:            bindingFor("untrack"),
+	Add:                bindingFor("add-project"),
+	Open:               bindingFor("open-browser"),
+	Quit:               bindingFor("quit"),
+	BrowserRead:        bindingFor("browser-read"),
+	BrowserOrder:       bindingFor("browser-order"),
+	BrowserFilter:      bindingFor("browser-filter"),
+	BrowserEdit:        bindingFor("browser-edit"),
+	BrowserNew:         bindingFor("browser-new"),
+	BrowserRename:      bindingFor("browser-rename"),
+	BrowserDelete:      bindingFor("browser-delete"),
+	BrowserHistory:     bindingFor("browser-history"),
+	BrowserShowDeleted: bindingFor("browser-show-deleted"),
+	BrowserBack:        bindingFor("browser-back"),
+	ReadingCycleLinks:  bindingFor("reading-links"),
+	ReadingFollow:      bindingFor("reading-follow"),
+	ReadingBacklinks:   bindingFor("reading-backlinks"),
+	ReadingCopyPath:    bindingFor("reading-copy-path"),
+	ReadingEdit:        bindingFor("reading-edit"),
+	ReadingHistory:     bindingFor("reading-history"),
+	ReadingBack:        bindingFor("reading-back"),
+	HistoryView:        bindingFor("history-view"),
+	HistoryDiff:        bindingFor("history-diff"),
+	HistoryDiffOlder:   bindingFor("history-diff-older"),
+	HistoryRestore:     bindingFor("history-restore"),
+	HistoryBack:        bindingFor("history-back"),
+	Cancel:             keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:             keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),

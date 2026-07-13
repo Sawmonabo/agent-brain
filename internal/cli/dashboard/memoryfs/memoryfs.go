@@ -345,6 +345,33 @@ func LocalTarget(units []api.UnitInfo, folder, repoPath string) (dir, rel string
 	return dir, rel, ok
 }
 
+// ClassifyRepoPath resolves the merge-policy class of a folder-relative repo
+// path (as /v0/history reports it: <provider>[/<repo_subdir>]/<rel>) without
+// needing the file to exist on disk — restore's derived-class gate for a
+// DELETED memory, which has no live memoryfs.Memory to carry its Class. It
+// reuses the exact seam List classifies a live file through
+// (provider.Classify over the provider's own pattern table), so a restore and
+// an enumeration can never disagree about what a path is: the repo path's
+// leading segment is the provider, and everything after it is precisely the
+// provider-dir-relative name Classify expects (repoPath == provider + "/" +
+// classifyRel(repoSubdir, rel) by construction). ok=false when repoPath names
+// no provider segment or names a provider absent from registry (an untracked
+// or unknown unit), leaving the caller to refuse rather than guess.
+func ClassifyRepoPath(registry *provider.Registry, repoPath string) (provider.Class, bool) {
+	if registry == nil {
+		return 0, false
+	}
+	providerName, rel, ok := strings.Cut(repoPath, "/")
+	if !ok {
+		return 0, false
+	}
+	prov, ok := registry.Get(providerName)
+	if !ok {
+		return 0, false
+	}
+	return provider.Classify(prov, rel), true
+}
+
 // claudeSkeletonTemplate is Claude Code's own memory frontmatter
 // convention — name/description/metadata.type — with the type enum spelled
 // out as a fill-in hint, plus a body-stub heading matching every other

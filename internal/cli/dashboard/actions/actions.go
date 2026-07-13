@@ -115,6 +115,12 @@ var registry = []Action{
 	{ID: "browser-new", Title: "new", Keys: []string{"n"}, KeyHint: "n", Scope: ScopeBrowser, Mutates: true},
 	{ID: "browser-rename", Title: "rename", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeBrowser, Mutates: true},
 	{ID: "browser-delete", Title: "delete", Keys: []string{"d"}, KeyHint: "d", Scope: ScopeBrowser, Mutates: true},
+	// history (h) and show-deleted (x) are Task 14 read surfaces, matched
+	// directly by Browser.updateKey like read/order/filter — no root runner,
+	// never Mutates. h drills into the selected memory's version history; x
+	// toggles the list into deleted-memory recovery mode (spec §6).
+	{ID: "browser-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeBrowser},
+	{ID: "browser-show-deleted", Title: "show deleted", Keys: []string{"x"}, KeyHint: "x", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.
@@ -125,7 +131,22 @@ var registry = []Action{
 	{ID: "reading-backlinks", Title: "backlinks", Keys: []string{"b"}, KeyHint: "b", Scope: ScopeReading},
 	{ID: "reading-copy-path", Title: "copy path", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeReading},
 	{ID: "reading-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeReading, Mutates: true},
+	// h drills into the open memory's version history (Task 14), matched
+	// directly by Reading.updateKey — the same key the reading viewport's own
+	// keymap deliberately left unbound for exactly this row.
+	{ID: "reading-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeReading},
 	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading},
+	// ScopeHistory rows (Task 14, spec §6): the version-history screen's own
+	// in-screen keys, matched directly by History.updateKey — no root runner,
+	// like every other stack scope. view/diff/diff-older/back are read
+	// surfaces; restore lands a NEW version (Mutates) through the edit flow's
+	// finish machinery, so it greys while quiesced and its availability is the
+	// root's own fact-class ∧ no-active-session gate (available(id)).
+	{ID: "history-view", Title: "view", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeHistory},
+	{ID: "history-diff", Title: "diff vs live", Keys: []string{"d"}, KeyHint: "d", Scope: ScopeHistory},
+	{ID: "history-diff-older", Title: "diff older", Keys: []string{"D"}, KeyHint: "D", Scope: ScopeHistory},
+	{ID: "history-restore", Title: "restore", Keys: []string{"R"}, KeyHint: "R", Scope: ScopeHistory, Mutates: true},
+	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory},
 }
 
 // Registry returns the full static table, defensively copied so a caller

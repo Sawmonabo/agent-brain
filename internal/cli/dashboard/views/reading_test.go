@@ -783,4 +783,35 @@ func TestReadingEditKeyEmitsRequest(t *testing.T) {
 	}
 }
 
+// TestReadingHistoryKeyPushesHistory pins spec §6's h from the reading view:
+// it opens the open memory's version-history screen, threading the shared Data
+// seam and seeding the History's relative-age clock from the reading view's
+// own stored now.
+func TestReadingHistoryKeyPushesHistory(t *testing.T) {
+	t.Parallel()
+	reading := newReadingFixture(t, func(deps *ReadingDeps) {
+		deps.Data = &fakeHistoryData{}
+		deps.Now = historyNow
+	})
+
+	_, cmd := reading.Update(key("h"))
+	if cmd == nil {
+		t.Fatal("h produced no Cmd")
+	}
+	push, ok := cmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("h produced %#v, want PushScreenMsg", cmd())
+	}
+	history, ok := push.Screen.(*History)
+	if !ok {
+		t.Fatalf("pushed screen is %T, want *History", push.Screen)
+	}
+	if _, repoPath := history.Target(); repoPath != "claude/alpha.md" {
+		t.Errorf("pushed history targets %q, want the open memory %q", repoPath, "claude/alpha.md")
+	}
+	if history.now != historyNow {
+		t.Errorf("pushed history clock = %v, want the reading view's seeded now %v", history.now, historyNow)
+	}
+}
+
 var _ Screen = (*Reading)(nil)

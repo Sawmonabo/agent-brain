@@ -58,6 +58,18 @@ type ReadingDeps struct {
 	// back to the raw display body.
 	Render func(string, int) string
 	Styles theme.Styles
+	// Data is the read-only version surface threaded into any History screen
+	// this reading view pushes (spec §6's h). The reading view never fetches
+	// through it itself — it only hands it to a constructed History — so a nil
+	// Data (tests that never press h) is harmless here.
+	Data HistoryDataSource
+	// Now seeds the clock a pushed History screen renders its relative ages
+	// against (screen.go's seed-at-construction rule): the reading view has no
+	// relative-time surface of its own, but the History it opens does, and that
+	// clock must be right on the History's very first frame — before its own
+	// first RefreshMsg tick arrives. Advanced by every RefreshMsg the reading
+	// view receives, so a jump made many ticks after opening still seeds fresh.
+	Now time.Time
 }
 
 // Reading is the full-screen reading view for one memory (spec §4): a
@@ -87,6 +99,12 @@ type Reading struct {
 	viewport viewport.Model
 
 	renderedFor readingRenderState
+
+	// now is the stored clock forwarded to a pushed History screen's seed. It
+	// is seeded from ReadingDeps.Now and advanced by every RefreshMsg; the
+	// reading view renders nothing relative-time-shaped itself (its header
+	// stamp is absolute), so it is used only at the moment h opens a History.
+	now time.Time
 }
 
 // readingRenderState records the exact inputs the viewport's current
@@ -112,7 +130,7 @@ type readingRenderState struct {
 func NewReading(deps ReadingDeps) *Reading {
 	readingViewport := viewport.New()
 	readingViewport.KeyMap = readingViewportKeyMap()
-	r := &Reading{deps: deps, linkCursor: -1, viewport: readingViewport}
+	r := &Reading{deps: deps, linkCursor: -1, viewport: readingViewport, now: deps.Now}
 	if deps.Index != nil {
 		r.backlinkMemories = deps.Index.Backlinks(deps.Memory)
 	}
@@ -196,12 +214,14 @@ func (r *Reading) adoptBody(body string) {
 
 // Update handles one message. RefreshMsg (the root's tick forward) re-reads
 // the body so the open document stays live against writes an external agent
-// makes to the same file (screen.go's RefreshMsg contract); its Now is
-// unused because nothing here renders relative time — the header's modified
-// stamp is absolute by design.
+// makes to the same file (screen.go's RefreshMsg contract); its Now is stored
+// only to seed a History screen h opens later — nothing the reading view
+// itself renders is relative-time-shaped (the header's modified stamp is
+// absolute by design).
 func (r *Reading) Update(msg tea.Msg) (Screen, tea.Cmd) {
 	switch msg := msg.(type) {
 	case RefreshMsg:
+		r.now = msg.Now
 		r.refreshBody()
 		return r, nil
 	case tea.KeyPressMsg:
@@ -254,6 +274,8 @@ func (r *Reading) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		// session gates and the handoff (screen.go's EditRequestMsg doc).
 		memory := r.deps.Memory
 		return r, func() tea.Msg { return EditRequestMsg{Memory: memory} }
+	case keybinding.Matches(msg, DashboardKeys.ReadingHistory):
+		return r, r.openHistory()
 	case msg.String() == "g":
 		r.viewport.GotoTop()
 		return r, nil
@@ -338,6 +360,28 @@ func (r *Reading) pushReading(target memoryfs.Memory) tea.Cmd {
 	deps.Memory = target
 	next := NewReading(deps)
 	return func() tea.Msg { return PushScreenMsg{Screen: next} }
+}
+
+// openHistory pushes the current memory's version-history screen (spec §6's
+// h). Its Live seam reads the memory's provider file through the shared
+// ReadBody, so the diff-vs-live view sees exactly what this reading view
+// shows; Now seeds the History's relative-age clock from the reading view's
+// own stored tick (see the now field). Constructing the History here — no I/O,
+// its version fetch runs later as the root-issued InitCmd — mirrors how
+// pushReading builds the next Reading.
+func (r *Reading) openHistory() tea.Cmd {
+	memory := r.deps.Memory
+	history := NewHistory(HistoryDeps{
+		Memory:   memory,
+		Folder:   memory.Folder,
+		RepoPath: memory.RepoPath,
+		Live:     func() (string, error) { return r.deps.ReadBody(memory) },
+		Data:     r.deps.Data,
+		Render:   r.deps.Render,
+		Styles:   r.deps.Styles,
+		Now:      r.now,
+	})
+	return func() tea.Msg { return PushScreenMsg{Screen: history} }
 }
 
 // toggleBacklinks opens or closes the backlinks panel, re-seeding the

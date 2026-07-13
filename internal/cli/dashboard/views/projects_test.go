@@ -88,6 +88,18 @@ func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 	return f.conflicts, f.conflictsErr
 }
 
+// History and Blob satisfy the grown DataSource surface (Task 14). The
+// ProjectsView tests this fake serves never drill into version history, so
+// they answer empty — the History screen's own suite injects a dedicated
+// HistoryDataSource fake instead.
+func (f *fakeData) History(context.Context, string, string, int) (api.HistoryResponse, error) {
+	return api.HistoryResponse{}, nil
+}
+
+func (f *fakeData) Blob(context.Context, string, string, string) (api.BlobResponse, error) {
+	return api.BlobResponse{}, nil
+}
+
 // key builds a KeyPressMsg for a key name ("q", "s", "tab", "esc", …). Verified
 // forms against bubbletea v2.0.8: printable runes carry Text, specials carry a
 // Code constant (2026-07-09).

@@ -558,12 +558,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case views.PushScreenMsg:
+		// A pushed screen that needs an initial async load (the History screen's
+		// version fetch) exposes InitCmd; issuing it here — right after the push,
+		// in the same Update — rather than batching it into the message that
+		// asked for the push keeps the screen on the stack before its own first
+		// result can arrive (screen.go's initScreen seam).
 		m = m.pushScreen(msg.Screen)
-		return m, nil
+		return m, initScreenCmd(msg.Screen)
 
 	case views.PopScreenMsg:
 		m = m.popScreen()
 		return m, nil
+
+	case views.HistoryVersionsMsg, views.HistoryBlobMsg:
+		// The History screen's async fetches (and the browser's folder-wide
+		// deleted scan) resolve as Cmds whose results the root forwards to the
+		// stack top, exactly like the tick's RefreshMsg — the top screen matches
+		// each on Folder/RepoPath and drops any not its own, so a fetch that
+		// outlived its screen never lands anywhere it does not belong.
+		m, cmd := m.forwardToStack(msg)
+		return m, cmd
 
 	case views.ToastMsg:
 		// The generic screen→root notice channel (screen.go): the reading
@@ -598,6 +612,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case views.DeleteRequestMsg:
 		return m.startDeleteFlow(msg.Memory), nil
+
+	case views.RestoreRequestMsg:
+		// spec §6's restore: land a historical blob the History screen already
+		// fetched as a new version. Same emit-only split as the four edit-flow
+		// requests — the root owns the write path, the class gate, and the
+		// capture wait (editflow.go).
+		return m.startRestoreFlow(msg), nil
 
 	case editorFinishedMsg:
 		return m.finishEdit(msg), nil
@@ -993,6 +1014,25 @@ func (m Model) replaceStackTop(screen views.Screen) Model {
 	return m.withStack(stack)
 }
 
+// initScreen is the optional seam a pushed screen exposes to run an initial
+// async load once, right after it lands on the stack — the History screen's
+// version fetch (its blobs then load on demand). A screen whose first frame
+// comes from a cheap synchronous read instead (Browser, Reading) simply does
+// not implement it, and initScreenCmd returns nil for it.
+type initScreen interface {
+	InitCmd() tea.Cmd
+}
+
+// initScreenCmd returns a freshly pushed screen's initial-load Cmd, or nil if
+// it needs none — the one place the PushScreenMsg handler steps outside the
+// Screen interface, the same way stackScope and applyStackTheme do.
+func initScreenCmd(screen views.Screen) tea.Cmd {
+	if init, ok := screen.(initScreen); ok {
+		return init.InitCmd()
+	}
+	return nil
+}
+
 // forwardToStack sends msg to the top of the navigation stack and installs
 // its replacement screen, returning the Cmd it produced. Shared by the
 // tick's RefreshMsg forward and handleKey's key forward so both honor the
@@ -1067,6 +1107,8 @@ func (m Model) openSearchChoice(memory memoryfs.Memory) Model {
 		ReadBody: memoryfs.ReadBody,
 		Render:   m.renderMarkdown,
 		Styles:   m.styles,
+		Data:     m.data,
+		Now:      m.now,
 	}))
 }
 
@@ -1096,6 +1138,8 @@ func (m Model) stackScope(screen views.Screen) actions.Scope {
 		return actions.ScopeBrowser
 	case *views.Reading:
 		return actions.ScopeReading
+	case *views.History:
+		return actions.ScopeHistory
 	default:
 		return actions.ScopeGlobal
 	}
@@ -1230,6 +1274,11 @@ func (m Model) buildBrowserDeps(folder string, units []api.UnitInfo) views.Brows
 		// this package invents.
 		StaleAfterDays: m.settings.Lint.StaleAfterDays,
 		Render:         m.renderMarkdown,
+		// Data is the read-only version surface (spec §6) the browser threads
+		// into every History screen it opens and uses for the deleted-memories
+		// scan. m.data is the full DataSource; it satisfies the narrower
+		// HistoryDataSource the browser and History screen actually consume.
+		Data: m.data,
 	}
 }
 
@@ -1331,11 +1380,16 @@ func (m *Model) openSearchOverlay() {
 func (m *Model) available(id string) bool {
 	switch id {
 	case "switch-tabs", "select", "help", "search",
-		"open-browser", "browser-read", "browser-order", "browser-filter", "browser-back",
-		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-back":
+		"open-browser", "browser-read", "browser-order", "browser-filter",
+		"browser-history", "browser-show-deleted", "browser-back",
+		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path",
+		"reading-history", "reading-back",
+		"history-view", "history-diff", "history-diff-older", "history-back":
 		return true
 	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit":
 		return m.flowAvailable(id)
+	case "history-restore":
+		return m.historyRestoreAvailable()
 	case "add-project":
 		return m.actions.AddAvailable()
 	default:

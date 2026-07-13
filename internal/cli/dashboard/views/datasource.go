@@ -42,4 +42,12 @@ type DataSource interface {
 	Untrack(context.Context, api.UntrackRequest) (api.UntrackResponse, error)
 	Doctor(context.Context) (doctor.Report, error)
 	Conflicts() ([]config.ConflictRecord, error)
+	// History and Blob are the read-only version surfaces the History screen
+	// (Task 14) drills into, served through the daemon's read funnel (ADR 20
+	// D3), never a mutation path. They live on the full DataSource — not only
+	// the narrower HistoryDataSource the History screen consumes — so the
+	// root's own m.data value (statically typed DataSource) satisfies that
+	// consumer seam when the browser and reading views build a History screen.
+	History(ctx context.Context, folder, path string, limit int) (api.HistoryResponse, error)
+	Blob(ctx context.Context, folder, path, rev string) (api.BlobResponse, error)
 }

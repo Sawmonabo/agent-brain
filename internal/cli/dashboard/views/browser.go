@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -70,6 +71,13 @@ type BrowserDeps struct {
 	// browser pushes (openReading). A nil Render (as some tests that do not
 	// exercise the preview pane leave it) falls back to the raw body text.
 	Render func(md string, width int) string
+	// Data is the read-only version surface (spec §6): threaded into every
+	// History screen this browser opens (h on a row, or a deleted-recovery
+	// row) and used directly for the folder-wide scan that finds deleted
+	// memories (x). A nil Data disables both — the h/x rows still render, but
+	// the scan Cmd is a no-op and a pushed History has nothing to fetch
+	// through; production always wires it (dashboard.go's buildBrowserDeps).
+	Data HistoryDataSource
 }
 
 // Browser is the memory browser screen (spec §3): every enrolled unit's
@@ -120,6 +128,18 @@ type Browser struct {
 	// body (up to memoryfs.ReadBody's size cap) and re-run glamour over it
 	// even when nothing about the selection has changed.
 	preview previewCache
+
+	// Deleted-recovery mode (spec §6's x): a folder-wide history scan surfaces
+	// every path that some past version touched but HEAD no longer has, so a
+	// deleted memory stays reachable — enter/h on one of these rows opens its
+	// History screen (with no live side) to restore it. showDeleted swaps the
+	// browser body for this list; the scan is issued on toggle-on and its
+	// result lands as a folder-wide HistoryVersionsMsg (RepoPath "").
+	showDeleted   bool
+	deletedLoaded bool
+	deletedErr    error
+	deletedPaths  []string
+	deletedCursor int
 }
 
 // previewCache is renderPreview's memoized result, valid only for the exact
@@ -274,6 +294,17 @@ func (b *Browser) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		b.now = msg.Now
 		b.refresh()
 		return b, nil
+	case HistoryVersionsMsg:
+		// Only the folder-wide deleted scan (RepoPath "") is ours: a per-memory
+		// History screen's own version fetch (RepoPath set) can be forwarded
+		// here after that screen pops, and must be dropped, never mistaken for
+		// the deleted set — the staleness guard the History screen applies in
+		// the other direction.
+		if msg.Folder != b.deps.Folder || msg.RepoPath != "" {
+			return b, nil
+		}
+		b.adoptDeletedScan(msg)
+		return b, nil
 	case tea.KeyPressMsg:
 		return b.updateKey(msg)
 	}
@@ -284,12 +315,19 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	if b.filtering {
 		return b.updateFiltering(msg)
 	}
+	if b.showDeleted {
+		return b.updateDeleted(msg)
+	}
 
 	switch {
 	case keybinding.Matches(msg, DashboardKeys.BrowserBack):
 		return b, func() tea.Msg { return PopScreenMsg{} }
 	case keybinding.Matches(msg, DashboardKeys.BrowserRead):
 		return b, b.openReading()
+	case keybinding.Matches(msg, DashboardKeys.BrowserHistory):
+		return b, b.openHistory()
+	case keybinding.Matches(msg, DashboardKeys.BrowserShowDeleted):
+		return b, b.enterDeleted()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
 		b.filtering = true
 		return b, b.filter.Focus()
@@ -378,8 +416,33 @@ func (b *Browser) openReading() tea.Cmd {
 		ReadBody: b.deps.ReadBody,
 		Render:   b.deps.Render,
 		Styles:   b.deps.Styles,
+		Data:     b.deps.Data,
+		Now:      b.now,
 	})
 	return func() tea.Msg { return PushScreenMsg{Screen: reading} }
+}
+
+// openHistory pushes the selected memory's version-history screen (spec §6's
+// h), or nothing with no row to open. Its Live seam reads the memory's
+// provider file through the browser's own ReadBody, so the diff-vs-live view
+// sees exactly what the browser preview does. No I/O here: the version fetch
+// runs later as the root-issued InitCmd.
+func (b *Browser) openHistory() tea.Cmd {
+	memory, ok := b.Selected()
+	if !ok {
+		return nil
+	}
+	history := NewHistory(HistoryDeps{
+		Memory:   memory,
+		Folder:   b.deps.Folder,
+		RepoPath: memory.RepoPath,
+		Live:     func() (string, error) { return b.deps.ReadBody(memory) },
+		Data:     b.deps.Data,
+		Render:   b.deps.Render,
+		Styles:   b.deps.Styles,
+		Now:      b.now,
+	})
+	return func() tea.Msg { return PushScreenMsg{Screen: history} }
 }
 
 // updateFiltering handles a keypress while the in-browser filter owns
@@ -424,6 +487,122 @@ func (b *Browser) moveCursor(key string) {
 	case "down", "j":
 		if b.cursor < rows-1 {
 			b.cursor++
+		}
+	}
+}
+
+// updateDeleted owns the keyboard while the deleted-recovery list is showing:
+// esc or x returns to the normal browser (consumed locally — esc must not also
+// pop the browser off the stack, the screen.go ordering rule), enter or h
+// opens the selected deleted path's History screen, and the cursor keys move
+// within the list.
+func (b *Browser) updateDeleted(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
+	switch {
+	case keybinding.Matches(msg, DashboardKeys.BrowserBack),
+		keybinding.Matches(msg, DashboardKeys.BrowserShowDeleted):
+		b.showDeleted = false
+		return b, nil
+	case keybinding.Matches(msg, DashboardKeys.BrowserRead),
+		keybinding.Matches(msg, DashboardKeys.BrowserHistory):
+		return b, b.openDeletedHistory()
+	case keybinding.Matches(msg, DashboardKeys.Select):
+		b.moveDeletedCursor(msg.String())
+		return b, nil
+	}
+	return b, nil
+}
+
+// enterDeleted switches to the deleted-recovery list and issues the folder-
+// wide history scan that populates it. The scan runs even if one ran before —
+// a memory deleted since the last scan should appear.
+func (b *Browser) enterDeleted() tea.Cmd {
+	b.showDeleted = true
+	b.deletedLoaded = false
+	b.deletedErr = nil
+	b.deletedCursor = 0
+	return b.deletedScanCmd()
+}
+
+// deletedScanCmd fetches the folder's whole history (path "" — folder-wide
+// mode, which populates each version's changed Paths) so adoptDeletedScan can
+// subtract the on-disk set. A nil Data (a test that never wired it) yields no
+// Cmd, leaving the list on its loading notice rather than panicking.
+func (b *Browser) deletedScanCmd() tea.Cmd {
+	data, folder := b.deps.Data, b.deps.Folder
+	if data == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+		defer cancel()
+		resp, err := data.History(ctx, folder, "", historyVersionLimit)
+		return HistoryVersionsMsg{Folder: folder, RepoPath: "", Versions: resp.Versions, Err: err}
+	}
+}
+
+// adoptDeletedScan turns a folder-wide history scan into the deleted set: every
+// path any version touched, minus the paths HEAD still has on disk (b.memories,
+// the current listing). The result is the memories that once existed here but
+// no longer do — recoverable via their History screen (spec §6).
+func (b *Browser) adoptDeletedScan(msg HistoryVersionsMsg) {
+	b.deletedLoaded = true
+	if msg.Err != nil {
+		b.deletedErr = msg.Err
+		return
+	}
+	b.deletedErr = nil
+
+	onDisk := make(map[string]bool, len(b.memories))
+	for _, memory := range b.memories {
+		onDisk[memory.RepoPath] = true
+	}
+	seen := make(map[string]bool)
+	var deleted []string
+	for _, version := range msg.Versions {
+		for _, repoPath := range version.Paths {
+			if onDisk[repoPath] || seen[repoPath] {
+				continue
+			}
+			seen[repoPath] = true
+			deleted = append(deleted, repoPath)
+		}
+	}
+	sort.Strings(deleted)
+	b.deletedPaths = deleted
+	b.deletedCursor = clampCursor(b.deletedCursor, len(deleted))
+}
+
+// openDeletedHistory pushes the selected deleted path's History screen, or
+// nothing with no row. The screen has no live snapshot — the file is gone from
+// HEAD — so Memory is zero and Live returns empty; the History header falls
+// back to the path's base name and diff-vs-live shows the whole blob as
+// removed, both honest for a deleted memory.
+func (b *Browser) openDeletedHistory() tea.Cmd {
+	if b.deletedCursor < 0 || b.deletedCursor >= len(b.deletedPaths) {
+		return nil
+	}
+	repoPath := b.deletedPaths[b.deletedCursor]
+	history := NewHistory(HistoryDeps{
+		Folder:   b.deps.Folder,
+		RepoPath: repoPath,
+		Live:     func() (string, error) { return "", nil },
+		Data:     b.deps.Data,
+		Render:   b.deps.Render,
+		Styles:   b.deps.Styles,
+		Now:      b.now,
+	})
+	return func() tea.Msg { return PushScreenMsg{Screen: history} }
+}
+
+func (b *Browser) moveDeletedCursor(key string) {
+	switch key {
+	case "up", "k":
+		if b.deletedCursor > 0 {
+			b.deletedCursor--
+		}
+	case "down", "j":
+		if b.deletedCursor < len(b.deletedPaths)-1 {
+			b.deletedCursor++
 		}
 	}
 }
@@ -486,6 +665,9 @@ func isSubsequence(query, haystack string) bool {
 // a terminal resize is handled by construction rather than any cached
 // dimension going stale.
 func (b *Browser) View(width, height int) string {
+	if b.showDeleted {
+		return b.deletedView(height)
+	}
 	var body strings.Builder
 	body.WriteString(sectionTitle(b.deps.Styles, "Memory browser: "+b.deps.Folder))
 	body.WriteString("\n\n")
@@ -523,6 +705,45 @@ func (b *Browser) View(width, height int) string {
 	listBlock := lipgloss.NewStyle().Width(listPaneWidth).MaxWidth(listPaneWidth).Render(listContent)
 	previewBlock := lipgloss.NewStyle().Width(previewWidth).MaxWidth(previewWidth).Render(preview)
 	body.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, listBlock, "  ", previewBlock))
+	return strings.TrimRight(body.String(), "\n")
+}
+
+// deletedView renders the deleted-recovery list: a title, then a scan error, a
+// scanning notice, an empty notice, or the cursor-windowed deleted paths. Rows
+// are windowed to the height budget the same way the memory list is, so a long
+// deletion history never overflows the pane.
+func (b *Browser) deletedView(height int) string {
+	var body strings.Builder
+	body.WriteString(sectionTitle(b.deps.Styles, "Deleted memories: "+b.deps.Folder))
+	body.WriteString("\n\n")
+
+	switch {
+	case b.deletedErr != nil:
+		fmt.Fprintf(&body, "history unavailable: %v", b.deletedErr)
+		return strings.TrimRight(body.String(), "\n")
+	case !b.deletedLoaded:
+		body.WriteString(b.deps.Styles.Dim.Render("scanning history…"))
+		return strings.TrimRight(body.String(), "\n")
+	case len(b.deletedPaths) == 0:
+		body.WriteString(b.deps.Styles.Dim.Render("no deleted memories in this project's history"))
+		return strings.TrimRight(body.String(), "\n")
+	}
+
+	budget := max(height-2, 1) // title line + its trailing blank
+	start, end := visibleWindow(b.deletedCursor, len(b.deletedPaths), budget)
+	lines := make([]string, 0, end-start)
+	for row := start; row < end; row++ {
+		marker := "  "
+		if row == b.deletedCursor {
+			marker = "> "
+		}
+		line := marker + b.deletedPaths[row]
+		if row == b.deletedCursor {
+			line = b.deps.Styles.Selected.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")
 }
 

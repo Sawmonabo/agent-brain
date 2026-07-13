@@ -87,18 +87,23 @@ func TestForScopePreservesRenderOrder(t *testing.T) {
 }
 
 // TestFuzzyRanksPrefixOverSubsequence pins the palette's ranking contract:
-// "sy" is a literal prefix of both sync actions' titles/IDs and nothing else
-// in the registry contains a "y" at all, so it must return exactly those two,
-// prefix-ranked. "qt" is not a prefix or substring of "quit" — it only
-// appears in order (q, then t skipping u/i) — so it must still surface quit
-// via the weaker subsequence tier, proving that tier actually runs.
+// "sy" is a literal prefix of both sync actions' IDs (the top tier) and also a
+// subsequence of every history action's ID (hi·s·tor·y — the weaker tier), so
+// it must return the two sync actions FIRST, then the history actions in
+// registry order, proving prefix strictly outranks subsequence. "qt" is not a
+// prefix or substring of "quit" — it only appears in order (q, then t skipping
+// u/i) — so it must still surface quit via that same subsequence tier.
 func TestFuzzyRanksPrefixOverSubsequence(t *testing.T) {
 	t.Parallel()
 
-	t.Run("sy ranks both sync actions by prefix", func(t *testing.T) {
+	t.Run("sy ranks sync actions by prefix above history by subsequence", func(t *testing.T) {
 		t.Parallel()
 		got := idsOf(Fuzzy("sy"))
-		want := []string{"sync-project", "sync-fleet"}
+		want := []string{
+			"sync-project", "sync-fleet", // prefix tier
+			"browser-history", "reading-history", // subsequence tier, registry order
+			"history-view", "history-diff", "history-diff-older", "history-restore", "history-back",
+		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("Fuzzy(\"sy\") mismatch (-want +got):\n%s", diff)
 		}

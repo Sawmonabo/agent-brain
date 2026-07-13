@@ -99,6 +99,18 @@ func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 	return f.conflicts, f.conflictsErr
 }
 
+// History and Blob satisfy the grown DataSource surface (Task 14). Root-level
+// tests here drive the restore LAND path directly (RestoreRequestMsg already
+// carries the fetched blob), so these answer empty; the History screen's own
+// suite exercises the read funnel through a dedicated fake.
+func (f *fakeData) History(context.Context, string, string, int) (api.HistoryResponse, error) {
+	return api.HistoryResponse{}, nil
+}
+
+func (f *fakeData) Blob(context.Context, string, string, string) (api.BlobResponse, error) {
+	return api.BlobResponse{}, nil
+}
+
 // key builds a KeyPressMsg for a key name ("q", "s", "tab", "esc", …). Verified
 // forms against bubbletea v2.0.8: printable runes carry Text, specials carry a
 // Code constant (2026-07-09). A "ctrl+x" name builds the modifier form
@@ -2339,5 +2351,37 @@ func TestSlashWhileProjectsModalOpenTypesIntoModalInput(t *testing.T) {
 	}
 	if got := plain(m.projects.View()); !strings.Contains(got, "/home/u/dev/acme/") {
 		t.Errorf("the modal's path input did not receive the literal /; view:\n%s", got)
+	}
+}
+
+// TestPushHistoryIssuesInitCmdAndForwards pins the stacked-screen async
+// plumbing Task 14 introduces: pushing a History screen issues its InitCmd
+// (the version fetch), and the fetch result — a HistoryVersionsMsg the root
+// forwards to the stack top — is adopted by the screen, moving it off its
+// loading notice. The two together are the round trip every stacked async
+// fetch now relies on.
+func TestPushHistoryIssuesInitCmdAndForwards(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	history := views.NewHistory(views.HistoryDeps{Folder: "acme", RepoPath: "claude/note.md", Data: m.data})
+
+	m, cmd := step(m, views.PushScreenMsg{Screen: history})
+	if cmd == nil {
+		t.Fatal("pushing a History screen issued no InitCmd")
+	}
+	msgs := drain(cmd)
+	if !containsMsg[views.HistoryVersionsMsg](msgs) {
+		t.Fatalf("the History InitCmd did not fetch versions; drained %#v", msgs)
+	}
+
+	for _, msg := range msgs {
+		m, _ = step(m, msg)
+	}
+	top, ok := m.stackTop()
+	if !ok {
+		t.Fatal("History screen left the stack")
+	}
+	if got := plain(top.View(120, 30)); strings.Contains(got, "loading history") {
+		t.Errorf("History screen still loading after its InitCmd result was forwarded back; got:\n%s", got)
 	}
 }

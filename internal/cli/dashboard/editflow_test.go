@@ -21,6 +21,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
 
 // flowT0 is the fixed model clock every edit-flow test starts from — the
@@ -1307,5 +1308,117 @@ func TestFlowModalFooterStaysOneLine(t *testing.T) {
 				t.Error("esc did not close the modal")
 			}
 		})
+	}
+}
+
+// restoreFixtureRegistry classifies claude/MEMORY.md as a derived index and
+// every other claude file as fact — enough to exercise the restore class gate
+// both ways.
+func restoreFixtureRegistry(t *testing.T) *provider.Registry {
+	t.Helper()
+	claudeFake := providertest.New("claude", provider.ScopePerProject, []provider.Pattern{
+		{Glob: "MEMORY.md", Class: provider.ClassDerivedIndex},
+	})
+	registry, err := provider.NewRegistry(claudeFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+// newRestoreModel wires a root model for restore tests: the classifying
+// registry, a single claude unit whose provider dir is dir, and the fixed
+// flowT0 clock.
+func newRestoreModel(t *testing.T, dir string) Model {
+	t.Helper()
+	m := New(Config{Data: &fakeData{}, Registry: restoreFixtureRegistry(t)})
+	m.now = flowT0
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}})
+	return m
+}
+
+// TestRestoreLandsAndPendsCapture pins the root half of spec §6's restore: a
+// RestoreRequestMsg lands the carried blob atomically at the mapped provider
+// path and arms the same capture wait every hub mutation does — history only
+// grows, so restore is a fresh write, never a rewind.
+func TestRestoreLandsAndPendsCapture(t *testing.T) {
+	t.Parallel()
+	unitDir := t.TempDir()
+	m := newRestoreModel(t, unitDir)
+
+	m, cmd := step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/note.md", Content: "restored body\n"})
+
+	landed, err := os.ReadFile(filepath.Join(unitDir, "note.md"))
+	if err != nil {
+		t.Fatalf("restore did not write the target file: %v", err)
+	}
+	if string(landed) != "restored body\n" {
+		t.Errorf("landed content = %q, want the restored blob", landed)
+	}
+	if m.pendingCapture == nil || m.pendingCapture.folder != "acme" || !m.pendingCapture.since.Equal(flowT0) {
+		t.Errorf("pendingCapture = %+v, want one armed for acme at %v", m.pendingCapture, flowT0)
+	}
+	if got := plain(m.toastLine()); got != "restored" {
+		t.Errorf("toast = %q, want %q", got, "restored")
+	}
+	if cmd != nil {
+		t.Errorf("restore produced a Cmd (%#v); the land is synchronous local I/O", cmd())
+	}
+}
+
+// TestRestoreRefusedForDerivedClass pins the class gate: restoring into a
+// derived index (MEMORY.md) is refused with the same wording e/r/d use, and
+// nothing is written — the provider regenerates those from the fact files.
+func TestRestoreRefusedForDerivedClass(t *testing.T) {
+	t.Parallel()
+	unitDir := t.TempDir()
+	m := newRestoreModel(t, unitDir)
+
+	m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "claude/MEMORY.md", Content: "should not land\n"})
+
+	if _, err := os.Stat(filepath.Join(unitDir, "MEMORY.md")); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("restore wrote a derived index file; the class gate must refuse it")
+	}
+	if m.pendingCapture != nil {
+		t.Error("a refused restore armed a capture wait")
+	}
+	if got := plain(m.toastLine()); !strings.Contains(got, "derived index") {
+		t.Errorf("toast = %q, want the derived-index refusal", got)
+	}
+}
+
+// TestRestoreRefusedForUnmappedPath pins that a path no enrolled unit maps
+// (an unknown provider) is refused before any write — the resolution failure
+// is said, not silently dropped.
+func TestRestoreRefusedForUnmappedPath(t *testing.T) {
+	t.Parallel()
+	m := newRestoreModel(t, t.TempDir())
+
+	m, _ = step(m, views.RestoreRequestMsg{Folder: "acme", RepoPath: "unknownprovider/note.md", Content: "x\n"})
+
+	if m.pendingCapture != nil {
+		t.Error("a restore into an unresolvable path armed a capture wait")
+	}
+	if got := plain(m.toastLine()); got == "" {
+		t.Error("an unresolvable restore path produced no explanatory toast")
+	}
+}
+
+// TestHistoryRestoreAvailabilityGate pins the footer gate historyRestoreAvailable
+// drives: available for a fact-class history target, struck for a derived one,
+// so the struck row and the request handler's refusal always agree.
+func TestHistoryRestoreAvailabilityGate(t *testing.T) {
+	t.Parallel()
+	m := newRestoreModel(t, t.TempDir())
+
+	m = m.pushScreen(views.NewHistory(views.HistoryDeps{Folder: "acme", RepoPath: "claude/note.md", Data: &fakeData{}}))
+	if !m.available("history-restore") {
+		t.Error("history-restore unavailable for a fact-class target; want available")
+	}
+
+	m = m.popScreen()
+	m = m.pushScreen(views.NewHistory(views.HistoryDeps{Folder: "acme", RepoPath: "claude/MEMORY.md", Data: &fakeData{}}))
+	if m.available("history-restore") {
+		t.Error("history-restore available for a derived index; the class gate must strike it")
 	}
 }

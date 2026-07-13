@@ -1145,6 +1145,143 @@ func TestBrowserSelectedTracksCursor(t *testing.T) {
 	}
 }
 
+// TestBrowserHistoryKeyPushesHistoryForSelection pins spec §6's h: it opens
+// the selected memory's version-history screen, keyed to that memory's repo
+// path and threaded with the browser's own Data seam.
+func TestBrowserHistoryKeyPushesHistoryForSelection(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     &fakeHistoryData{},
+	})
+
+	_, cmd := browser.Update(key("h"))
+	if cmd == nil {
+		t.Fatal("h on a selected row produced no Cmd")
+	}
+	push, ok := cmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("h produced %#v, want PushScreenMsg", cmd())
+	}
+	history, ok := push.Screen.(*History)
+	if !ok {
+		t.Fatalf("pushed screen is %T, want *History", push.Screen)
+	}
+	if folder, repoPath := history.Target(); folder != "acme" || repoPath != "claude/alpha.md" {
+		t.Errorf("pushed history targets %s/%s, want acme/claude/alpha.md", folder, repoPath)
+	}
+}
+
+// TestBrowserShowDeletedRecoversDeletedMemories pins spec §6's x: the folder-
+// wide history scan (path "") surfaces every path some version touched minus
+// the paths HEAD still has on disk, and enter on one opens its History screen
+// as the deleted variant (no live snapshot — the title is the path's base).
+func TestBrowserShowDeletedRecoversDeletedMemories(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	when := time.Now()
+	fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: []api.HistoryVersion{
+		{Rev: "v1", Timestamp: &when, Paths: []string{"claude/alive.md", "claude/gone.md"}},
+		{Rev: "v2", Timestamp: &when, Paths: []string{"claude/gone.md"}},
+	}}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     fake,
+	})
+
+	next, cmd := browser.Update(key("x"))
+	browser = next.(*Browser)
+	if cmd == nil {
+		t.Fatal("x produced no folder-wide scan Cmd")
+	}
+	// Draining runs the scan Cmd (recording the call) and yields the result
+	// message the browser then adopts.
+	for _, msg := range drain(cmd) {
+		next, _ := browser.Update(msg)
+		browser = next.(*Browser)
+	}
+	if len(fake.historyCalls) != 1 || fake.historyCalls[0].path != "" {
+		t.Fatalf("deleted scan = %+v, want exactly one folder-wide (path \"\") call", fake.historyCalls)
+	}
+
+	got := plain(browser.View(120, 30))
+	if !strings.Contains(got, "claude/gone.md") {
+		t.Errorf("deleted view missing the recoverable path; got:\n%s", got)
+	}
+	if strings.Contains(got, "claude/alive.md") {
+		t.Errorf("deleted view listed an on-disk memory; got:\n%s", got)
+	}
+
+	_, openCmd := browser.Update(key("enter"))
+	if openCmd == nil {
+		t.Fatal("enter on a deleted row produced no Cmd")
+	}
+	push, ok := openCmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("enter produced %#v, want PushScreenMsg", openCmd())
+	}
+	history, ok := push.Screen.(*History)
+	if !ok {
+		t.Fatalf("pushed screen is %T, want *History", push.Screen)
+	}
+	if _, repoPath := history.Target(); repoPath != "claude/gone.md" {
+		t.Errorf("pushed history targets %q, want the deleted %q", repoPath, "claude/gone.md")
+	}
+	if title := history.Title(); title != "gone.md" {
+		t.Errorf("deleted history Title() = %q, want the path base %q", title, "gone.md")
+	}
+}
+
+// TestBrowserShowDeletedEscReturnsToBrowser pins the esc-consumes-internal-
+// state-first rule for the deleted list: esc leaves it for the normal browser
+// rather than popping the browser off the stack.
+func TestBrowserShowDeletedEscReturnsToBrowser(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     &fakeHistoryData{},
+	})
+
+	next, _ := browser.Update(key("x"))
+	browser = next.(*Browser)
+	nextScreen, cmd := browser.Update(key("esc"))
+	browser = nextScreen.(*Browser)
+	if cmd != nil {
+		if _, isPop := cmd().(PopScreenMsg); isPop {
+			t.Fatal("esc in the deleted list popped the browser instead of returning to it")
+		}
+	}
+	if got := plain(browser.View(120, 30)); !strings.Contains(got, "Memory browser:") {
+		t.Errorf("esc did not return to the normal browser; got:\n%s", got)
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

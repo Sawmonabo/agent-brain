@@ -73,6 +73,14 @@ func (d *apiData) Doctor(ctx context.Context) (doctor.Report, error) {
 	return d.runDoctor(ctx)
 }
 
+func (d *apiData) History(ctx context.Context, folder, path string, limit int) (api.HistoryResponse, error) {
+	return d.client.History(ctx, folder, path, limit)
+}
+
+func (d *apiData) Blob(ctx context.Context, folder, path, rev string) (api.BlobResponse, error) {
+	return d.client.Blob(ctx, folder, path, rev)
+}
+
 // Conflicts reads the conflict log through the shared config.ReadConflictLog
 // (a pure file read; readers never violate the single-writer invariant, spec
 // §5/§11) and returns records newest-first for display. The reader yields write

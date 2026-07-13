@@ -87,6 +87,25 @@ type RenameRequestMsg struct{ Memory memoryfs.Memory }
 // §5's d): default-No confirm naming the file → memoryfs.Delete.
 type DeleteRequestMsg struct{ Memory memoryfs.Memory }
 
+// RestoreRequestMsg asks the root to land Content — a historical blob the
+// History screen already fetched — as a NEW version of Folder/RepoPath (spec
+// §6's restore). It is the fifth flow-request message and rides the identical
+// emit-only discipline as the other four: the History screen produces it as a
+// Cmd's result, and the root — the sole holder of the write path, the capture
+// wait, the provider registry (for the derived-class gate), and the toast
+// chrome — gates it through the same refuseFlowStart every mutation start
+// passes and lands it through the edit flow's own finish machinery (kind
+// editRestore, editflow.go). No editor, no scratch: the blob IS the final
+// content. RepoPath is the /v0/history path key (<provider>[/<repo_subdir>]/
+// <rel>); the root maps it to a local write target via memoryfs.LocalTarget
+// and classifies it via memoryfs.ClassifyRepoPath, so restore works
+// identically for a live memory and a resurrected deleted one.
+type RestoreRequestMsg struct {
+	Folder   string
+	RepoPath string
+	Content  string
+}
+
 // RefreshMsg is forwarded to the top screen on every root tick, in addition
 // to the root's own status/tab reload, so a drill-in surface stays live
 // against writes an external agent makes to the same files while the user
