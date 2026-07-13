@@ -449,10 +449,11 @@ type liveWatcher struct {
 // Enrollment changes and watcher death both funnel here.
 //
 // The old manager is stopped deliberately by cancelling its own context
-// first, then Close: its Run then returns via ctx (not a closed event
-// stream), and the goroutine below detects the deliberate stop via
-// watchCtx.Err() and stays silent — a rebuild must never masquerade as a
-// death, or the loop would rebuild in a tight cycle.
+// first, then Close: once cancelled, Run returns nil whether its select
+// observed ctx.Done or the streams Close tears down, and the goroutine
+// below keeps even a genuine death that raced the cancel silent via
+// watchCtx.Err() — a rebuild must never masquerade as a death, or the
+// loop would rebuild in a tight cycle.
 // recordWatch is passed d.setWatchStates so rebuildWatcher can report each root's
 // posture (Task 6.5) at the one site that knows whether the watch attached — a
 // pure func seam keeps rebuildWatcher testable without a live Daemon.

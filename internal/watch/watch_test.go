@@ -25,12 +25,19 @@ func startManager(t *testing.T, config watch.Config, roots ...string) *watch.Man
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() {
-		if err := manager.Run(ctx); err != nil {
+	runResult := make(chan error, 1)
+	go func() { runResult <- manager.Run(ctx) }()
+	// Teardown is ordered: cancel Run and wait for it to return before the
+	// earlier-registered cleanup closes the watcher, so Close can never
+	// race Run's select. Joining also keeps the failure report on the test
+	// goroutine — a bare goroutine calling t.Errorf can outlive the test
+	// and panic the run instead of failing it.
+	t.Cleanup(func() {
+		cancel()
+		if err := <-runResult; err != nil {
 			t.Errorf("Run: %v", err)
 		}
-	}()
+	})
 	return manager
 }
 
@@ -137,6 +144,33 @@ func TestPollBackstopFires(t *testing.T) {
 	trigger := awaitTrigger(t, manager, 2*time.Second)
 	if trigger.Reason != "poll" {
 		t.Fatalf("Reason = %q, want poll", trigger.Reason)
+	}
+}
+
+// TestRunReturnsNilOnceCancelledEvenIfWatcherClosed pins Run's shutdown
+// contract: callers stop a manager by cancelling its context and then
+// Closing it without waiting for Run to return (the daemon's rebuild and
+// shutdown paths do exactly this), so Run's select can observe the closed
+// event/error stream instead of ctx.Done. Once shutdown was requested,
+// that observation is orderly teardown and must read as nil — never as a
+// watcher death. Cancelling and closing BEFORE Run makes every select
+// case ready at once; the runtime picks among ready cases at random, so
+// the loop drives the pick through the closed-stream arms.
+func TestRunReturnsNilOnceCancelledEvenIfWatcherClosed(t *testing.T) {
+	t.Parallel()
+	for range 64 {
+		manager, err := watch.New(watch.Config{Debounce: testDebounce})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := manager.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.Run(ctx); err != nil {
+			t.Fatalf("Run after cancel and close: %v", err)
+		}
 	}
 }
 

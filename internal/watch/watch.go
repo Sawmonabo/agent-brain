@@ -116,7 +116,12 @@ func (m *Manager) Triggers() <-chan Trigger { return m.triggers }
 func (m *Manager) Close() error { return m.watcher.Close() }
 
 // Run pumps events until ctx is cancelled (returns nil) or the watcher
-// dies (returns the error).
+// dies (returns the error). Cancellation wins over a concurrently closed
+// watcher: callers stop the manager by cancelling and then Closing
+// without waiting for Run to return, so the select can observe the
+// closed event/error stream instead of ctx.Done — the runtime picks
+// among simultaneously ready cases at random. Once shutdown has been
+// requested, a closed stream is orderly teardown, never a death.
 func (m *Manager) Run(ctx context.Context) error {
 	debounce := time.NewTimer(m.config.Debounce)
 	if !debounce.Stop() {
@@ -139,6 +144,10 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case event, ok := <-m.watcher.Events:
 			if !ok {
+				if ctx.Err() != nil {
+					debounce.Stop()
+					return nil // Close raced our own shutdown; orderly, not a death
+				}
 				return errors.New("watch: event stream closed")
 			}
 			if event.Op == fsnotify.Chmod {
@@ -162,6 +171,10 @@ func (m *Manager) Run(ctx context.Context) error {
 
 		case err, ok := <-m.watcher.Errors:
 			if !ok {
+				if ctx.Err() != nil {
+					debounce.Stop()
+					return nil // Close raced our own shutdown; orderly, not a death
+				}
 				return errors.New("watch: error stream closed")
 			}
 			_ = err // overflow or transient watch error
