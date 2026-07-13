@@ -46,6 +46,18 @@ type MigrateSettings struct {
 	PreflightTimeout Duration `toml:"preflight_timeout"`
 }
 
+// EditorSettings is the [editor] config.toml section (ADR 20 decision 2):
+// the dashboard hub's $EDITOR handoff for editing a memory in place.
+type EditorSettings struct {
+	// Command overrides $VISUAL/$EDITOR ("cursor --wait"). Parsed with a
+	// POSIX word splitter, so quoting works.
+	Command string `toml:"command"`
+	// InTerminal false runs the editor without suspending the TUI (GUI
+	// editors configured with their wait flag — lazygit's editInTerminal
+	// precedent; auto-detection deliberately does not exist, ADR 20 D2).
+	InTerminal bool `toml:"in_terminal"`
+}
+
 // ClassifyRule overrides one classification pattern for a provider.
 // Class is one of provider.Class.String()'s exact values ("fact",
 // "derived-index", "regenerated", "ignore") — LoadSettings rejects
@@ -70,6 +82,7 @@ type ProviderSettings struct {
 type Settings struct {
 	Sync    SyncSettings    `toml:"sync"`
 	Migrate MigrateSettings `toml:"migrate"`
+	Editor  EditorSettings  `toml:"editor"`
 	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.
 	Providers map[string]ProviderSettings `toml:"providers"`
 }
@@ -84,6 +97,10 @@ func DefaultSettings() Settings {
 		},
 		Migrate: MigrateSettings{
 			PreflightTimeout: Duration(30 * time.Second),
+		},
+		Editor: EditorSettings{
+			Command:    "",
+			InTerminal: true,
 		},
 	}
 }

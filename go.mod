@@ -22,7 +22,8 @@ require (
 	github.com/tink-crypto/tink-go/v2 v2.7.0
 	golang.org/x/mod v0.38.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.37.0
+	golang.org/x/term v0.41.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (

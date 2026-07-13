@@ -178,6 +178,51 @@ func TestLoadSettingsProviderOverridesRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDefaultSettingsEditorDefaults pins editor.*'s documented default: no
+// configured command (fall through to $VISUAL/$EDITOR) and in_terminal =
+// true (suspend the TUI, like every other CLI editor integration surveyed
+// for ADR 20 decision 2).
+func TestDefaultSettingsEditorDefaults(t *testing.T) {
+	t.Parallel()
+	want := config.EditorSettings{Command: "", InTerminal: true}
+	if diff := cmp.Diff(want, config.DefaultSettings().Editor); diff != "" {
+		t.Fatalf("default editor settings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadSettingsEditorParses proves an [editor] table overrides the
+// default exactly like [sync]/[migrate] do.
+func TestLoadSettingsEditorParses(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	content := "[editor]\ncommand = \"cursor --wait\"\nin_terminal = false\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.LoadSettings(p)
+	if err != nil {
+		t.Fatalf("LoadSettings() error = %v", err)
+	}
+	want := config.EditorSettings{Command: "cursor --wait", InTerminal: false}
+	if diff := cmp.Diff(want, got.Editor); diff != "" {
+		t.Fatalf("editor settings mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestLoadSettingsEditorRejectsUnknownKey proves [editor] gets the same
+// strict-TOML treatment as every other section (ADR 17): a typo'd key is a
+// load-time error, never a silently-ignored setting.
+func TestLoadSettingsEditorRejectsUnknownKey(t *testing.T) {
+	t.Parallel()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[editor]\ncomand = \"vim\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.LoadSettings(p); err == nil {
+		t.Fatal("LoadSettings() accepted an unknown [editor] key; want error")
+	}
+}
+
 // TestLoadSettingsProviderOverridesValidation pins that a bad classify
 // rule is a strict load-time error (ADR 17) naming the offending rule —
 // never a silently-ignored or silently-misclassifying override.
