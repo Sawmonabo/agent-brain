@@ -855,6 +855,121 @@ func TestBrowserViewClampsToOneRowBelowTheClampFloor(t *testing.T) {
 	}
 }
 
+// TestBrowserEnterPushesReadingForSelection pins the browser → reading
+// drill-in (spec §4): enter on the selected row produces a PushScreenMsg
+// carrying a *Reading for exactly that memory, built over the browser's OWN
+// link index (shared, never rebuilt) and its Render/ReadBody/Styles deps.
+func TestBrowserEnterPushesReadingForSelection(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\ndescription: a\n---\n", base.Add(time.Hour))
+	writeBrowserFile(t, dir, "zulu.md", "---\nname: Zulu\ndescription: z\n---\n", base)
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	bodies := map[string]string{
+		"claude/alpha.md": "alpha body [[zulu]]\n",
+		"claude/zulu.md":  "zulu body\n",
+	}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(bodies),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Render:   func(md string, _ int) string { return "RENDERED:" + md },
+	})
+
+	// Newest-first default order puts Alpha on top; move to Zulu to prove
+	// the push tracks the cursor, not just the first row.
+	next, _ := browser.Update(key("down"))
+	browser = next.(*Browser)
+	_, cmd := browser.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("enter on a selected row produced no Cmd")
+	}
+	push, ok := cmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("enter produced %#v, want PushScreenMsg", cmd())
+	}
+	reading, ok := push.Screen.(*Reading)
+	if !ok {
+		t.Fatalf("pushed screen is %T, want *Reading", push.Screen)
+	}
+	if reading.deps.Memory.RepoPath != "claude/zulu.md" {
+		t.Errorf("pushed reading is for %q, want the selected %q", reading.deps.Memory.RepoPath, "claude/zulu.md")
+	}
+	if reading.deps.Index != browser.index {
+		t.Error("pushed reading rebuilt the link index instead of sharing the browser's")
+	}
+	if got := plain(reading.View(120, 30)); !strings.Contains(got, "RENDERED:zulu body") {
+		t.Errorf("pushed reading did not thread the browser's Render seam; got:\n%s", got)
+	}
+}
+
+// TestBrowserEnterWhileFilteringPushesReading pins that the filter's input
+// focus does not swallow enter: filtering down to one row and pressing
+// enter opens it — esc (which clears the filter wholesale) must never be
+// the only path from a filtered row to reading it.
+func TestBrowserEnterWhileFilteringPushesReading(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "auth.md", "---\nname: Auth Service\ndescription: tokens\n---\n", time.Now())
+	writeBrowserFile(t, dir, "logging.md", "---\nname: Logging\ndescription: shipping\n---\n", time.Now())
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	next, _ := browser.Update(key("/"))
+	browser = next.(*Browser)
+	for _, r := range "auth" {
+		next, _ = browser.Update(key(string(r)))
+		browser = next.(*Browser)
+	}
+
+	_, cmd := browser.Update(key("enter"))
+	if cmd == nil {
+		t.Fatal("enter while filtering produced no Cmd")
+	}
+	push, ok := cmd().(PushScreenMsg)
+	if !ok {
+		t.Fatalf("enter while filtering produced %#v, want PushScreenMsg", cmd())
+	}
+	reading, ok := push.Screen.(*Reading)
+	if !ok {
+		t.Fatalf("pushed screen is %T, want *Reading", push.Screen)
+	}
+	if reading.deps.Memory.Name != "Auth Service" {
+		t.Errorf("pushed reading is for %q, want the filtered selection %q", reading.deps.Memory.Name, "Auth Service")
+	}
+}
+
+// TestBrowserEnterOnEmptyListIsInert covers enter with nothing to open — an
+// empty project, or a filter that matches nothing — which must do nothing
+// rather than push a reading view over a memory that does not exist.
+func TestBrowserEnterOnEmptyListIsInert(t *testing.T) {
+	t.Parallel()
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+	})
+	if _, cmd := browser.Update(key("enter")); cmd != nil {
+		t.Fatalf("enter on an empty browser produced a message: %#v", cmd())
+	}
+}
+
 // TestBrowserTitleIsFolder pins the breadcrumb segment contract.
 func TestBrowserTitleIsFolder(t *testing.T) {
 	t.Parallel()

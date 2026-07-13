@@ -46,9 +46,22 @@ type DashboardKeymap struct {
 	// on the root's navigation stack (Task 11+); Select above is reused
 	// verbatim for its list cursor, the same cross-context reuse ForModal
 	// already applies to the add picker.
+	BrowserRead   keybinding.Binding
 	BrowserOrder  keybinding.Binding
 	BrowserFilter keybinding.Binding
 	BrowserBack   keybinding.Binding
+	// Reading* bindings own the keyboard while a reading view Screen is on
+	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
+	// one hint; Reading.updateKey matches it for membership, then picks the
+	// direction from the concrete key — the TabSwitch idiom. The viewport's
+	// scroll keys (spec §4's j/k, ctrl+d/u, g/G) are not registry actions,
+	// exactly as the browser's own up/down cursor keys are not: table-stakes
+	// navigation the screen routes itself.
+	ReadingCycleLinks keybinding.Binding
+	ReadingFollow     keybinding.Binding
+	ReadingBacklinks  keybinding.Binding
+	ReadingCopyPath   keybinding.Binding
+	ReadingBack       keybinding.Binding
 	// Modal bindings own the keyboard while a Projects modal (the untrack
 	// confirm or the add flow) is open; ForModal advertises exactly the
 	// subset each modal state honors, and the tab-level set above never
@@ -66,18 +79,24 @@ type DashboardKeymap struct {
 // bindings never change at runtime; per-tab, per-quiesce availability is the
 // root's footer/palette job, not this package's.
 var DashboardKeys = DashboardKeymap{
-	TabSwitch:     bindingFor("switch-tabs"),
-	Select:        bindingFor("select"),
-	Sync:          bindingFor("sync-project"),
-	Untrack:       bindingFor("untrack"),
-	Add:           bindingFor("add-project"),
-	Open:          bindingFor("open-browser"),
-	Quit:          bindingFor("quit"),
-	BrowserOrder:  bindingFor("browser-order"),
-	BrowserFilter: bindingFor("browser-filter"),
-	BrowserBack:   bindingFor("browser-back"),
-	Cancel:        keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
-	Accept:        keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	TabSwitch:         bindingFor("switch-tabs"),
+	Select:            bindingFor("select"),
+	Sync:              bindingFor("sync-project"),
+	Untrack:           bindingFor("untrack"),
+	Add:               bindingFor("add-project"),
+	Open:              bindingFor("open-browser"),
+	Quit:              bindingFor("quit"),
+	BrowserRead:       bindingFor("browser-read"),
+	BrowserOrder:      bindingFor("browser-order"),
+	BrowserFilter:     bindingFor("browser-filter"),
+	BrowserBack:       bindingFor("browser-back"),
+	ReadingCycleLinks: bindingFor("reading-links"),
+	ReadingFollow:     bindingFor("reading-follow"),
+	ReadingBacklinks:  bindingFor("reading-backlinks"),
+	ReadingCopyPath:   bindingFor("reading-copy-path"),
+	ReadingBack:       bindingFor("reading-back"),
+	Cancel:            keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
+	Accept:            keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),

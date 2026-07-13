@@ -41,11 +41,18 @@ type Screen interface {
 // as a Cmd's result — never appended to the stack directly by the view that
 // wants it pushed — so the same plumbing works whether the push originates
 // from a tab view (Projects' enter-to-browse) or from inside another Screen
-// (a later task's Browser pushing Reading).
+// (the Browser pushing a Reading, a Reading pushing the next link target).
 type PushScreenMsg struct{ Screen Screen }
 
 // PopScreenMsg asks the root to pop the top of the stack.
 type PopScreenMsg struct{}
+
+// ToastMsg asks the root to surface Text in its persistent status area —
+// the screen→root channel for a local refusal or notice that needs no
+// state change (the reading view's enter on a dangling link). Produced as
+// a Cmd's result, exactly like Push/PopScreenMsg, so a pushed screen never
+// needs a reference to the root to explain itself.
+type ToastMsg struct{ Text string }
 
 // RefreshMsg is forwarded to the top screen on every root tick, in addition
 // to the root's own status/tab reload, so a drill-in surface stays live

@@ -99,12 +99,22 @@ var registry = []Action{
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},
 	{ID: "help", Title: "help", Keys: []string{"?"}, KeyHint: "?", Scope: ScopeGlobal},
 	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal},
-	// ScopeBrowser rows (Task 11): the memory browser's own in-screen keys.
-	// enter-to-read is deliberately absent — it lands with Task 12's Reading
-	// screen and runner, not this task's browser.
+	// ScopeBrowser rows (Task 11 seeded o///esc; Task 12 added enter-to-read):
+	// the memory browser's own in-screen keys, matched directly by
+	// Browser.updateKey — no root-level runner, same as select/switch-tabs.
+	{ID: "browser-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeBrowser},
 	{ID: "browser-order", Title: "order", Keys: []string{"o"}, KeyHint: "o", Scope: ScopeBrowser},
 	{ID: "browser-filter", Title: "filter", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
+	// ScopeReading rows (Task 12): the reading view's own in-screen keys,
+	// matched directly by Reading.updateKey. e-edit and h-history are
+	// deliberately absent — Tasks 13/14 declare those rows together with
+	// their screens and runners, so no dead row advertises an unbuilt key.
+	{ID: "reading-links", Title: "links", Keys: []string{"tab", "shift+tab"}, KeyHint: "tab", Scope: ScopeReading},
+	{ID: "reading-follow", Title: "follow", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeReading},
+	{ID: "reading-backlinks", Title: "backlinks", Keys: []string{"b"}, KeyHint: "b", Scope: ScopeReading},
+	{ID: "reading-copy-path", Title: "copy path", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeReading},
+	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading},
 }
 
 // Registry returns the full static table, defensively copied so a caller

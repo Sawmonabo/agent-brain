@@ -66,9 +66,9 @@ type BrowserDeps struct {
 	// free.
 	StaleAfterDays int
 	// Render markdown-renders md at width — the root-owned glamour seam
-	// (dashboard.go), shared with the later Reading screen. A nil Render
-	// (as some tests that do not exercise the preview pane leave it) falls
-	// back to the raw body text.
+	// (dashboard.go), threaded onward into every Reading screen this
+	// browser pushes (openReading). A nil Render (as some tests that do not
+	// exercise the preview pane leave it) falls back to the raw body text.
 	Render func(md string, width int) string
 }
 
@@ -101,9 +101,10 @@ type Browser struct {
 	now time.Time
 
 	// index is the wiki-link graph over the current listing (Task 7),
-	// retained (not just consumed) because Task 12's Reading screen will
-	// need the identical graph for link navigation, and because lint.Check
-	// below takes it as an input rather than building its own.
+	// retained (not just consumed) because openReading threads the
+	// identical graph into every pushed Reading screen for link/backlink
+	// navigation, and because lint.Check below takes it as an input rather
+	// than building its own.
 	index *links.Index
 	// lintFlags is the ⚠ badge's actual source of truth: RepoPath ->
 	// "present in lint.Check's results" — spec §8's advisory findings
@@ -287,6 +288,8 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	switch {
 	case keybinding.Matches(msg, DashboardKeys.BrowserBack):
 		return b, func() tea.Msg { return PopScreenMsg{} }
+	case keybinding.Matches(msg, DashboardKeys.BrowserRead):
+		return b, b.openReading()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
 		b.filtering = true
 		return b, b.filter.Focus()
@@ -301,12 +304,37 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	return b, nil
 }
 
+// openReading pushes the selected memory's reading view (spec §4's enter),
+// or does nothing with no row to open. ReadingDeps is filled from the
+// browser's OWN deps — including the link index, shared rather than
+// rebuilt, so the reading view resolves links and backlinks from exactly
+// the graph the browser last indexed. Constructing the Reading here (its
+// synchronous body read included) mirrors how the root itself builds a
+// Browser on OpenFolderMsg; the Cmd merely delivers the finished screen to
+// the root's stack.
+func (b *Browser) openReading() tea.Cmd {
+	rows := b.visibleRows()
+	if len(rows) == 0 {
+		return nil
+	}
+	reading := NewReading(ReadingDeps{
+		Memory:   rows[b.cursor],
+		Index:    b.index,
+		ReadBody: b.deps.ReadBody,
+		Render:   b.deps.Render,
+		Styles:   b.deps.Styles,
+	})
+	return func() tea.Msg { return PushScreenMsg{Screen: reading} }
+}
+
 // updateFiltering handles a keypress while the in-browser filter owns
 // input focus: esc clears and exits (consuming the key — no PopScreenMsg,
 // so the root does not also pop the screen); arrow keys navigate the
 // filtered list, the same "arrows only, letters stay typable" rule
 // PaletteModel.Update applies for the identical reason (the filter also
-// owns a free-text query); everything else is forwarded to the text input.
+// owns a free-text query); enter opens the selected match — esc clears the
+// whole filter, so it must never be the only path from a filtered row to
+// reading it; everything else is forwarded to the text input.
 func (b *Browser) updateFiltering(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	if keybinding.Matches(msg, DashboardKeys.Cancel) {
 		b.filtering = false
@@ -314,6 +342,9 @@ func (b *Browser) updateFiltering(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		b.filter.Blur()
 		b.cursor = clampCursor(b.cursor, len(b.visibleRows()))
 		return b, nil
+	}
+	if keybinding.Matches(msg, DashboardKeys.BrowserRead) {
+		return b, b.openReading()
 	}
 	switch msg.String() {
 	case "up", "down":

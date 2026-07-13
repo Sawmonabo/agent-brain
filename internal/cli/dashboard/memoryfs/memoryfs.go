@@ -54,8 +54,12 @@ type Memory struct {
 	Size        int64
 }
 
-// fullPath resolves m's on-disk location.
-func (m Memory) fullPath() string {
+// Path resolves m's on-disk location: LocalDir joined with the
+// slash-separated RelPath in OS-native form. Absolute whenever LocalDir is
+// absolute, which enrollment guarantees (api.UnitInfo.LocalDir) — the
+// reading view's copy-path affordance (spec §4's y) surfaces this exact
+// string, so it must be pasteable as-is.
+func (m Memory) Path() string {
 	return localPath(m.LocalDir, m.RelPath)
 }
 
@@ -175,7 +179,7 @@ func repoPath(providerName, repoSubdir, rel string) string {
 // grows between those two calls would otherwise let a stale size check pass
 // while the real read exceeds the cap.
 func ReadBody(m Memory) (string, error) {
-	fullPath := m.fullPath()
+	fullPath := m.Path()
 	f, err := os.Open(fullPath) //nolint:gosec // G304: fullPath is composed from an enrolled unit's LocalDir + a RelPath this package's own List produced, not untrusted input
 	if err != nil {
 		return "", fmt.Errorf("memoryfs: open %s: %w", fullPath, err)
@@ -220,7 +224,7 @@ func WriteFileAtomic(dir, rel string, content []byte) error {
 // Delete removes the provider file (plain os.Remove — deletion IS the
 // mutation the watcher captures; recoverable via history restore, spec §6).
 func Delete(m Memory) error {
-	fullPath := m.fullPath()
+	fullPath := m.Path()
 	if err := os.Remove(fullPath); err != nil {
 		return fmt.Errorf("memoryfs: delete %s: %w", fullPath, err)
 	}
@@ -248,7 +252,7 @@ func Rename(m Memory, newRel string) error {
 	if path.Ext(newRel) != path.Ext(m.RelPath) {
 		return fmt.Errorf("memoryfs: rename %q to %q: extension must not change", m.RelPath, newRel)
 	}
-	oldFull := m.fullPath()
+	oldFull := m.Path()
 	newFull := localPath(m.LocalDir, newRel)
 	if err := os.MkdirAll(filepath.Dir(newFull), 0o700); err != nil {
 		return fmt.Errorf("memoryfs: create parent dir for %s: %w", newFull, err)

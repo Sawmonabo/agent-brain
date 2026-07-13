@@ -145,12 +145,12 @@ type Model struct {
 	// LoadSettings, which itself defaults to DefaultSettings() when
 	// config.toml does not exist on disk (config/settings.go).
 	settings config.Settings
-	// renderMarkdown is the glamour seam every pushed Screen's preview pane
-	// renders through (buildBrowserDeps' Render, and the later Reading
-	// screen's identical need) — rebuilt by withStyles whenever the theme
-	// changes, see newMarkdownRenderer's own doc for why a value-semantics
-	// Model can hold a closure with private mutable memoization state
-	// safely.
+	// renderMarkdown is the glamour seam every pushed Screen renders
+	// markdown through (buildBrowserDeps' Render, threaded onward into each
+	// Reading the browser pushes) — rebuilt by withStyles whenever the
+	// theme changes, see newMarkdownRenderer's own doc for why a
+	// value-semantics Model can hold a closure with private mutable
+	// memoization state safely.
 	renderMarkdown func(markdown string, width int) string
 
 	active tab
@@ -159,11 +159,11 @@ type Model struct {
 	now    time.Time
 
 	// stack is the drill-in navigation stack (spec §2): empty on every tab
-	// view, one level after Projects' enter-to-browse, deeper once Task 12
-	// (Reading) and Task 14 (History) land their own pushes. Every mutation
-	// flows through pushScreen/popScreen/replaceStackTop — see withStack's
-	// doc for why none of the three ever writes into a shared backing
-	// array in place.
+	// view, one level after Projects' enter-to-browse, one more per reading
+	// view a link jump pushes, deeper again once Task 14 (History) lands
+	// its own push. Every mutation flows through pushScreen/popScreen/
+	// replaceStackTop — see withStack's doc for why none of the three ever
+	// writes into a shared backing array in place.
 	stack []views.Screen
 
 	status     api.StatusResponse
@@ -226,8 +226,18 @@ func (m Model) withStyles(styles theme.Styles, isDark bool) Model {
 	return m
 }
 
+// themedScreen is the optional seam a stack screen exposes so a theme swap
+// can reach it after construction: both *views.Browser and *views.Reading
+// satisfy it, and a later screen that renders styled markdown (History)
+// joins by implementing the same two setters — no per-type case to forget
+// here.
+type themedScreen interface {
+	SetStyles(theme.Styles)
+	SetRender(func(md string, width int) string)
+}
+
 // applyStackTheme pushes the CURRENT styles and markdown renderer into
-// every *Browser on the navigation stack. SetStyles/SetRender are
+// every themedScreen on the navigation stack. SetStyles/SetRender are
 // deliberately not part of the Screen interface (Update/View/Title only,
 // so the stack's own push/pop/forward plumbing never needs to know a
 // screen's concrete type) — this is the one place that steps outside that
@@ -236,9 +246,9 @@ func (m Model) withStyles(styles theme.Styles, isDark bool) Model {
 // state that already exists, not just state constructed after the swap.
 func (m Model) applyStackTheme() {
 	for _, screen := range m.stack {
-		if browser, ok := screen.(*views.Browser); ok {
-			browser.SetStyles(m.styles)
-			browser.SetRender(m.renderMarkdown)
+		if themed, ok := screen.(themedScreen); ok {
+			themed.SetStyles(m.styles)
+			themed.SetRender(m.renderMarkdown)
 		}
 	}
 }
@@ -501,6 +511,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.PopScreenMsg:
 		m = m.popScreen()
 		return m, nil
+
+	case views.ToastMsg:
+		// The generic screen→root notice channel (screen.go): the reading
+		// view's dangling-link refusal today, any pushed screen's local
+		// notice tomorrow.
+		m.pushToast(msg.Text)
+		return m, nil
+
+	case views.CopyPathMsg:
+		// spec §4's y (copy provider-file path), in two halves: the toast
+		// prints the absolute path verbatim — the guaranteed affordance,
+		// visible in every terminal — and tea.SetClipboard issues the OSC52
+		// clipboard write as best effort alongside it. OSC52 support varies
+		// by terminal and the write has no delivery ack, which is why the
+		// toast is unconditional rather than a fallback: the path on screen
+		// is the one outcome the binding can promise.
+		m.pushToast("path: " + msg.Path)
+		return m, tea.SetClipboard(msg.Path)
 
 	case views.PaletteChoiceMsg:
 		return m, m.dispatch(msg.ID)
@@ -785,13 +813,15 @@ func (m Model) forwardToStack(msg tea.Msg) (Model, tea.Cmd) {
 // stackScope maps a concrete Screen type to the actions.Scope its footer
 // hints and quiesce/available checks belong to — the one place a footer or
 // help render needs a stack screen's scope, since the Screen interface
-// itself stays exactly Update/View/Title. Only *Browser exists today; a
-// later task's Reading/History screens add their own case here as they
-// land, the same way activeScope grows a case per tab.
+// itself stays exactly Update/View/Title. A later task's History screen
+// adds its own case here as it lands, the same way activeScope grows a
+// case per tab.
 func (m Model) stackScope(screen views.Screen) actions.Scope {
 	switch screen.(type) {
 	case *views.Browser:
 		return actions.ScopeBrowser
+	case *views.Reading:
+		return actions.ScopeReading
 	default:
 		return actions.ScopeGlobal
 	}
@@ -930,11 +960,12 @@ func (m *Model) dispatch(id string) tea.Cmd {
 // available here purely to keep advertising their footer/help hints (spec
 // §2); help has no wiring precondition and is never hidden either, but IS
 // genuinely dispatchable (dispatch special-cases it directly). open-browser
-// and the three browser-* rows are the identical shape one level down the
-// stack: ProjectsView.Update and Browser.updateKey match their bindings
-// directly (see actions.go's row comments), so dispatch never reaches any
-// of the four either, and they stay unconditionally available so the
-// Projects and browser-scope footers keep naming them. add-project
+// and the browser-*/reading-* rows are the identical shape one level down
+// the stack: ProjectsView.Update, Browser.updateKey, and Reading.updateKey
+// match their bindings directly (see actions.go's row comments), so
+// dispatch never reaches any of them either, and they stay unconditionally
+// available so the Projects, browser, and reading footers keep naming
+// them. add-project
 // additionally needs both track closures wired (the existing AddAvailable
 // contract, unchanged by this task); every other action is available
 // exactly when it has a registered runner — the mechanism that keeps a
@@ -942,7 +973,9 @@ func (m *Model) dispatch(id string) tea.Cmd {
 // the footer while the help overlay still documents it.
 func (m *Model) available(id string) bool {
 	switch id {
-	case "switch-tabs", "select", "help", "open-browser", "browser-order", "browser-filter", "browser-back":
+	case "switch-tabs", "select", "help",
+		"open-browser", "browser-read", "browser-order", "browser-filter", "browser-back",
+		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-back":
 		return true
 	case "add-project":
 		return m.actions.AddAvailable()

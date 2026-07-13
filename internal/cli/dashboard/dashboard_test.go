@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1438,5 +1439,134 @@ func TestBuildBrowserDepsThreadsConfiguredStaleAfterDays(t *testing.T) {
 	lenient := pushedView(t, 90) // 6 days old, 90-day threshold: not stale
 	if strings.Contains(lenient, "⚠") {
 		t.Errorf("StaleAfterDays=90 with the identical 6-day-old memory wrongly flagged it; view:\n%s", lenient)
+	}
+}
+
+// pushedReading builds a minimal *views.Reading over a canned body — the
+// dashboard-level seams below (theme propagation, footer scope, CopyPathMsg)
+// need a real pushed Reading but none of the link fixtures the views-level
+// suite exercises.
+func pushedReading(render func(md string, width int) string) *views.Reading {
+	return views.NewReading(views.ReadingDeps{
+		Memory: memoryfs.Memory{
+			Provider: "claude",
+			Folder:   "acme",
+			LocalDir: "/enrolled/acme/claude",
+			RelPath:  "note.md",
+			RepoPath: "claude/note.md",
+			Name:     "Note",
+		},
+		ReadBody: func(memoryfs.Memory) (string, error) { return "# Heading", nil },
+		Render:   render,
+	})
+}
+
+// TestCopyPathMsgToastsAndWritesClipboard pins the root's half of spec §4's
+// y: the toast names the absolute provider-file path verbatim (the
+// guaranteed affordance — visible in every terminal), and the same update
+// issues bubbletea's OSC52 clipboard write as the best-effort half (not
+// every terminal honors OSC52, and there is no delivery ack, which is why
+// the toast is not conditional on it).
+func TestCopyPathMsgToastsAndWritesClipboard(t *testing.T) {
+	t.Parallel()
+	const wantPath = "/enrolled/acme/claude/note.md"
+	m := newTestModel(&fakeData{})
+
+	m, cmd := step(m, views.CopyPathMsg{Path: wantPath})
+
+	if got := plain(m.toastLine()); !strings.Contains(got, "path: "+wantPath) {
+		t.Errorf("toast = %q, want it to contain %q", got, "path: "+wantPath)
+	}
+	if cmd == nil {
+		t.Fatal("CopyPathMsg produced no Cmd; want the OSC52 clipboard write")
+	}
+	if !slices.Contains(drain(cmd), tea.SetClipboard(wantPath)()) {
+		t.Errorf("CopyPathMsg's Cmd did not carry tea.SetClipboard(%q)", wantPath)
+	}
+}
+
+// TestToastMsgSurfacesInStatusArea pins the generic screen→root toast
+// channel a pushed screen's local refusal rides (the reading view's
+// enter-on-a-dangling-link, and any later screen's equivalent).
+func TestToastMsgSurfacesInStatusArea(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, cmd := step(m, views.ToastMsg{Text: "dangling link: no memory named \"ghost\""})
+	if cmd != nil {
+		t.Error("ToastMsg produced a Cmd; want none")
+	}
+	if got := plain(m.toastLine()); !strings.Contains(got, "dangling link") {
+		t.Errorf("toast = %q, want the ToastMsg text surfaced", got)
+	}
+}
+
+// TestApplyStackThemeInvalidatesPushedReadingRenderCache is the reading
+// view's version of the browser seam test above, and isolates the same two
+// halves for the SAME reason: the render cache is warmed first, so the only
+// way the sentinel can appear in the next View's body is applyStackTheme
+// actually reaching this pushed *Reading's SetRender AND that setter
+// invalidating the warmed cache — a whole-View byte diff would be vacuous
+// (root chrome alone differs across a styles swap).
+func TestApplyStackThemeInvalidatesPushedReadingRenderCache(t *testing.T) {
+	t.Parallel()
+	const sentinelMarker = "SENTINEL-RENDER-OUTPUT"
+	reading := pushedReading(func(md string, _ int) string { return "ORIGINAL:" + md })
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: reading})
+
+	warm := plain(reading.View(m.width, m.stackBodyHeight()))
+	if !strings.Contains(warm, "ORIGINAL:") {
+		t.Fatalf("setup: initial render did not go through the original Render func; got:\n%s", warm)
+	}
+
+	m.renderMarkdown = func(md string, _ int) string { return sentinelMarker + ":" + md }
+	m.applyStackTheme()
+
+	got := plain(reading.View(m.width, m.stackBodyHeight()))
+	if !strings.Contains(got, sentinelMarker) {
+		t.Errorf("pushed reading's body was not re-rendered through the theme's newly installed Render func; got:\n%s", got)
+	}
+}
+
+// TestStackFooterAdvertisesReadingScopedKeys pins the footer's scope switch
+// for a pushed Reading: exactly ScopeReading's own keys, nothing from the
+// tab level or ScopeGlobal — the same honesty rule
+// TestStackFooterAdvertisesScopedKeys already pins for the browser.
+func TestStackFooterAdvertisesReadingScopedKeys(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
+
+	got := plain(m.footer())
+	for _, want := range []string{"tab links", "enter follow", "b backlinks", "y copy path", "esc back"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stack footer %q missing %q", got, want)
+		}
+	}
+	for _, deadHint := range []string{"tab/1–4", "ctrl+k palette", "? help", "s sync", "o order"} {
+		if strings.Contains(got, deadHint) {
+			t.Errorf("stack footer %q leaks a tab-level, global, or browser hint %q", got, deadHint)
+		}
+	}
+}
+
+// TestReadingBreadcrumbExtendsPerLevel pins spec §2's stack breadcrumb one
+// level deeper than the browser test above: link-to-link navigation pushes
+// one more segment per reading view, so the trail always shows how the
+// current memory was reached.
+func TestReadingBreadcrumbExtendsPerLevel(t *testing.T) {
+	t.Parallel()
+	registry := browserRegistry(t)
+	m := New(Config{Data: &fakeData{}, Registry: registry})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.active = tabProjects
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: t.TempDir()}})
+
+	m = drive(t, m, key("enter"))
+	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
+
+	if got := plain(m.breadcrumb()); !strings.Contains(got, "Projects ▸ acme ▸ Note") {
+		t.Errorf("breadcrumb = %q, want the reading segment appended", got)
 	}
 }

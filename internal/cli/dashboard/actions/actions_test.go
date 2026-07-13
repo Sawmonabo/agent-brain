@@ -266,3 +266,53 @@ func TestBrowserRegistryRowsShape(t *testing.T) {
 		})
 	}
 }
+
+// TestReadingRegistryRowsShape pins Task 12's registry additions: the
+// browser's enter-to-read row and the reading view's own in-screen keys
+// (ScopeReading). Same discipline as the browser rows above: none Mutates,
+// none has a root-level runner (direct view-level key routing), so they are
+// footer/help-only and absent from the palette. e-edit and h-history are
+// deliberately NOT here — Tasks 13/14 register those rows together with
+// their runners.
+func TestReadingRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id    string
+		keys  []string
+		scope Scope
+	}{
+		{id: "browser-read", keys: []string{"enter"}, scope: ScopeBrowser},
+		{id: "reading-links", keys: []string{"tab", "shift+tab"}, scope: ScopeReading},
+		{id: "reading-follow", keys: []string{"enter"}, scope: ScopeReading},
+		{id: "reading-backlinks", keys: []string{"b"}, scope: ScopeReading},
+		{id: "reading-copy-path", keys: []string{"y"}, scope: ScopeReading},
+		{id: "reading-back", keys: []string{"esc"}, scope: ScopeReading},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff(testCase.keys, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if action.Mutates {
+				t.Error("Mutates = true, want false")
+			}
+			if action.Scope != testCase.scope {
+				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
+	}
+}
