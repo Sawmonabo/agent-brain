@@ -183,6 +183,38 @@ func TestMigrateDiscoverEmptyShowsNothingToMigrate(t *testing.T) {
 	}
 }
 
+// TestMigrateDiscoverErrorShowsNoticeAndResets pins OnMigrateDiscover's error
+// branch (the discover twin of the identify-failure abort): a failed legacy-store
+// enumeration resets the flow and surfaces the reason verbatim as a notice, never
+// reaching the picker. Only the empty-discovery branch was pinned before.
+func TestMigrateDiscoverErrorShowsNoticeAndResets(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	migrate := MigrateActions{
+		Preflight: func(context.Context) error { return nil },
+		Discover: func(context.Context) ([]MigrateCandidate, error) {
+			return nil, errors.New("legacy tree unreadable")
+		},
+		Identify: func(context.Context, string, TrackRoot, string) (provider.Identity, error) {
+			return provider.Identity{}, nil
+		},
+		LiveDirFor: func(string, string) (string, error) { return "", nil },
+	}
+	view := NewProjectsView()
+
+	driveMigrate(t, &view, fake, migrate, key("m")) // m → preflight → discover → error branch
+
+	if view.Migrating != MigrateNone {
+		t.Fatalf("Migrating = %v, want MigrateNone after a discover error", view.Migrating)
+	}
+	if got := plain(view.View("")); !strings.Contains(got, "discover legacy stores failed: legacy tree unreadable") {
+		t.Fatalf("view = %q, want the verbatim discover-failure notice", got)
+	}
+	if len(fake.migrateCalls) != 0 {
+		t.Fatalf("a discover error still migrated: %v", fake.migrateCalls)
+	}
+}
+
 // TestMigrateResultToastWording pins the outcome line both the fresh-import and
 // the already-imported (Skipped) cases render (spec §10) — the pure method the
 // root toasts through, so the wording is asserted without any flow plumbing.

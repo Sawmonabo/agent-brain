@@ -745,6 +745,43 @@ func TestProjectsAddGlobalTracksAllRootsAndSyncs(t *testing.T) {
 	}
 }
 
+// TestProjectsAddMultiSelectQueueFiresOneSyncAtDrain pins spec §13's exactly-one-
+// sync contract at the ROOT: a ≥2-candidate multi-select queue drives two tracks
+// through the root's TrackResultMsg handler, which returns the next candidate's
+// Cmd ALONE mid-queue and batches the whole-fleet sync only once the queue drains.
+// Every other committed root add test drives a single candidate, so a regression
+// that syncs per enrolled item (batching SyncCmd with the next-candidate Cmd)
+// would pass the whole suite unseen.
+func TestProjectsAddMultiSelectQueueFiresOneSyncAtDrain(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{trackResp: api.TrackResponse{Folder: "_global"}}
+	candidates := []views.TrackCandidate{
+		{Provider: "claude", Label: "claude  zero", Global: true, Roots: []views.TrackRoot{{LocalDir: "/x/zero"}}},
+		{Provider: "claude", Label: "claude  one", Global: true, Roots: []views.TrackRoot{{LocalDir: "/x/one"}}},
+	}
+	m := New(addConfig(fake, candidates))
+	m.active = tabProjects
+
+	m = drive(t, m, key("a"))     // discover → picker (two rows)
+	m = drive(t, m, key("space")) // select row 0
+	m = drive(t, m, key("j"))     // cursor → row 1
+	m = drive(t, m, key("space")) // select row 1
+	m = drive(t, m, key("enter")) // confirm the set → queue tracks both, then ONE fleet sync
+
+	if len(fake.trackCalls) != 2 {
+		t.Fatalf("trackCalls = %d, want 2 (both queued candidates)", len(fake.trackCalls))
+	}
+	if fake.trackCalls[0].LocalDir != "/x/zero" || fake.trackCalls[1].LocalDir != "/x/one" {
+		t.Fatalf("track order = [%q, %q], want [/x/zero, /x/one]",
+			fake.trackCalls[0].LocalDir, fake.trackCalls[1].LocalDir)
+	}
+	// The load-bearing pin: exactly ONE whole-fleet sync, fired at queue drain —
+	// never one per enrolled candidate.
+	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
+		t.Fatalf("multi-select queue fired the wrong number/shape of syncs (-want +got):\n%s", diff)
+	}
+}
+
 // TestProjectsAddTrackFailureSurfacesAndSkipsSync covers the track error
 // branch: when the daemon rejects the enrollment, the root surfaces the
 // reason and fires NO fleet sync — there is nothing new to mirror in, so
@@ -922,6 +959,41 @@ func TestMigratePreflightFailureStickyAborts(t *testing.T) {
 	}
 }
 
+// TestMigrateResultFailureStickyAbortsNoSync pins the root's MigrateResultMsg
+// FAILURE arm (spec §10) — the migrate twin of the add flow's track-failure test.
+// A daemon rejection surfaces the reason in the sticky (action-required) slot
+// VERBATIM, fires NO fleet sync (nothing enrolled, so a sync would be a lie), and
+// resets the flow to idle. fakeData.migrateErr was never set by any other test, so
+// this arm was wholly unpinned.
+func TestMigrateResultFailureStickyAbortsNoSync(t *testing.T) {
+	t.Parallel()
+	migrateErr := errors.New("daemon refused: disk full")
+	fake := &fakeData{migrateErr: migrateErr}
+	identity := provider.Identity{ProjectID: "github.com/o/acme", PreferredFolder: "acme"}
+	m := New(migrateConfig(fake, nil, migrateCandidateFixture(), identity))
+	m.active = tabProjects
+
+	m = drive(t, m, key("m"))     // preflight → discover → picker
+	m = drive(t, m, key("enter")) // pick → path confirm
+	m = drive(t, m, key("enter")) // accept path → identify → migrate (rejected)
+
+	if len(fake.migrateCalls) != 1 {
+		t.Fatalf("migrateCalls = %v, want exactly one rejected attempt", fake.migrateCalls)
+	}
+	if m.stickyToast == nil || m.stickyToast.text != "migrate failed: "+migrateErr.Error() {
+		t.Fatalf("stickyToast = %v, want the verbatim 'migrate failed: …' sticky", m.stickyToast)
+	}
+	if m.toast != nil {
+		t.Fatalf("toast = %v, want no info toast on a failed migrate (the failure is sticky)", m.toast)
+	}
+	if len(fake.syncCalls) != 0 {
+		t.Fatalf("a failed migrate must not fire a fleet sync: %v", fake.syncCalls)
+	}
+	if m.projects.Migrating != views.MigrateNone {
+		t.Fatalf("Migrating = %v, want MigrateNone after a failed migrate", m.projects.Migrating)
+	}
+}
+
 // TestFooterAndDispatchGateMigrateOnClosures pins that migrate availability
 // gates on the injected closures (MigrateAvailable): fully wired, the footer
 // advertises m and the key drives the flow; unwired, m is dead and unadvertised
@@ -953,6 +1025,40 @@ func TestFooterAndDispatchGateMigrateOnClosures(t *testing.T) {
 	}
 	if len(fake.migrateCalls) != 0 {
 		t.Errorf("m with closures unwired still reached the daemon: %v", fake.migrateCalls)
+	}
+}
+
+// TestMigrateAvailableGatesOnEachClosure pins that MigrateAvailable is a
+// conjunction of ALL FOUR closures — dropping any ONE alone leaves migrate
+// unavailable AND the footer silent on m. The all-four-nil pin
+// (TestFooterAndDispatchGateMigrateOnClosures) never exercised a 3-of-4 partial
+// wiring, so a dropped conjunct would advertise a key the dispatch cannot honor.
+func TestMigrateAvailableGatesOnEachClosure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		drop func(*Config)
+	}{
+		{name: "no preflight", drop: func(c *Config) { c.MigratePreflight = nil }},
+		{name: "no discover", drop: func(c *Config) { c.LegacyDiscover = nil }},
+		{name: "no identify", drop: func(c *Config) { c.Identify = nil }},
+		{name: "no live dir", drop: func(c *Config) { c.LiveDirFor = nil }},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := migrateConfig(&fakeData{}, nil, migrateCandidateFixture(), provider.Identity{})
+			testCase.drop(&cfg)
+			m := New(cfg)
+			m.active = tabProjects
+
+			if m.migrateActions.MigrateAvailable() {
+				t.Errorf("MigrateAvailable() = true with one closure dropped (%s)", testCase.name)
+			}
+			if got := plain(m.footer()); strings.Contains(got, "m migrate") {
+				t.Errorf("footer %q advertises migrate with one closure dropped (%s)", got, testCase.name)
+			}
+		})
 	}
 }
 

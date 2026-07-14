@@ -952,6 +952,36 @@ func TestProjectsAddEmptySelectionStaysInPicker(t *testing.T) {
 	}
 }
 
+// TestProjectsAddDiscoverErrorShowsNoticeAndResets pins OnDiscover's error
+// branch (the add twin of the migrate discover-error pin): a failed root
+// discovery resets the flow and surfaces the reason verbatim as a notice, never
+// reaching the picker. Only the empty-discovery branch was pinned before.
+func TestProjectsAddDiscoverErrorShowsNoticeAndResets(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	actions := TrackActions{
+		Discover: func(context.Context) ([]TrackCandidate, error) {
+			return nil, errors.New("providers unreachable")
+		},
+		Identify: func(context.Context, string, TrackRoot, string) (provider.Identity, error) {
+			return provider.Identity{}, nil
+		},
+	}
+	view := NewProjectsView()
+
+	drive(t, &view, fake, actions, key("a")) // a → discover → error branch
+
+	if view.Adding != AddNone {
+		t.Fatalf("Adding = %v, want AddNone after a discover error", view.Adding)
+	}
+	if got := plain(view.View("")); !strings.Contains(got, "discover failed: providers unreachable") {
+		t.Fatalf("view = %q, want the verbatim discover-failure notice", got)
+	}
+	if len(fake.trackCalls) != 0 {
+		t.Fatalf("a discover error still tracked: %v", fake.trackCalls)
+	}
+}
+
 // TestProjectsAddMultiSelectRendersCheckboxes pins the picker's checkbox
 // grammar: every row starts "[ ]", a space-toggle flips exactly the highlighted
 // row to "[x]", and its neighbours stay unchecked.
