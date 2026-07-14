@@ -62,10 +62,13 @@ type fakeData struct {
 	untrackErr  error
 	trackResp   api.TrackResponse
 	trackErr    error
+	migrateResp api.MigrateResponse
+	migrateErr  error
 
 	syncCalls    []string
 	untrackCalls []api.UntrackRequest
 	trackCalls   []api.TrackRequest
+	migrateCalls []api.MigrateRequest
 }
 
 func (f *fakeData) Status(context.Context) (api.StatusResponse, error) {
@@ -89,6 +92,11 @@ func (f *fakeData) Untrack(_ context.Context, req api.UntrackRequest) (api.Untra
 func (f *fakeData) Track(_ context.Context, req api.TrackRequest) (api.TrackResponse, error) {
 	f.trackCalls = append(f.trackCalls, req)
 	return f.trackResp, f.trackErr
+}
+
+func (f *fakeData) Migrate(_ context.Context, req api.MigrateRequest) (api.MigrateResponse, error) {
+	f.migrateCalls = append(f.migrateCalls, req)
+	return f.migrateResp, f.migrateErr
 }
 
 func (f *fakeData) Doctor(context.Context) (doctor.Report, error) {
@@ -125,6 +133,11 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "space":
+		// The multi-select picker's toggle: Code 0x20 stringifies to "space",
+		// which is what DashboardKeys.Toggle matches — the rune-default arm would
+		// wrongly build an 's' press for the name "space", so it is explicit here.
+		return tea.KeyPressMsg{Code: ' ', Text: " "}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
@@ -535,7 +548,7 @@ func TestFooterInModalStatesAdvertisesOnlyLiveKeys(t *testing.T) {
 	}{
 		{name: "untrack confirm", confirming: true, stage: views.AddNone, want: "y/n decide · esc cancel"},
 		{name: "add discovering", stage: views.AddDiscovering, want: "esc cancel"},
-		{name: "add picking", stage: views.AddPicking, want: "↑/↓ select · enter confirm · esc cancel"},
+		{name: "add picking", stage: views.AddPicking, want: "↑/↓ select · space toggle · enter confirm · esc cancel"},
 		{name: "add confirm path", stage: views.AddConfirmPath, want: "enter confirm · esc cancel"},
 		{name: "add identifying", stage: views.AddIdentifying, want: "esc cancel"},
 		{name: "add naming folder", stage: views.AddNamingFolder, want: "enter confirm · esc cancel"},
@@ -713,7 +726,8 @@ func TestProjectsAddGlobalTracksAllRootsAndSyncs(t *testing.T) {
 	m.active = tabProjects
 
 	m = drive(t, m, key("a"))     // discover → picker (one row)
-	m = drive(t, m, key("enter")) // global: track directly, then fleet sync
+	m = drive(t, m, key("space")) // select the global candidate
+	m = drive(t, m, key("enter")) // confirm the set → global: track directly, then fleet sync
 
 	if len(fake.trackCalls) != 2 {
 		t.Fatalf("trackCalls = %d, want 2 (both roots of the grouped global candidate)", len(fake.trackCalls))
@@ -749,7 +763,8 @@ func TestProjectsAddTrackFailureSurfacesAndSkipsSync(t *testing.T) {
 	m.active = tabProjects
 
 	m = drive(t, m, key("a"))     // discover → picker (one global row)
-	m = drive(t, m, key("enter")) // global: track directly (fails)
+	m = drive(t, m, key("space")) // select the global candidate
+	m = drive(t, m, key("enter")) // confirm the set → global: track directly (fails)
 
 	if len(fake.trackCalls) != 1 {
 		t.Fatalf("trackCalls = %d, want 1 (the attempted enrollment)", len(fake.trackCalls))
@@ -803,6 +818,181 @@ func TestProjectsStaleTrackResultKeepsNewFlow(t *testing.T) {
 	drain(cmd)
 	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
 		t.Fatalf("a stale success did not fire the whole-fleet sync (-want +got):\n%s", diff)
+	}
+}
+
+// migrateConfig builds a Config wiring all four migrate closures (spec §10):
+// preflightErr gates the flow, candidates feed discovery, identity resolves the
+// confirmed path, and LiveDirFor is inert (the root tests accept the guessed
+// path unchanged, so the candidate's own LiveDir is used). Identify is the
+// SHARED closure New threads into both the track and migrate bundles.
+func migrateConfig(fake *fakeData, preflightErr error, candidates []views.MigrateCandidate, identity provider.Identity) Config {
+	return Config{
+		Data:             fake,
+		MigratePreflight: func(context.Context) error { return preflightErr },
+		LegacyDiscover: func(context.Context) ([]views.MigrateCandidate, error) {
+			return candidates, nil
+		},
+		Identify: func(_ context.Context, _ string, _ views.TrackRoot, _ string) (provider.Identity, error) {
+			return identity, nil
+		},
+		LiveDirFor: func(_, _ string) (string, error) { return "", nil },
+	}
+}
+
+// migrateCandidateFixture is the root migrate tests' shared candidate — a
+// bash-era store whose guessed path resolves to a remote-backed project.
+func migrateCandidateFixture() []views.MigrateCandidate {
+	return []views.MigrateCandidate{{
+		Provider: "claude", Slug: "-g-acme", SeedDir: "/home/u/.agent-brain/-g-acme",
+		PathGuess: "/g/acme", LiveDir: "/home/u/.claude/projects/-g-acme/memory",
+	}}
+}
+
+// TestMigrateSuccessToastsAndFleetSyncs pins the root's post-migrate
+// orchestration (spec §10): a completed import surfaces the success toast in the
+// info slot AND fires the whole-fleet sync (the add flow's post-track idiom), so
+// the seeded memory's first mirror-in is visible immediately.
+func TestMigrateSuccessToastsAndFleetSyncs(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{migrateResp: api.MigrateResponse{Folder: "acme", Files: 4}}
+	identity := provider.Identity{ProjectID: "github.com/o/acme", PreferredFolder: "acme"}
+	m := New(migrateConfig(fake, nil, migrateCandidateFixture(), identity))
+	m.active = tabProjects
+
+	m = drive(t, m, key("m"))     // preflight → discover → picker
+	m = drive(t, m, key("enter")) // pick → path confirm
+	m = drive(t, m, key("enter")) // accept path → identify → migrate → toast + fleet sync
+
+	if len(fake.migrateCalls) != 1 {
+		t.Fatalf("migrateCalls = %v, want exactly one", fake.migrateCalls)
+	}
+	if m.toast == nil || !strings.Contains(m.toast.text, "migrated -g-acme → acme (4 files)") {
+		t.Fatalf("toast = %v, want the migrate success text", m.toast)
+	}
+	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
+		t.Fatalf("a successful migrate did not fire the whole-fleet sync (-want +got):\n%s", diff)
+	}
+}
+
+// TestMigrateSkippedResultToastsEnrolledOnly covers the daemon's idempotency
+// marker (spec §10): an already-imported store re-seeds nothing (Skipped) but
+// still enrolls the live dir, so the toast says so and the fleet sync still
+// fires.
+func TestMigrateSkippedResultToastsEnrolledOnly(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{migrateResp: api.MigrateResponse{Folder: "acme", Skipped: true}}
+	identity := provider.Identity{ProjectID: "github.com/o/acme", PreferredFolder: "acme"}
+	m := New(migrateConfig(fake, nil, migrateCandidateFixture(), identity))
+	m.active = tabProjects
+
+	m = drive(t, m, key("m"))
+	m = drive(t, m, key("enter"))
+	m = drive(t, m, key("enter"))
+
+	if m.toast == nil || !strings.Contains(m.toast.text, "already imported — enrolled only") {
+		t.Fatalf("toast = %v, want the Skipped 'already imported' wording", m.toast)
+	}
+	if diff := cmp.Diff([]string{""}, fake.syncCalls); diff != "" {
+		t.Fatalf("a skipped migrate did not fire the fleet sync (-want +got):\n%s", diff)
+	}
+}
+
+// TestMigratePreflightFailureStickyAborts pins the point-of-no-return gate's
+// refusal (spec §10): a non-empty chezmoi diff aborts the flow before discovery
+// and surfaces the error VERBATIM in the sticky (action-required) slot — never a
+// 5s info toast — so the user must reconcile it before retrying.
+func TestMigratePreflightFailureStickyAborts(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	preflightErr := errors.New("migrate: pre-flight chezmoi diff is NOT empty (spec §10)")
+	m := New(migrateConfig(fake, preflightErr, migrateCandidateFixture(), provider.Identity{}))
+	m.active = tabProjects
+
+	m = drive(t, m, key("m")) // preflight fails → sticky verbatim, flow aborts
+
+	if m.projects.Migrating != views.MigrateNone {
+		t.Fatalf("Migrating = %v, want MigrateNone after a failed preflight", m.projects.Migrating)
+	}
+	if m.stickyToast == nil || m.stickyToast.text != preflightErr.Error() {
+		t.Fatalf("stickyToast = %v, want the verbatim preflight error", m.stickyToast)
+	}
+	if len(fake.migrateCalls) != 0 {
+		t.Fatalf("a failed preflight still migrated: %v", fake.migrateCalls)
+	}
+}
+
+// TestFooterAndDispatchGateMigrateOnClosures pins that migrate availability
+// gates on the injected closures (MigrateAvailable): fully wired, the footer
+// advertises m and the key drives the flow; unwired, m is dead and unadvertised
+// — never a key the footer names but the dispatch cannot honor.
+func TestFooterAndDispatchGateMigrateOnClosures(t *testing.T) {
+	t.Parallel()
+	wired := New(migrateConfig(&fakeData{}, nil, migrateCandidateFixture(), provider.Identity{}))
+	wired.active = tabProjects
+	if got := plain(wired.footer()); !strings.Contains(got, "m migrate") {
+		t.Fatalf("footer %q missing %q with migrate wired", got, "m migrate")
+	}
+	wired.active = tabDoctor
+	if got := plain(wired.footer()); strings.Contains(got, "m migrate") {
+		t.Fatalf("Doctor footer %q must not advertise migrate", got)
+	}
+
+	fake := &fakeData{}
+	unwired := New(Config{Data: fake})
+	unwired.active = tabProjects
+	if got := plain(unwired.footer()); strings.Contains(got, "m migrate") {
+		t.Fatalf("footer %q advertises migrate with no closures wired", got)
+	}
+	unwired = drive(t, unwired, key("m"))
+	if unwired.projects.Migrating != views.MigrateNone {
+		t.Errorf("Migrating = %v, want MigrateNone: m must be dead unwired", unwired.projects.Migrating)
+	}
+	if got := plain(unwired.projects.View("")); !strings.Contains(got, "migrate is unavailable") {
+		t.Errorf("view = %q, want the 'migrate is unavailable' notice", got)
+	}
+	if len(fake.migrateCalls) != 0 {
+		t.Errorf("m with closures unwired still reached the daemon: %v", fake.migrateCalls)
+	}
+}
+
+// TestFooterInMigrateModalAdvertisesLiveKeys is the migrate twin of the add
+// modal-footer honesty test: while a migrate stage owns the keyboard the footer
+// advertises EXACTLY that stage's live keys (single-select — no space-toggle)
+// and none of the tab-level hints.
+func TestFooterInMigrateModalAdvertisesLiveKeys(t *testing.T) {
+	t.Parallel()
+	tabHints := []string{"s sync", "u untrack", "a add", "m migrate", "tab/1–4", "ctrl+k palette", "? help"}
+	tests := []struct {
+		name  string
+		stage views.MigrateStage
+		want  string
+	}{
+		{name: "preflighting", stage: views.MigratePreflighting, want: "esc cancel"},
+		{name: "discovering", stage: views.MigrateDiscovering, want: "esc cancel"},
+		{name: "picking", stage: views.MigratePicking, want: "↑/↓ select · enter confirm · esc cancel"},
+		{name: "confirm path", stage: views.MigrateConfirmPath, want: "enter confirm · esc cancel"},
+		{name: "identifying", stage: views.MigrateIdentifying, want: "esc cancel"},
+		{name: "naming folder", stage: views.MigrateNamingFolder, want: "enter confirm · esc cancel"},
+		{name: "migrating", stage: views.MigrateMigrating, want: "esc cancel"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m.active = tabProjects
+			m.projects.Migrating = testCase.stage
+
+			got := plain(m.footer())
+			if got != testCase.want {
+				t.Errorf("migrate modal footer = %q, want %q", got, testCase.want)
+			}
+			for _, hint := range tabHints {
+				if strings.Contains(got, hint) {
+					t.Errorf("migrate modal footer %q leaks tab-level hint %q", got, hint)
+				}
+			}
+		})
 	}
 }
 
@@ -890,6 +1080,15 @@ func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
 				Identify:     identify,
 			}),
 			wantAddAdmitted: true,
+		},
+		// migrate wired (add's Discover deliberately absent, so add-project stays
+		// unavailable): this variant makes migrate paletteAvailable so the invariant
+		// below actually walks its row and proves it has a runner — the same reason
+		// the add-flow-wired variant exists.
+		{
+			name:            "migrate flow wired",
+			model:           New(migrateConfig(&fakeData{}, nil, nil, provider.Identity{})),
+			wantAddAdmitted: false,
 		},
 		// An offered update makes update-agent-brain paletteAvailable — it is a
 		// dispatch special-case (no runner), so this variant walks that row
@@ -2720,7 +2919,8 @@ func TestSlashWhileProjectsModalOpenTypesIntoModalInput(t *testing.T) {
 	m.active = tabProjects
 
 	m = drive(t, m, key("a"))     // discover → picker
-	m = drive(t, m, key("enter")) // per-project candidate → confirm-path input
+	m = drive(t, m, key("space")) // select the per-project candidate
+	m = drive(t, m, key("enter")) // confirm the set → confirm-path input
 	if m.projects.Adding != views.AddConfirmPath {
 		t.Fatalf("setup: Adding = %v, want the confirm-path stage", m.projects.Adding)
 	}

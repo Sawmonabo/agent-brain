@@ -170,6 +170,18 @@ type Config struct {
 	// Projects tab's add action.
 	Discover func(context.Context) ([]views.TrackCandidate, error)
 	Identify func(ctx context.Context, providerName string, root views.TrackRoot, projectPath string) (provider.Identity, error)
+	// LegacyDiscover enumerates the un-imported bash-era stores the Projects
+	// tab's m flow offers (spec §10); LiveDirFor maps a confirmed project path
+	// to the live provider dir to enroll; MigratePreflight is the once-per-
+	// session chezmoi gate. All three are injected by the cli root command (the
+	// same composition-at-the-edge reason as Discover/Identify — the bash-era
+	// importer's helpers and the provider adapters live outside this package's
+	// import allowlist). Identify above is REUSED as the migrate flow's identity
+	// resolver, so enroll and migrate never disagree on a project's identity. Any
+	// nil disables the m action (MigrateAvailable gates on all four closures).
+	LegacyDiscover   func(context.Context) ([]views.MigrateCandidate, error)
+	LiveDirFor       func(providerName, projectPath string) (string, error)
+	MigratePreflight func(context.Context) error
 	// Registry is the shared provider registry (buildTrackDeps().registry in
 	// the cli command) — memoryfs classification needs it to resolve each
 	// enrolled unit's pattern table (Task 6).
@@ -223,7 +235,11 @@ type Model struct {
 	data         views.DataSource
 	startService func() error
 	actions      views.TrackActions
-	styles       theme.Styles
+	// migrateActions bundles the migrate flow's closures (spec §10) — the
+	// migrate twin of actions above. Identify is the SAME closure both bundles
+	// hold, so enroll and migrate resolve identity identically.
+	migrateActions views.MigrateActions
+	styles         theme.Styles
 	// registry resolves an enrolled unit's provider pattern table — needed
 	// to list a project folder's memories when a Screen is pushed
 	// (buildBrowserDeps); nil disables the Projects tab's enter-to-browse
@@ -343,6 +359,15 @@ func New(cfg Config) Model {
 		data:         cfg.Data,
 		startService: cfg.StartService,
 		actions:      views.TrackActions{Discover: cfg.Discover, Identify: cfg.Identify},
+		// Identify is shared with actions above by design — one resolver, so a
+		// project enrolled through add and imported through migrate can never map
+		// to two different identities (spec §10).
+		migrateActions: views.MigrateActions{
+			Preflight:  cfg.MigratePreflight,
+			Discover:   cfg.LegacyDiscover,
+			Identify:   cfg.Identify,
+			LiveDirFor: cfg.LiveDirFor,
+		},
 		registry:     cfg.Registry,
 		settings:     cfg.Settings,
 		version:      cfg.Version,
@@ -746,15 +771,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.projects.OnIdentify(msg, m.data)
 
 	case views.TrackResultMsg:
-		failed := msg.Err != nil
-		m.projects.OnTrackResult(msg)
-		if failed {
+		next := m.projects.OnTrackResult(msg, m.data)
+		if msg.Err != nil {
+			// A hard failure abandoned the rest of the multi-select queue
+			// (OnTrackResult named what landed before it); refresh the fleet to
+			// reflect whatever DID enroll before the rejection.
 			return m, m.projectsCmd()
 		}
-		// Track's HTTP reply returns BEFORE the daemon's post-admin cycle
-		// (the same lesson track.go's syncAfterTrack records): an explicit
-		// whole-fleet sync is what makes the enrollment's first mirror-in
+		if next != nil {
+			// The queue has more candidates: advance to the next one WITHOUT the
+			// whole-fleet sync yet, so a multi-project enrollment fires one sync at
+			// the end (below), not one per candidate.
+			return m, next
+		}
+		// The queue drained cleanly. Track's HTTP reply returns BEFORE the daemon's
+		// post-admin cycle (the same lesson track.go's syncAfterTrack records): an
+		// explicit whole-fleet sync is what makes the enrollments' first mirror-in
 		// visible here rather than landing silently later.
+		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), views.SyncCmd(m.data, ""))
+
+	case views.MigratePreflightMsg:
+		if msg.Err != nil {
+			// The chezmoi gate refused (spec §10's point-of-no-return guard). The
+			// view is parked on a stage waiting for this Cmd and cannot self-reset,
+			// so the root clears the flow and surfaces the refusal verbatim —
+			// sticky, because it is an action-required failure the user must
+			// reconcile (adjudicate the orphans) before a retry can pass.
+			m.projects.ResetMigrate()
+			m.pushStickyToast(msg.Err.Error())
+			return m, nil
+		}
+		return m, m.projects.OnMigratePreflightOK(m.migrateActions)
+
+	case views.MigrateDiscoverMsg:
+		// Empty/errored/loaded are all decided inside the view (it sets its own
+		// notice and resets on a dead end), exactly like OnDiscover for add.
+		m.projects.OnMigrateDiscover(msg)
+		return m, nil
+
+	case views.MigrateIdentifyMsg:
+		return m, m.projects.OnMigrateIdentify(msg, m.data)
+
+	case views.MigrateResultMsg:
+		m.projects.OnMigrateResult(msg)
+		if msg.Err != nil {
+			// The daemon rejected the import; nothing enrolled, so refresh the
+			// fleet only and surface the failure (sticky — action-required).
+			m.pushStickyToast(fmt.Sprintf("migrate failed: %v", msg.Err))
+			return m, m.projectsCmd()
+		}
+		// Mirror the add flow's post-track idiom: the seed + enrollment landed, so
+		// an explicit whole-fleet sync makes the imported memory's first mirror-in
+		// visible now rather than on the next poll (spec §10).
+		m.pushToast(msg.Toast())
 		return m, tea.Batch(m.projectsCmd(), m.statusCmd(), views.SyncCmd(m.data, ""))
 
 	case views.OpenFolderMsg:
@@ -1037,7 +1106,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// quiesce gate below never fires on a key a text input would otherwise
 	// have swallowed as a literal character.
 	if m.active == tabProjects && m.projects.ModalOpen() {
-		return m, m.projects.Update(msg, m.data, m.actions)
+		return m, m.projects.Update(msg, m.data, m.actions, m.migrateActions)
 	}
 
 	// A Mutates action reachable from here is refused locally while
@@ -1100,7 +1169,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// the Projects tab today.
 	switch m.active {
 	case tabProjects:
-		return m, m.projects.Update(msg, m.data, m.actions)
+		return m, m.projects.Update(msg, m.data, m.actions, m.migrateActions)
 	case tabConflicts:
 		return m, m.conflicts.Update(msg)
 	case tabDoctor:
@@ -1787,6 +1856,11 @@ func (m *Model) available(id string) bool {
 		return m.conflictDetailHistoryAvailable()
 	case "add-project":
 		return m.actions.AddAvailable()
+	case "migrate":
+		// Live only when every migrate closure is wired (the same shape as
+		// add-project's AddAvailable): a build without them keeps the m row inert
+		// in the footer and palette rather than advertising a dead key.
+		return m.migrateActions.MigrateAvailable()
 	case "update-agent-brain":
 		// Live only while a newer release is offered — not idle (nothing to do)
 		// and not after install (already applied; U must not re-open the
@@ -1818,6 +1892,10 @@ func (m *Model) paletteAvailable(id string) bool {
 		return true
 	case "add-project":
 		return m.actions.AddAvailable()
+	case "migrate":
+		// Same gate as available(): the palette lists m only on a build that
+		// wired the migrate closures, never as a dead row.
+		return m.migrateActions.MigrateAvailable()
 	case "update-agent-brain":
 		// A dispatch special-case (no runner), like help/search — offered only
 		// while a newer release is available, so the palette lists it exactly
@@ -1852,15 +1930,22 @@ func (m *Model) runners() map[string]func() tea.Cmd {
 	return map[string]func() tea.Cmd{
 		"sync-project": func() tea.Cmd {
 			m.active = tabProjects
-			return m.projects.Update(replayKey('s'), m.data, m.actions)
+			return m.projects.Update(replayKey('s'), m.data, m.actions, m.migrateActions)
 		},
 		"untrack": func() tea.Cmd {
 			m.active = tabProjects
-			return m.projects.Update(replayKey('u'), m.data, m.actions)
+			return m.projects.Update(replayKey('u'), m.data, m.actions, m.migrateActions)
 		},
 		"add-project": func() tea.Cmd {
 			m.active = tabProjects
-			return m.projects.Update(replayKey('a'), m.data, m.actions)
+			return m.projects.Update(replayKey('a'), m.data, m.actions, m.migrateActions)
+		},
+		// migrate replays m the same way add-project replays a: switch to the
+		// Projects tab (so a palette choice lands where the user can watch the
+		// flow) and drive ProjectsView.Update, which opens the spec §10 importer.
+		"migrate": func() tea.Cmd {
+			m.active = tabProjects
+			return m.projects.Update(replayKey('m'), m.data, m.actions, m.migrateActions)
 		},
 		"sync-fleet": func() tea.Cmd {
 			return views.SyncCmd(m.data, "")
@@ -1996,7 +2081,16 @@ func (m Model) footer() string {
 	case m.flowModal != nil:
 		return m.flowModalFooterLine()
 	case m.projects.ModalOpen():
-		bindings := views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
+		// The migrate modal advertises its own stage subset (single-select, no
+		// space-toggle); the untrack confirm and the add flow share ForModal. The
+		// three modal states are mutually exclusive, so this branch names exactly
+		// the one that owns the keyboard.
+		var bindings []keybinding.Binding
+		if m.projects.Migrating != views.MigrateNone {
+			bindings = views.DashboardKeys.ForMigrateModal(m.projects.Migrating)
+		} else {
+			bindings = views.DashboardKeys.ForModal(m.projects.Confirming, m.projects.Adding)
+		}
 		return m.styles.Dim.Render(views.HelpLine(bindings))
 	default:
 		if _, ok := m.stackTop(); ok {

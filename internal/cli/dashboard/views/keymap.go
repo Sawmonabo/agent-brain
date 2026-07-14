@@ -36,6 +36,7 @@ type DashboardKeymap struct {
 	Sync    keybinding.Binding // Projects tab only
 	Untrack keybinding.Binding // Projects tab only — spec §13 rebind: u, not t
 	Add     keybinding.Binding // Projects tab only
+	Migrate keybinding.Binding // Projects tab only — spec §10 in-hub importer
 	// Open enters the memory browser for the selected unit row's folder
 	// (Projects tab only). Unlike Sync/Untrack/Add it has no root-level
 	// dispatch runner — see actions.go's "open-browser" row comment — it is
@@ -111,6 +112,11 @@ type DashboardKeymap struct {
 	// renders there.
 	Cancel keybinding.Binding // every modal state: esc backs out
 	Accept keybinding.Binding // add picker/input stages: enter advances
+	// Toggle is the add multi-select picker's space bar (spec §13): it flips
+	// the highlighted row in or out of the selection set. Like Cancel/Accept it
+	// is a modal-input control, not a dispatchable registry action, so it stays
+	// hand-declared here rather than resolved from the action table.
+	Toggle keybinding.Binding
 	// ConfirmDecision bundles the untrack confirm's y/Y/n/N under one hint;
 	// the confirm handler matches it for membership, then branches on the
 	// concrete key (the TabSwitch idiom) — the binding is the single gate for
@@ -127,6 +133,7 @@ var DashboardKeys = DashboardKeymap{
 	Sync:                  bindingFor("sync-project"),
 	Untrack:               bindingFor("untrack"),
 	Add:                   bindingFor("add-project"),
+	Migrate:               bindingFor("migrate"),
 	Open:                  bindingFor("open-browser"),
 	Quit:                  bindingFor("quit"),
 	BrowserRead:           bindingFor("browser-read"),
@@ -161,6 +168,7 @@ var DashboardKeys = DashboardKeymap{
 	ConflictDetailBack:    bindingFor("conflictdetail-back"),
 	Cancel:                keybinding.NewBinding(keybinding.WithKeys("esc"), keybinding.WithHelp("esc", "cancel")),
 	Accept:                keybinding.NewBinding(keybinding.WithKeys("enter"), keybinding.WithHelp("enter", "confirm")),
+	Toggle:                keybinding.NewBinding(keybinding.WithKeys("space"), keybinding.WithHelp("space", "toggle")),
 	ConfirmDecision: keybinding.NewBinding(
 		keybinding.WithKeys("y", "Y", "n", "N"),
 		keybinding.WithHelp("y/n", "decide"),
@@ -195,10 +203,25 @@ func (k DashboardKeymap) ForModal(confirming bool, stage AddStage) []keybinding.
 	}
 	switch stage {
 	case AddPicking:
-		return []keybinding.Binding{k.Select, k.Accept, k.Cancel}
+		return []keybinding.Binding{k.Select, k.Toggle, k.Accept, k.Cancel}
 	case AddConfirmPath, AddNamingFolder:
 		return []keybinding.Binding{k.Accept, k.Cancel}
 	default: // AddDiscovering, AddIdentifying, AddTracking: waiting on a Cmd
+		return []keybinding.Binding{k.Cancel}
+	}
+}
+
+// ForMigrateModal is ForModal's twin for the migrate flow (spec §10): the
+// same modal-footer contract, but the picker is single-select (no Toggle),
+// so its picking stage advertises Select/Accept/Cancel exactly as the add
+// picker did before multi-select landed.
+func (k DashboardKeymap) ForMigrateModal(stage MigrateStage) []keybinding.Binding {
+	switch stage {
+	case MigratePicking:
+		return []keybinding.Binding{k.Select, k.Accept, k.Cancel}
+	case MigrateConfirmPath, MigrateNamingFolder:
+		return []keybinding.Binding{k.Accept, k.Cancel}
+	default: // preflighting, discovering, identifying, migrating: waiting on a Cmd
 		return []keybinding.Binding{k.Cancel}
 	}
 }

@@ -54,12 +54,36 @@ type ProjectsView struct {
 	confirmUnit api.UnitInfo
 
 	// Add flow (track.go): a modal state machine over discovery → picker →
-	// path confirm → identity → optional naming → Track.
+	// path confirm → identity → optional naming → Track. The picker is a
+	// multi-select (spec §13): addSelected holds the space-toggled row set,
+	// and enter confirms the whole set into addQueue, which the per-candidate
+	// stages then work one at a time — addQueuePos names the candidate in
+	// flight and addEnrolled accumulates every folder enrolled across the
+	// queue, so an esc mid-queue can name exactly what already landed.
 	Adding        AddStage
 	addCandidates []TrackCandidate
 	addCursor     int
+	addSelected   map[int]bool
+	addQueue      []TrackCandidate
+	addQueuePos   int
+	addEnrolled   []string
 	addChoice     TrackCandidate
 	addInput      textinput.Model
+
+	// Migrate flow (migrate.go): the spec §10 bash-era importer driven
+	// through the daemon, a modal state machine mirroring the add flow —
+	// preflight → discover → single-select pick → path confirm → identity →
+	// optional naming → Migrate. migratePreflighted latches the once-per-
+	// session chezmoi gate; migrateProjectPath/migrateLiveDir carry the
+	// confirmed path and its resolved live provider dir into the request.
+	Migrating          MigrateStage
+	migrateCandidates  []MigrateCandidate
+	migrateCursor      int
+	migrateChoice      MigrateCandidate
+	migrateInput       textinput.Model
+	migrateProjectPath string
+	migrateLiveDir     string
+	migratePreflighted bool
 
 	notice  string // transient result of the last s/t action
 	loadErr error
@@ -71,6 +95,7 @@ func NewProjectsView() ProjectsView {
 	view.table = table.New(table.WithFocused(true), table.WithHeight(10))
 	view.setColumns(false)
 	view.addInput = textinput.New()
+	view.migrateInput = textinput.New()
 	return view
 }
 
@@ -159,8 +184,11 @@ func (v *ProjectsView) rebuild() {
 // returns any Cmd the action produced (all I/O stays in the returned Cmd —
 // never inline — so Update stays pure). The root routes keys here only when
 // Projects is the active view.
-func (v *ProjectsView) Update(msg tea.KeyPressMsg, data DataSource, actions TrackActions) tea.Cmd {
+func (v *ProjectsView) Update(msg tea.KeyPressMsg, data DataSource, actions TrackActions, migrate MigrateActions) tea.Cmd {
 	if handled, cmd := v.updateAdd(msg, data, actions); handled {
+		return cmd
+	}
+	if handled, cmd := v.updateMigrate(msg, data, migrate); handled {
 		return cmd
 	}
 	if v.Confirming {
@@ -215,6 +243,21 @@ func (v *ProjectsView) Update(msg tea.KeyPressMsg, data DataSource, actions Trac
 		v.Adding = AddDiscovering
 		v.notice = ""
 		return discoverCmd(actions)
+	case keybinding.Matches(msg, DashboardKeys.Migrate):
+		if !migrate.MigrateAvailable() {
+			v.notice = "migrate is unavailable in this build"
+			return nil
+		}
+		v.notice = ""
+		// The chezmoi pre-flight gate (spec §10) runs once per hub session; a
+		// later m goes straight to discovery — migrateOne's own resume idiom is
+		// the daemon-side Skipped marker, not a repeated gate.
+		if v.migratePreflighted {
+			v.Migrating = MigrateDiscovering
+			return migrateDiscoverCmd(migrate)
+		}
+		v.Migrating = MigratePreflighting
+		return migratePreflightCmd(migrate)
 	case keybinding.Matches(msg, DashboardKeys.Open):
 		unit, ok := v.SelectedUnit()
 		if !ok {
@@ -302,7 +345,7 @@ func (v *ProjectsView) OnUntrackResult(msg UntrackResultMsg) {
 // BEFORE its own tab/quit globals, so typing a path containing "1" or "q"
 // edits the input instead of switching tabs or quitting.
 func (v ProjectsView) ModalOpen() bool {
-	return v.Confirming || v.Adding != AddNone
+	return v.Confirming || v.Adding != AddNone || v.Migrating != MigrateNone
 }
 
 // View renders the Projects tab: the add flow (if active), else the fleet
@@ -321,6 +364,9 @@ func (v ProjectsView) View(fleetHeader string) string {
 	switch {
 	case v.Adding != AddNone:
 		b.WriteString(v.addView())
+		return strings.TrimRight(b.String(), "\n")
+	case v.Migrating != MigrateNone:
+		b.WriteString(v.migrateView())
 		return strings.TrimRight(b.String(), "\n")
 	case v.loadErr != nil:
 		fmt.Fprintf(&b, "projects unavailable: %v", v.loadErr)

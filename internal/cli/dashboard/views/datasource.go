@@ -40,6 +40,11 @@ type DataSource interface {
 	Sync(ctx context.Context, project string) (api.SyncResponse, error)
 	Track(context.Context, api.TrackRequest) (api.TrackResponse, error)
 	Untrack(context.Context, api.UntrackRequest) (api.UntrackResponse, error)
+	// Migrate seeds one bash-era store then enrolls its live dir (spec §10) —
+	// the mutating client call the Projects view's m flow drives. It joins the
+	// mirrored client mutation surface alongside Track/Untrack; the production
+	// apiData forwards it to api.Client.Migrate, tests inject a fake.
+	Migrate(context.Context, api.MigrateRequest) (api.MigrateResponse, error)
 	Doctor(context.Context) (doctor.Report, error)
 	Conflicts() ([]config.ConflictRecord, error)
 	// History and Blob are the read-only version surfaces the History screen

@@ -150,8 +150,16 @@ func (v *ProjectsView) updateAdd(msg tea.KeyPressMsg, data DataSource, actions T
 		return false, nil
 	}
 	if keybinding.Matches(msg, DashboardKeys.Cancel) {
+		// esc mid-queue abandons the REST but is honest about what already
+		// landed — the same truthful-partial rule OnTrackResult applies to a
+		// failure part-way through a grouped enrollment.
+		enrolled := v.addEnrolled
 		v.resetAdd()
-		v.notice = "add cancelled"
+		if len(enrolled) > 0 {
+			v.notice = fmt.Sprintf("enrolled %s — cancelled the rest", strings.Join(enrolled, ", "))
+		} else {
+			v.notice = "add cancelled"
+		}
 		return true, nil
 	}
 	switch v.Adding {
@@ -171,16 +179,28 @@ func (v *ProjectsView) updateAdd(msg tea.KeyPressMsg, data DataSource, actions T
 					v.addCursor++
 				}
 			}
-		case keybinding.Matches(msg, DashboardKeys.Accept):
-			choice := v.addCandidates[v.addCursor]
-			v.addChoice = choice
-			if choice.Global {
-				v.Adding = AddTracking
-				return true, trackCmd(data, choice, provider.Identity{})
+		case keybinding.Matches(msg, DashboardKeys.Toggle):
+			// space toggles the highlighted row in or out of the selection set,
+			// the same visual grammar as the cli MultiSelect (spec §13). The map
+			// is seeded in OnDiscover, but guard here so a toggle can never write
+			// through a nil map.
+			if v.addSelected == nil {
+				v.addSelected = make(map[int]bool)
 			}
-			v.Adding = AddConfirmPath
-			v.addInput.SetValue(choice.PathGuess)
-			return true, v.addInput.Focus()
+			v.addSelected[v.addCursor] = !v.addSelected[v.addCursor]
+		case keybinding.Matches(msg, DashboardKeys.Accept):
+			queue := selectedCandidates(v.addCandidates, v.addSelected)
+			if len(queue) == 0 {
+				// Unlike the cli picker (an empty confirm is a valid enroll-
+				// nothing outcome, enrollPickerResult), the hub requires at least
+				// one row and keeps the picker open so the correction is obvious.
+				v.notice = "select at least one with space"
+				return true, nil
+			}
+			v.addQueue = queue
+			v.addQueuePos = 0
+			v.addEnrolled = nil
+			return true, v.startQueuedCandidate(data)
 		}
 		return true, nil
 
@@ -223,7 +243,41 @@ func (v *ProjectsView) resetAdd() {
 	v.Adding = AddNone
 	v.addCandidates = nil
 	v.addCursor = 0
+	v.addSelected = nil
+	v.addQueue = nil
+	v.addQueuePos = 0
+	v.addEnrolled = nil
 	v.addChoice = TrackCandidate{}
+}
+
+// selectedCandidates collects the multi-select picker's chosen rows in
+// candidate order (never the arbitrary order a map would yield), so the queue
+// enrolls them top-to-bottom exactly as the picker lists them.
+func selectedCandidates(candidates []TrackCandidate, selected map[int]bool) []TrackCandidate {
+	queue := make([]TrackCandidate, 0, len(selected))
+	for i, candidate := range candidates {
+		if selected[i] {
+			queue = append(queue, candidate)
+		}
+	}
+	return queue
+}
+
+// startQueuedCandidate begins the per-candidate sub-flow for the queue entry
+// at addQueuePos: a global candidate tracks straight away, a per-project one
+// enters the path confirm. addChoice becomes the candidate in flight so the
+// existing identify/naming/track stages act on it unchanged, whether the
+// queue holds one selection or several.
+func (v *ProjectsView) startQueuedCandidate(data DataSource) tea.Cmd {
+	choice := v.addQueue[v.addQueuePos]
+	v.addChoice = choice
+	if choice.Global {
+		v.Adding = AddTracking
+		return trackCmd(data, choice, provider.Identity{})
+	}
+	v.Adding = AddConfirmPath
+	v.addInput.SetValue(choice.PathGuess)
+	return v.addInput.Focus()
 }
 
 // OnDiscover advances the flow once discovery answers.
@@ -244,6 +298,7 @@ func (v *ProjectsView) OnDiscover(msg DiscoverMsg) {
 	v.Adding = AddPicking
 	v.addCandidates = msg.candidates
 	v.addCursor = 0
+	v.addSelected = make(map[int]bool)
 }
 
 // OnIdentify advances the flow once identity resolution answers: a canonical
@@ -269,41 +324,80 @@ func (v *ProjectsView) OnIdentify(msg IdentifyMsg, data DataSource) tea.Cmd {
 	return v.addInput.Focus()
 }
 
-// OnTrackResult records an enrollment's outcome. Only the reset is gated on
-// AddTracking — a result landing after the user esc'd and reopened the flow
-// must not stomp the new flow's stage back to AddNone — while the notice
-// always fires, because the enrollment already happened and a stale result
-// is still a real outcome whose notice stays truthful. (The root decides
-// separately, from msg.Err, whether a stale-or-fresh success also fires a
-// whole-fleet sync — that orchestration is root's, not this view's.)
-func (v *ProjectsView) OnTrackResult(msg TrackResultMsg) {
-	if v.Adding == AddTracking {
-		v.resetAdd()
+// OnTrackResult records one queued candidate's enrollment outcome and drives
+// the multi-select queue: on success it accumulates the folders and, if the
+// queue has more, returns the Cmd that starts the NEXT candidate's sub-flow
+// (so the root can batch it); the last candidate finishes with the "tracked …"
+// notice. A hard failure abandons the rest of the queue (continuing past a
+// daemon rejection is unsafe) and names what landed before it. All of that is
+// gated on AddTracking: a result landing after the user esc'd and reopened the
+// flow must not stomp the new flow's stage or queue, but its notice still fires
+// because the enrollment genuinely happened. (The root decides separately, from
+// msg.Err and whether a next-candidate Cmd came back, whether to fire the
+// whole-fleet sync now or defer it to the queue's final candidate.)
+func (v *ProjectsView) OnTrackResult(msg TrackResultMsg, data DataSource) tea.Cmd {
+	if v.Adding != AddTracking {
+		v.notice = trackResultNotice(msg.Folders, msg.Err)
+		return nil
 	}
 	if msg.Err != nil {
-		v.notice = fmt.Sprintf("track failed: %v", msg.Err)
-		if len(msg.Folders) > 0 {
-			v.notice = fmt.Sprintf("track failed after enrolling %s: %v", strings.Join(msg.Folders, ", "), msg.Err)
-		}
-		return
+		enrolled := append(append([]string{}, v.addEnrolled...), msg.Folders...)
+		v.resetAdd()
+		v.notice = trackResultNotice(enrolled, msg.Err)
+		return nil
 	}
-	v.notice = fmt.Sprintf("tracked %s — syncing…", strings.Join(msg.Folders, ", "))
+	v.addEnrolled = append(v.addEnrolled, msg.Folders...)
+	if v.addQueuePos+1 < len(v.addQueue) {
+		v.addQueuePos++
+		return v.startQueuedCandidate(data)
+	}
+	enrolled := v.addEnrolled
+	v.resetAdd()
+	v.notice = trackResultNotice(enrolled, nil)
+	return nil
+}
+
+// trackResultNotice renders an enrollment outcome for the notice line: a
+// failure names every folder that landed before it (or none), a success names
+// the whole set. The queue's own finish, the failure abort, and a stale-result
+// surface all reuse it, so the three can never word the same outcome three ways.
+func trackResultNotice(enrolled []string, err error) string {
+	if err != nil {
+		if len(enrolled) > 0 {
+			return fmt.Sprintf("track failed after enrolling %s: %v", strings.Join(enrolled, ", "), err)
+		}
+		return fmt.Sprintf("track failed: %v", err)
+	}
+	return fmt.Sprintf("tracked %s — syncing…", strings.Join(enrolled, ", "))
 }
 
 // addView renders the add flow in place of the projects table while active.
 func (v ProjectsView) addView() string {
 	var b strings.Builder
+	// Past the picker, a multi-candidate queue shows which one is in flight
+	// (spec §13). The stages at or after AddConfirmPath are exactly the
+	// per-candidate ones (the const block documents this progression order); a
+	// single selection carries no queue and stays quiet, so the common case is
+	// unchanged.
+	if len(v.addQueue) > 1 && v.Adding >= AddConfirmPath {
+		b.WriteString(v.styles.Dim.Render(fmt.Sprintf("enrolling %d of %d: %s", v.addQueuePos+1, len(v.addQueue), v.addChoice.Label)))
+		b.WriteString("\n\n")
+	}
 	switch v.Adding {
 	case AddDiscovering:
 		b.WriteString(v.styles.Dim.Render("discovering memory roots…"))
 	case AddPicking:
-		b.WriteString("Select a memory root to enroll\n\n")
+		b.WriteString("Select memory roots to enroll (space to toggle, enter to confirm)\n\n")
 		for i, candidate := range v.addCandidates {
 			cursor := "  "
 			if i == v.addCursor {
 				cursor = "→ "
 			}
-			b.WriteString(cursor + candidate.Label + "\n")
+			box := "[ ] "
+			if v.addSelected[i] {
+				box = "[x] "
+			}
+			b.WriteString(cursor + box + candidate.Label + "\n")
 		}
 		b.WriteString("\n")
 		b.WriteString(v.styles.Dim.Render(HelpLine(DashboardKeys.ForModal(false, AddPicking))))

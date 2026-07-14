@@ -69,6 +69,10 @@ func (d *apiData) Untrack(ctx context.Context, req api.UntrackRequest) (api.Untr
 	return d.client.Untrack(ctx, req)
 }
 
+func (d *apiData) Migrate(ctx context.Context, req api.MigrateRequest) (api.MigrateResponse, error) {
+	return d.client.Migrate(ctx, req)
+}
+
 func (d *apiData) Doctor(ctx context.Context) (doctor.Report, error) {
 	return d.runDoctor(ctx)
 }

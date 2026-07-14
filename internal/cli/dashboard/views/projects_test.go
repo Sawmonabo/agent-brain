@@ -51,10 +51,13 @@ type fakeData struct {
 	untrackErr  error
 	trackResp   api.TrackResponse
 	trackErr    error
+	migrateResp api.MigrateResponse
+	migrateErr  error
 
 	syncCalls    []string
 	untrackCalls []api.UntrackRequest
 	trackCalls   []api.TrackRequest
+	migrateCalls []api.MigrateRequest
 }
 
 func (f *fakeData) Status(context.Context) (api.StatusResponse, error) {
@@ -78,6 +81,11 @@ func (f *fakeData) Untrack(_ context.Context, req api.UntrackRequest) (api.Untra
 func (f *fakeData) Track(_ context.Context, req api.TrackRequest) (api.TrackResponse, error) {
 	f.trackCalls = append(f.trackCalls, req)
 	return f.trackResp, f.trackErr
+}
+
+func (f *fakeData) Migrate(_ context.Context, req api.MigrateRequest) (api.MigrateResponse, error) {
+	f.migrateCalls = append(f.migrateCalls, req)
+	return f.migrateResp, f.migrateErr
 }
 
 func (f *fakeData) Doctor(context.Context) (doctor.Report, error) {
@@ -111,6 +119,11 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "esc":
 		return tea.KeyPressMsg{Code: tea.KeyEscape}
+	case "space":
+		// The multi-select picker's toggle: Code 0x20 stringifies to "space",
+		// which is what DashboardKeys.Toggle matches — key("space") via the
+		// rune-default arm would wrongly build an 's' press, so it is explicit here.
+		return tea.KeyPressMsg{Code: ' ', Text: " "}
 	case "up":
 		return tea.KeyPressMsg{Code: tea.KeyUp}
 	case "down":
@@ -225,17 +238,88 @@ func drive(t *testing.T, view *ProjectsView, data DataSource, actions TrackActio
 		var cmd tea.Cmd
 		switch msg := next.(type) {
 		case tea.KeyPressMsg:
-			cmd = view.Update(msg, data, actions)
+			cmd = view.Update(msg, data, actions, MigrateActions{})
 		case DiscoverMsg:
 			view.OnDiscover(msg)
 		case IdentifyMsg:
 			cmd = view.OnIdentify(msg, data)
 		case TrackResultMsg:
-			view.OnTrackResult(msg)
+			// OnTrackResult returns the next queued candidate's Cmd (multi-select),
+			// so the driver must execute it to walk the rest of the queue.
+			cmd = view.OnTrackResult(msg, data)
 		}
 		if cmd != nil {
 			queue = append(queue, cmd())
 		}
+	}
+}
+
+// driveMigrate is drive's twin for the spec §10 migrate flow: it walks the
+// m → preflight → discover → pick → confirm → identify → migrate chain,
+// dispatching each produced message to the On* method the root would have
+// routed it to. The root, not the view, owns the terminal toasts, so this
+// helper stands in for only the routing a view test needs: a failed preflight
+// resets the flow here the way the root's handler does, and the success toast /
+// fleet sync it fires are asserted in the root suite instead.
+func driveMigrate(t *testing.T, view *ProjectsView, data DataSource, migrate MigrateActions, msg tea.Msg) {
+	t.Helper()
+	queue := []tea.Msg{msg}
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next == nil {
+			continue
+		}
+		if batch, ok := next.(tea.BatchMsg); ok {
+			for _, cmd := range batch {
+				if cmd != nil {
+					queue = append(queue, cmd())
+				}
+			}
+			continue
+		}
+		var cmd tea.Cmd
+		switch msg := next.(type) {
+		case tea.KeyPressMsg:
+			cmd = view.Update(msg, data, TrackActions{}, migrate)
+		case MigratePreflightMsg:
+			if msg.Err != nil {
+				view.ResetMigrate()
+			} else {
+				cmd = view.OnMigratePreflightOK(migrate)
+			}
+		case MigrateDiscoverMsg:
+			view.OnMigrateDiscover(msg)
+		case MigrateIdentifyMsg:
+			cmd = view.OnMigrateIdentify(msg, data)
+		case MigrateResultMsg:
+			view.OnMigrateResult(msg)
+		}
+		if cmd != nil {
+			queue = append(queue, cmd())
+		}
+	}
+}
+
+// migrateActionsFor builds a MigrateActions whose closures return the given
+// canned values without any real chezmoi/provider composition. Preflight always
+// passes here — the once-per-session gate and its failure path build their own
+// actions (TestMigratePreflightRunsOncePerSession and the root's sticky-abort
+// test). candidates feed the picker; identity/identifyErr resolve the confirmed
+// path; liveDir is what LiveDirFor returns when the user CORRECTS the path (an
+// unchanged path uses the candidate's own precomputed LiveDir, never this).
+func migrateActionsFor(candidates []MigrateCandidate, identity provider.Identity, identifyErr error, liveDir string) MigrateActions {
+	return MigrateActions{
+		Preflight: func(context.Context) error { return nil },
+		Discover: func(context.Context) ([]MigrateCandidate, error) {
+			return candidates, nil
+		},
+		Identify: func(_ context.Context, _ string, _ TrackRoot, _ string) (provider.Identity, error) {
+			return identity, identifyErr
+		},
+		LiveDirFor: func(_ /*providerName*/, _ /*projectPath*/ string) (string, error) {
+			return liveDir, nil
+		},
 	}
 }
 
@@ -341,7 +425,7 @@ func TestProjectsSyncKey(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits(), syncResp: api.SyncResponse{Status: "completed"}}
 	view := loadedProjectsView(data)
 
-	cmd := view.Update(key("s"), data, TrackActions{})
+	cmd := view.Update(key("s"), data, TrackActions{}, MigrateActions{})
 	msgs := drain(cmd)
 
 	if diff := cmp.Diff([]string{"agent-brain"}, data.syncCalls); diff != "" {
@@ -367,7 +451,7 @@ func TestProjectsUntrackToggleConfirmsThenCalls(t *testing.T) {
 	view := loadedProjectsView(data)
 
 	// u opens the confirm; no call yet.
-	cmd := view.Update(key("u"), data, TrackActions{})
+	cmd := view.Update(key("u"), data, TrackActions{}, MigrateActions{})
 	if cmd != nil {
 		t.Error("u should not act before confirmation")
 	}
@@ -379,7 +463,7 @@ func TestProjectsUntrackToggleConfirmsThenCalls(t *testing.T) {
 	}
 
 	// y confirms and fires exactly the enrolled unit, never a purge.
-	cmd = view.Update(key("y"), data, TrackActions{})
+	cmd = view.Update(key("y"), data, TrackActions{}, MigrateActions{})
 	msgs := drain(cmd)
 	want := []api.UntrackRequest{{Provider: "claude", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Purge: false}}
 	if diff := cmp.Diff(want, data.untrackCalls); diff != "" {
@@ -395,8 +479,8 @@ func TestProjectsUntrackToggleCancels(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	view := loadedProjectsView(data)
 
-	view.Update(key("u"), data, TrackActions{})
-	cmd := view.Update(key("n"), data, TrackActions{})
+	view.Update(key("u"), data, TrackActions{}, MigrateActions{})
+	cmd := view.Update(key("n"), data, TrackActions{}, MigrateActions{})
 	if cmd != nil {
 		t.Error("cancelling the confirm should issue no Cmd")
 	}
@@ -424,7 +508,7 @@ func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
 	view := loadedProjectsView(data) // cursor seats on row 0 = claude/agent-brain (unit X)
 
 	// Open the confirm on the highlighted unit X.
-	view.Update(key("u"), data, TrackActions{})
+	view.Update(key("u"), data, TrackActions{}, MigrateActions{})
 	if !strings.Contains(plain(view.View("")), "untrack agent-brain? (y/N)") {
 		t.Fatalf("confirm did not open on agent-brain; got:\n%s", plain(view.View("")))
 	}
@@ -438,7 +522,7 @@ func TestProjectsUntrackUsesCapturedUnitNotMovingCursor(t *testing.T) {
 	view.SetUnits(reordered)
 
 	// y must untrack X (the named unit), never Y (the unit under the moved cursor).
-	cmd := view.Update(key("y"), data, TrackActions{})
+	cmd := view.Update(key("y"), data, TrackActions{}, MigrateActions{})
 	drain(cmd)
 
 	wantX := []api.UntrackRequest{{Provider: "claude", LocalDir: "/home/u/.claude/projects/agent-brain/memory", Purge: false}}
@@ -457,7 +541,7 @@ func TestUntrackRebindToU(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	view := loadedProjectsView(data)
 
-	cmd := view.Update(key("t"), data, TrackActions{})
+	cmd := view.Update(key("t"), data, TrackActions{}, MigrateActions{})
 	if cmd != nil {
 		t.Error("t produced a Cmd; want a dead key now that untrack is rebound to u")
 	}
@@ -465,7 +549,7 @@ func TestUntrackRebindToU(t *testing.T) {
 		t.Fatal("t opened the untrack confirm; want it dead post-rebind")
 	}
 
-	cmd = view.Update(key("u"), data, TrackActions{})
+	cmd = view.Update(key("u"), data, TrackActions{}, MigrateActions{})
 	if cmd != nil {
 		t.Error("u should not act before confirmation")
 	}
@@ -538,7 +622,8 @@ func TestProjectsAddRemoteProjectFlow(t *testing.T) {
 	view := NewProjectsView()
 
 	drive(t, &view, fake, actions, key("a"))     // discover → picker
-	drive(t, &view, fake, actions, key("enter")) // pick → path-confirm input, prefilled with PathGuess
+	drive(t, &view, fake, actions, key("space")) // select the highlighted candidate
+	drive(t, &view, fake, actions, key("enter")) // confirm the set → path-confirm input, prefilled with PathGuess
 	if got := plain(view.View("")); !strings.Contains(got, "/g/myrepo") {
 		t.Fatalf("path-confirm view = %q, want the PathGuess prefill visible", got)
 	}
@@ -569,7 +654,8 @@ func TestProjectsAddRemotelessNamesFolder(t *testing.T) {
 	view := NewProjectsView()
 
 	drive(t, &view, fake, actions, key("a"))
-	drive(t, &view, fake, actions, key("enter")) // pick
+	drive(t, &view, fake, actions, key("space")) // select the candidate
+	drive(t, &view, fake, actions, key("enter")) // confirm the set → path confirm
 	drive(t, &view, fake, actions, key("enter")) // accept path → identify → remoteless → naming input
 
 	// An invalid name must be refused locally (repo.ValidateFolderName),
@@ -607,7 +693,8 @@ func TestProjectsAddIdentifyFailureAborts(t *testing.T) {
 	view := NewProjectsView()
 
 	drive(t, &view, fake, actions, key("a"))     // discover → picker
-	drive(t, &view, fake, actions, key("enter")) // pick → path confirm
+	drive(t, &view, fake, actions, key("space")) // select the candidate
+	drive(t, &view, fake, actions, key("enter")) // confirm the set → path confirm
 	drive(t, &view, fake, actions, key("enter")) // accept path → identify (fails)
 
 	if view.Adding != AddNone {
@@ -683,7 +770,7 @@ func TestProjectsStaleTrackResultPreservesPickerCursorAndCandidates(t *testing.T
 
 	// The prior enrollment's result lands now. It is no longer AddTracking, so
 	// it must not stomp the new picker — but it is still a real outcome.
-	view.OnTrackResult(TrackResultMsg{Folders: []string{"agent-brain"}})
+	view.OnTrackResult(TrackResultMsg{Folders: []string{"agent-brain"}}, fake)
 
 	if view.Adding != AddPicking {
 		t.Fatalf("Adding = %v, want AddPicking (a stale result must not reset the new flow)", view.Adding)
@@ -722,6 +809,7 @@ func TestProjectsAddEscCancelsEachStage(t *testing.T) {
 
 	// Stage 2: cancel from the path confirm.
 	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("space"))
 	drive(t, &view, fake, actions, key("enter"))
 	drive(t, &view, fake, actions, key("esc"))
 	if view.Adding != AddNone {
@@ -730,6 +818,7 @@ func TestProjectsAddEscCancelsEachStage(t *testing.T) {
 
 	// Stage 3: cancel from the folder naming input.
 	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("space"))
 	drive(t, &view, fake, actions, key("enter"))
 	drive(t, &view, fake, actions, key("enter"))
 	drive(t, &view, fake, actions, key("esc"))
@@ -765,8 +854,8 @@ func TestAddViewHintsRenderFromModalBindings(t *testing.T) {
 		keys  []string
 	}{
 		{name: "add picking", stage: AddPicking, keys: []string{"a"}},
-		{name: "add confirm path", stage: AddConfirmPath, keys: []string{"a", "enter"}},
-		{name: "add naming folder", stage: AddNamingFolder, keys: []string{"a", "enter", "enter"}},
+		{name: "add confirm path", stage: AddConfirmPath, keys: []string{"a", "space", "enter"}},
+		{name: "add naming folder", stage: AddNamingFolder, keys: []string{"a", "space", "enter", "enter"}},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -786,5 +875,150 @@ func TestAddViewHintsRenderFromModalBindings(t *testing.T) {
 				t.Errorf("addView = %q, want it to contain the shared hint %q", got, want)
 			}
 		})
+	}
+}
+
+// TestProjectsAddMultiSelectEnrollsSelectedInOrder pins the spec §13 multi-
+// select: space toggles rows into the set, enter confirms the SET, and the
+// confirmed candidates enroll one at a time in CANDIDATE order (not selection
+// order), each through the existing per-candidate confirm→identify→track
+// stages, with the progress line naming the one in flight.
+func TestProjectsAddMultiSelectEnrollsSelectedInOrder(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{trackResp: api.TrackResponse{Folder: "enrolled"}}
+	candidates := []TrackCandidate{
+		{Provider: "claude", Label: "zero", PathGuess: "/g/zero", Roots: []TrackRoot{{LocalDir: "/x/zero"}}},
+		{Provider: "claude", Label: "one", PathGuess: "/g/one", Roots: []TrackRoot{{LocalDir: "/x/one"}}},
+		{Provider: "claude", Label: "two", PathGuess: "/g/two", Roots: []TrackRoot{{LocalDir: "/x/two"}}},
+	}
+	identity := provider.Identity{ProjectID: "github.com/o/r", PreferredFolder: "r"}
+	actions := trackActionsFor(candidates, identity, nil)
+	view := NewProjectsView()
+
+	// Select rows 0 and 2 (skip 1): space toggles, j moves the cursor.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("space")) // row 0 in
+	drive(t, &view, fake, actions, key("j"))
+	drive(t, &view, fake, actions, key("j"))
+	drive(t, &view, fake, actions, key("space")) // row 2 in
+	drive(t, &view, fake, actions, key("enter")) // confirm the set of two → first candidate's path confirm
+
+	// A two-deep queue shows which candidate is in flight, in candidate order.
+	if got := plain(view.View("")); !strings.Contains(got, "enrolling 1 of 2: zero") {
+		t.Fatalf("first-candidate view = %q, want the 'enrolling 1 of 2: zero' progress line", got)
+	}
+	drive(t, &view, fake, actions, key("enter")) // accept row 0's path → track → advance to row 2
+	if got := plain(view.View("")); !strings.Contains(got, "enrolling 2 of 2: two") {
+		t.Fatalf("second-candidate view = %q, want the 'enrolling 2 of 2: two' progress line", got)
+	}
+	drive(t, &view, fake, actions, key("enter")) // accept row 2's path → track → queue drains
+
+	if len(fake.trackCalls) != 2 {
+		t.Fatalf("trackCalls = %v, want exactly two (rows 0 and 2, never row 1)", fake.trackCalls)
+	}
+	gotDirs := []string{fake.trackCalls[0].LocalDir, fake.trackCalls[1].LocalDir}
+	if diff := cmp.Diff([]string{"/x/zero", "/x/two"}, gotDirs); diff != "" {
+		t.Errorf("enrolled out of order — the queue must follow candidate order (-want +got):\n%s", diff)
+	}
+	if view.Adding != AddNone {
+		t.Errorf("Adding = %v, want AddNone once the queue drained", view.Adding)
+	}
+}
+
+// TestProjectsAddEmptySelectionStaysInPicker pins the hub's deliberate
+// divergence from the cli picker (spec §13, addendum): an enter with nothing
+// toggled is NOT an enroll-nothing outcome — it keeps the picker open and
+// surfaces the correction, never reaching the daemon.
+func TestProjectsAddEmptySelectionStaysInPicker(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	candidates := []TrackCandidate{
+		{Provider: "claude", Label: "zero", PathGuess: "/g/zero", Roots: []TrackRoot{{LocalDir: "/x/zero"}}},
+	}
+	actions := trackActionsFor(candidates, provider.Identity{ProjectID: "x", PreferredFolder: "x"}, nil)
+	view := NewProjectsView()
+
+	drive(t, &view, fake, actions, key("a"))     // → picker
+	drive(t, &view, fake, actions, key("enter")) // enter with nothing selected
+
+	if view.Adding != AddPicking {
+		t.Fatalf("Adding = %v, want AddPicking (an empty-set enter must keep the picker open)", view.Adding)
+	}
+	if got := plain(view.View("")); !strings.Contains(got, "select at least one with space") {
+		t.Fatalf("view = %q, want the empty-selection guidance", got)
+	}
+	if len(fake.trackCalls) != 0 {
+		t.Fatalf("empty-set enter still tracked: %v", fake.trackCalls)
+	}
+}
+
+// TestProjectsAddMultiSelectRendersCheckboxes pins the picker's checkbox
+// grammar: every row starts "[ ]", a space-toggle flips exactly the highlighted
+// row to "[x]", and its neighbours stay unchecked.
+func TestProjectsAddMultiSelectRendersCheckboxes(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{}
+	candidates := []TrackCandidate{
+		{Provider: "claude", Label: "alpha", PathGuess: "/g/alpha", Roots: []TrackRoot{{LocalDir: "/x/alpha"}}},
+		{Provider: "claude", Label: "beta", PathGuess: "/g/beta", Roots: []TrackRoot{{LocalDir: "/x/beta"}}},
+	}
+	actions := trackActionsFor(candidates, provider.Identity{}, nil)
+	view := NewProjectsView()
+
+	drive(t, &view, fake, actions, key("a")) // → picker, both unchecked
+	if got := plain(view.View("")); !strings.Contains(got, "[ ] alpha") || !strings.Contains(got, "[ ] beta") {
+		t.Fatalf("fresh picker = %q, want both rows rendered '[ ]'", got)
+	}
+	drive(t, &view, fake, actions, key("space")) // toggle the highlighted row 0
+	got := plain(view.View(""))
+	if !strings.Contains(got, "[x] alpha") {
+		t.Errorf("toggled row not checked; view = %q, want '[x] alpha'", got)
+	}
+	if !strings.Contains(got, "[ ] beta") {
+		t.Errorf("neighbour wrongly checked; view = %q, want '[ ] beta'", got)
+	}
+}
+
+// TestProjectsAddEscMidQueueNamesEnrolled pins the truthful partial outcome
+// (same rule as OnTrackResult's partial wording): esc while a multi-select
+// queue is mid-flight abandons the REST but names exactly what already enrolled,
+// and never tracks the abandoned candidate.
+func TestProjectsAddEscMidQueueNamesEnrolled(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{trackResp: api.TrackResponse{Folder: "first"}}
+	candidates := []TrackCandidate{
+		{Provider: "claude", Label: "zero", PathGuess: "/g/zero", Roots: []TrackRoot{{LocalDir: "/x/zero"}}},
+		{Provider: "claude", Label: "one", PathGuess: "/g/one", Roots: []TrackRoot{{LocalDir: "/x/one"}}},
+	}
+	identity := provider.Identity{ProjectID: "github.com/o/r", PreferredFolder: "r"}
+	actions := trackActionsFor(candidates, identity, nil)
+	view := NewProjectsView()
+
+	// Select both, enroll the first, then esc while the second waits at its path
+	// confirm.
+	drive(t, &view, fake, actions, key("a"))
+	drive(t, &view, fake, actions, key("space")) // row 0 in
+	drive(t, &view, fake, actions, key("j"))
+	drive(t, &view, fake, actions, key("space")) // row 1 in
+	drive(t, &view, fake, actions, key("enter")) // confirm set → row 0 path confirm
+	drive(t, &view, fake, actions, key("enter")) // track row 0 → advance to row 1 path confirm
+
+	if view.Adding != AddConfirmPath {
+		t.Fatalf("Adding = %v, want AddConfirmPath (row 1 awaiting its path)", view.Adding)
+	}
+	if len(fake.trackCalls) != 1 {
+		t.Fatalf("trackCalls = %v, want exactly one (row 0 only) before the abandon", fake.trackCalls)
+	}
+
+	drive(t, &view, fake, actions, key("esc")) // abandon the rest of the queue
+
+	if view.Adding != AddNone {
+		t.Fatalf("Adding = %v, want AddNone after esc", view.Adding)
+	}
+	if len(fake.trackCalls) != 1 {
+		t.Fatalf("esc mid-queue enrolled more: %v", fake.trackCalls)
+	}
+	if got := plain(view.View("")); !strings.Contains(got, "enrolled first — cancelled the rest") {
+		t.Fatalf("view = %q, want a truthful partial notice naming what already enrolled", got)
 	}
 }

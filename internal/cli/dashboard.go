@@ -22,6 +22,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
+	"github.com/Sawmonabo/agent-brain/internal/provider/claude"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 	"github.com/Sawmonabo/agent-brain/internal/service"
 )
@@ -98,12 +99,21 @@ func launchHub(cmd *cobra.Command) error {
 	checkUpdate, applyUpdate := hubUpdateClosures(binaryPath)
 
 	model := dashboard.New(dashboard.Config{
-		Data:      dashboard.NewData(client, offlineDoctorRunner()),
-		Discover:  dashboardDiscover(),
-		Identify:  dashboardIdentify(),
-		Registry:  deps.registry,
-		Settings:  settings,
-		CacheRoot: cacheRoot,
+		Data:     dashboard.NewData(client, offlineDoctorRunner()),
+		Discover: dashboardDiscover(),
+		Identify: dashboardIdentify(),
+		// The migrate flow's three closures (spec §10), composed here in package
+		// cli for the same reason Discover/Identify are: the dashboard tree cannot
+		// import the provider adapters or the bash-era importer's helpers. Identify
+		// above is REUSED as the migrate flow's identity resolver (dashboard.New
+		// wires the one closure into both the track and migrate action bundles), so
+		// enroll and migrate can never disagree about a project's identity.
+		LegacyDiscover:   dashboardLegacyDiscover(),
+		LiveDirFor:       dashboardLiveDirFor(),
+		MigratePreflight: dashboardMigratePreflight(),
+		Registry:         deps.registry,
+		Settings:         settings,
+		CacheRoot:        cacheRoot,
 		// The build version stamped into cli.Version (-ldflags), rendered in the
 		// Projects fleet header (spec §9). "dev" for an unstamped local build.
 		Version: Version,
@@ -327,5 +337,92 @@ func dashboardIdentify() func(context.Context, string, views.TrackRoot, string) 
 		}
 		discovered := provider.Discovered{LocalDir: root.LocalDir, RepoSubdir: root.RepoSubdir}
 		return registered.Identify(ctx, discovered, projectPath)
+	}
+}
+
+// dashboardLegacyDiscover enumerates the un-imported bash-era stores the hub's
+// migrate flow offers (spec §10), reusing runMigrate's own discovery verbatim —
+// legacyRoot → enumerateLegacySlugs → the per-slug hasRealContent filter — so
+// the hub and the `migrate` command can never disagree about what is a
+// migratable store. Every slug with real content becomes a candidate; the
+// daemon's Skipped marker (not a client-side probe) is what makes an
+// already-imported slug idempotent, so those DO appear and resolve through the
+// "already imported" wording. Deps are rebuilt per call so each `m` press sees
+// the current legacy tree. PathGuess binds the SAME os.Stat closure migrateOne
+// binds, and LiveDir is precomputed for the guess (the flow recomputes it via
+// dashboardLiveDirFor only if the user corrects the path).
+func dashboardLegacyDiscover() func(context.Context) ([]views.MigrateCandidate, error) {
+	return func(_ context.Context) ([]views.MigrateCandidate, error) {
+		deps, err := buildTrackDeps()
+		if err != nil {
+			return nil, err
+		}
+		root := legacyRoot(deps.home)
+		slugs, err := enumerateLegacySlugs(root)
+		if err != nil {
+			return nil, err
+		}
+		statDir := func(p string) bool {
+			info, err := os.Stat(p)
+			return err == nil && info.IsDir()
+		}
+		var candidates []views.MigrateCandidate
+		for _, slug := range slugs {
+			hasContent, err := hasRealContent(filepath.Join(root, slug))
+			if err != nil {
+				return nil, err
+			}
+			if !hasContent {
+				continue
+			}
+			pathGuess := claude.GuessPath(slug, statDir)
+			candidates = append(candidates, views.MigrateCandidate{
+				Provider:  "claude",
+				Slug:      slug,
+				SeedDir:   filepath.Join(root, slug),
+				PathGuess: pathGuess,
+				LiveDir:   claude.MemoryDirFor(deps.home, pathGuess),
+			})
+		}
+		return candidates, nil
+	}
+}
+
+// dashboardLiveDirFor maps a confirmed project path to the live claude memory
+// dir the daemon enrolls (spec §10 step 4) — claude.MemoryDirFor, the exact
+// LocalDir migrateOne submits. claude is the bash-era importer's only domain, so
+// the provider name is asserted rather than dispatched; the error return exists
+// for the deps/home resolution MemoryDirFor itself never fails at.
+func dashboardLiveDirFor() func(providerName, projectPath string) (string, error) {
+	return func(providerName, projectPath string) (string, error) {
+		if providerName != "claude" {
+			return "", fmt.Errorf("migrate: live dir for provider %q is not supported (spec §10 imports claude only)", providerName)
+		}
+		deps, err := buildTrackDeps()
+		if err != nil {
+			return "", err
+		}
+		return claude.MemoryDirFor(deps.home, projectPath), nil
+	}
+}
+
+// dashboardMigratePreflight runs spec §10's chezmoi gate bound to ambient config
+// — the cobra command's own else-branch verbatim (settings-resolved timeout,
+// the ConfigDir/chezmoi.toml path, runMigratePreflight). The CLI's
+// --skip-preflight escape is CLI-only; the hub ALWAYS runs the real gate, once
+// per session (the flow latches migratePreflighted after the first pass).
+func dashboardMigratePreflight() func(context.Context) error {
+	return func(ctx context.Context) error {
+		deps, err := buildTrackDeps()
+		if err != nil {
+			return err
+		}
+		settings, err := config.LoadSettings(deps.paths.SettingsFile())
+		if err != nil {
+			return err
+		}
+		chezmoiConfigPath := filepath.Join(deps.paths.ConfigDir, "chezmoi.toml")
+		timeout := time.Duration(settings.Migrate.PreflightTimeout)
+		return runMigratePreflight(ctx, chezmoiConfigPath, timeout)
 	}
 }

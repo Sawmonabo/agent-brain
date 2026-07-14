@@ -99,6 +99,13 @@ var registry = []Action{
 	{ID: "sync-project", Title: "sync", Keys: []string{"s"}, KeyHint: "s", Scope: ScopeProjects, Mutates: true},
 	{ID: "untrack", Title: "untrack", Keys: []string{"u"}, KeyHint: "u", Scope: ScopeProjects, Mutates: true},
 	{ID: "add-project", Title: "add", Keys: []string{"a"}, KeyHint: "a", Scope: ScopeProjects, Mutates: true},
+	// migrate (m) drives the spec §10 bash-era importer through the daemon —
+	// like add-project it opens a modal flow ProjectsView.Update owns (no root
+	// runner), and Mutates because it seeds and enrolls a live dir, so it greys
+	// and is refused while the daemon is quiesced. Its live availability is the
+	// root's migrate-closures-wired gate (available("migrate")), so the row stays
+	// inert in the footer and palette on a build that did not inject them.
+	{ID: "migrate", Title: "migrate", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeProjects, Mutates: true},
 	{ID: "open-browser", Title: "open", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeProjects},
 	// ScopeDoctor rows (Task 19, spec §11/§12): the Doctor tab's own actions.
 	// re-run refetches the read-only battery on demand — matched directly by
