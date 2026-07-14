@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -111,6 +113,18 @@ func launchHub(cmd *cobra.Command) error {
 		// and the command can never drift in what they install or how.
 		CheckUpdate: checkUpdate,
 		ApplyUpdate: applyUpdate,
+		// The Doctor tab's action seams (spec §11/§12). RunDoctorFix is the
+		// exact quiesce-aware `doctor --fix` the command runs, with stderr
+		// discarded (the hub reports through the Doctor view, not stderr), so
+		// the command and the hub can never drift in how they hold the daemon
+		// or what they repair. Scan is the advisory gitleaks sweep, composed
+		// here in package cli because its provider/gitleaks composition sits
+		// outside the dashboard package's import allowlist — the same
+		// edge-composition reason the doctor runner is injected.
+		RunDoctorFix: func(ctx context.Context) (doctor.Report, error) {
+			return runDoctorFixWithQuiesce(ctx, io.Discard)
+		},
+		Scan: hubScanRunner(),
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting
@@ -178,6 +192,54 @@ func offlineDoctorRunner() func(context.Context) (doctor.Report, error) {
 			return doctor.Report{}, err
 		}
 		return doctor.Run(ctx, deps), nil
+	}
+}
+
+// hubScanRunner composes the advisory gitleaks sweep the Doctor tab's s action
+// runs (spec §12) — the same local-registry read + per-unit gitleaks shell-out
+// `agent-brain scan` performs — and maps each finding to the hub's
+// views.ScanFinding. It lives in package cli because the provider/registry
+// composition and the gitleaks runner sit outside the dashboard package's
+// import allowlist; the dashboard only ever sees the mapped findings. folder ""
+// scans every enrolled unit, a non-empty folder narrows to that project.
+// redaction is ALWAYS on: the hub struct carries only a finding's LOCATION
+// (file/rule/line), never its secret text, so gitleaks --redact scrubs
+// Secret/Match before the report reaches this process and no plaintext secret
+// ever enters hub memory even transiently (plaintext-never-logged is a repo
+// hard constraint, spec §12).
+func hubScanRunner() func(context.Context, string) ([]views.ScanFinding, error) {
+	return func(ctx context.Context, folder string) ([]views.ScanFinding, error) {
+		paths, err := config.DefaultPaths()
+		if err != nil {
+			return nil, err
+		}
+		localRegistry, err := repo.LoadLocalRegistry(paths.LocalRegistryFile())
+		if err != nil {
+			return nil, err
+		}
+		units := localRegistry.Units
+		if folder != "" {
+			units = filterUnitsByFolder(units, folder)
+		}
+		binaryPath, err := exec.LookPath("gitleaks")
+		if err != nil {
+			return nil, errGitleaksMissing
+		}
+		runner := &gitleaksExecRunner{binaryPath: binaryPath}
+		findings, err := scanUnits(ctx, runner, units, true)
+		if err != nil {
+			return nil, err
+		}
+		hits := make([]views.ScanFinding, len(findings))
+		for i, finding := range findings {
+			hits[i] = views.ScanFinding{
+				Folder: finding.Folder,
+				File:   finding.Finding.File,
+				Rule:   finding.Finding.RuleID,
+				Line:   finding.Finding.StartLine,
+			}
+		}
+		return hits, nil
 	}
 }
 

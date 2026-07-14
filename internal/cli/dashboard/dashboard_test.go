@@ -3330,3 +3330,240 @@ func TestProjectsTabFrameExactFillWithBannerPresent(t *testing.T) {
 		})
 	}
 }
+
+// doctorReport builds a one-check battery for the doctor-action tests below.
+func doctorReport(status doctor.Status, fix string) doctor.Report {
+	return doctor.Report{Results: []doctor.CheckResult{
+		{Name: "filters", Status: status, Detail: "filter wiring", Fix: fix},
+	}}
+}
+
+// TestDoctorActionRerunRefetches pins that r on the Doctor tab re-runs the
+// read-only battery on demand (spec §11) — the existing doctorCmd, now keyed.
+func TestDoctorActionRerunRefetches(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{report: doctorReport(doctor.StatusOK, "")})
+	m.active = tabDoctor
+
+	_, cmd := step(m, key("r"))
+	if cmd == nil {
+		t.Fatal("r on the Doctor tab produced no Cmd; want a battery refetch")
+	}
+	if msgs := drain(cmd); !containsMsg[doctorMsg](msgs) {
+		t.Fatalf("r did not refetch the doctor battery; msgs = %#v", msgs)
+	}
+}
+
+// TestDoctorActionFixInvokesClosureRendersReportAndInfoToast pins the full f
+// flow (spec §11): the fixing state latches, the injected RunDoctorFix runs
+// once, the re-checked report re-renders, and an INFO toast confirms it.
+func TestDoctorActionFixInvokesClosureRendersReportAndInfoToast(t *testing.T) {
+	t.Parallel()
+	fixed := doctor.Report{Results: []doctor.CheckResult{
+		{Name: "filters", Status: doctor.StatusOK, Detail: "filter wiring installed", Fixed: true},
+	}}
+	var fixCalls int
+	m := New(Config{
+		Data: &fakeData{},
+		RunDoctorFix: func(context.Context) (doctor.Report, error) {
+			fixCalls++
+			return fixed, nil
+		},
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusFail, "run `agent-brain doctor --fix`")})
+
+	m2, cmd := step(m, key("f"))
+	if cmd == nil {
+		t.Fatal("f on a fixable report produced no Cmd")
+	}
+	if body := plain(m2.doctor.View()); !strings.Contains(body, "fixing…") {
+		t.Errorf("f did not enter the fixing state; got:\n%s", body)
+	}
+
+	msgs := drain(cmd)
+	if fixCalls != 1 {
+		t.Fatalf("RunDoctorFix invoked %d times, want 1", fixCalls)
+	}
+	m3 := m2
+	for _, msg := range msgs {
+		m3, _ = step(m3, msg)
+	}
+	if body := plain(m3.doctor.View()); !strings.Contains(body, "filter wiring installed") {
+		t.Errorf("re-checked report not rendered after fix; got:\n%s", body)
+	}
+	if m3.toast == nil || !strings.Contains(m3.toast.text, "fix applied — re-checked") {
+		t.Errorf("info toast missing after fix; toast = %+v", m3.toast)
+	}
+	if m3.stickyToast != nil {
+		t.Errorf("a clean fix must not push a sticky toast; got %+v", m3.stickyToast)
+	}
+}
+
+// TestDoctorActionFixGatedOnFailingReport pins that f is inert on a passing
+// report: no Cmd, no closure call, and the footer never advertises it.
+func TestDoctorActionFixGatedOnFailingReport(t *testing.T) {
+	t.Parallel()
+	var fixCalls int
+	m := New(Config{
+		Data:         &fakeData{},
+		RunDoctorFix: func(context.Context) (doctor.Report, error) { fixCalls++; return doctor.Report{}, nil },
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusOK, "")})
+
+	_, cmd := step(m, key("f"))
+	if cmd != nil {
+		t.Fatal("f on a passing report produced a Cmd; fix must be gated")
+	}
+	if fixCalls != 0 {
+		t.Fatalf("RunDoctorFix invoked %d times on a passing report, want 0", fixCalls)
+	}
+	if got := plain(m.footer()); strings.Contains(got, "f fix") {
+		t.Errorf("Doctor footer advertises fix on a passing report: %q", got)
+	}
+}
+
+// TestDoctorActionScanRendersFindings pins the full s flow (spec §12): the
+// scanning state latches, Scan runs over every unit (folder ""), and the
+// findings render under the checks.
+func TestDoctorActionScanRendersFindings(t *testing.T) {
+	t.Parallel()
+	var scanFolders []string
+	m := New(Config{
+		Data: &fakeData{},
+		Scan: func(_ context.Context, folder string) ([]views.ScanFinding, error) {
+			scanFolders = append(scanFolders, folder)
+			return []views.ScanFinding{{Folder: "work", File: "notes.md", Rule: "generic-api-key", Line: 7}}, nil
+		},
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusOK, "")})
+
+	m2, cmd := step(m, key("s"))
+	if cmd == nil {
+		t.Fatal("s on the Doctor tab produced no Cmd")
+	}
+	if body := plain(m2.doctor.View()); !strings.Contains(body, "scanning…") {
+		t.Errorf("s did not enter the scanning state; got:\n%s", body)
+	}
+
+	msgs := drain(cmd)
+	if diff := cmp.Diff([]string{""}, scanFolders); diff != "" {
+		t.Fatalf("Scan folder args (-want +got):\n%s", diff)
+	}
+	m3 := m2
+	for _, msg := range msgs {
+		m3, _ = step(m3, msg)
+	}
+	body := plain(m3.doctor.View())
+	for _, want := range []string{"1 finding in 1 file", "work/notes.md:7", "generic-api-key"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scan findings not rendered; missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+// TestDoctorPaletteDispatchReachesFixAndScan is the spec §14 parity pin: a
+// palette choice runs the identical runner a direct key does, for both doctor
+// actions that carry one.
+func TestDoctorPaletteDispatchReachesFixAndScan(t *testing.T) {
+	t.Parallel()
+	var fixCalls, scanCalls int
+	newModel := func() Model {
+		m := New(Config{
+			Data: &fakeData{},
+			RunDoctorFix: func(context.Context) (doctor.Report, error) {
+				fixCalls++
+				return doctorReport(doctor.StatusOK, ""), nil
+			},
+			Scan: func(context.Context, string) ([]views.ScanFinding, error) {
+				scanCalls++
+				return nil, nil
+			},
+		})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+		m.active = tabDoctor
+		m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusFail, "run `agent-brain doctor --fix`")})
+		return m
+	}
+
+	drive(t, newModel(), views.PaletteChoiceMsg{ID: "scan"})
+	if scanCalls != 1 {
+		t.Fatalf("palette scan invoked the closure %d times, want 1", scanCalls)
+	}
+	drive(t, newModel(), views.PaletteChoiceMsg{ID: "doctor-fix"})
+	if fixCalls != 1 {
+		t.Fatalf("palette doctor-fix invoked the closure %d times, want 1", fixCalls)
+	}
+}
+
+// TestDoctorFixRefusedWhileQuiesced pins the Mutates half of doctor-fix (spec
+// §15): f holds the daemon quiescent, so pressing it while a quiesce is active
+// must refuse LOCALLY — before the fix Cmd is ever scheduled — and toast why,
+// exactly like sync/untrack on the Projects tab.
+func TestDoctorFixRefusedWhileQuiesced(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	var fixCalls int
+	m := New(Config{
+		Data:         &fakeData{},
+		RunDoctorFix: func(context.Context) (doctor.Report, error) { fixCalls++; return doctor.Report{}, nil },
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.now = now
+	m.status = api.StatusResponse{State: "ready", QuiescedUntil: &future}
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusFail, "run `agent-brain doctor --fix`")})
+
+	next, cmd := step(m, key("f"))
+	if cmd != nil {
+		t.Fatal("f produced a Cmd while quiesced; the fix must be refused before it is scheduled")
+	}
+	drain(cmd)
+	if fixCalls != 0 {
+		t.Fatalf("doctor fix ran while quiesced: %d calls", fixCalls)
+	}
+	if next.toast == nil || !strings.Contains(next.toast.text, "quiesced") {
+		t.Errorf("f while quiesced did not toast the refusal; toast = %+v", next.toast)
+	}
+	if strings.Contains(plain(next.doctor.View()), "fixing…") {
+		t.Error("the fixing state latched despite the quiesce refusal")
+	}
+}
+
+// TestDoctorScanNotRefusedWhileQuiesced is the false-positive guard for the
+// same gate: scan is advisory and never joins SafetyGate (spec §12), so it is
+// NOT Mutates and must run normally even while the daemon is quiesced — a
+// quiesce must never gate a read-only hygiene sweep.
+func TestDoctorScanNotRefusedWhileQuiesced(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	var scanCalls int
+	m := New(Config{
+		Data: &fakeData{},
+		Scan: func(context.Context, string) ([]views.ScanFinding, error) { scanCalls++; return nil, nil },
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m.now = now
+	m.status = api.StatusResponse{State: "ready", QuiescedUntil: &future}
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: doctorReport(doctor.StatusOK, "")})
+
+	next, cmd := step(m, key("s"))
+	if cmd == nil {
+		t.Fatal("s produced no Cmd while quiesced; an advisory scan must not be quiesce-gated")
+	}
+	if next.toast != nil {
+		t.Errorf("scan toasted a quiesce refusal; it is not a Mutates action: %+v", next.toast)
+	}
+	drain(cmd)
+	if scanCalls != 1 {
+		t.Fatalf("scan ran %d times while quiesced, want 1", scanCalls)
+	}
+}

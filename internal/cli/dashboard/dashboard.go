@@ -85,6 +85,21 @@ type (
 		report doctor.Report
 		err    error
 	}
+	// doctorFixedMsg carries the quiesce-aware `doctor --fix` outcome (spec
+	// §11): err nil re-renders the re-checked report and info-toasts; a non-nil
+	// err renders inline in the Doctor view (the in-screen convention), never a
+	// toast.
+	doctorFixedMsg struct {
+		report doctor.Report
+		err    error
+	}
+	// doctorScannedMsg carries the advisory gitleaks sweep result (spec §12):
+	// the findings (possibly empty) or an error, both rendered in the Doctor
+	// view's findings section.
+	doctorScannedMsg struct {
+		findings []views.ScanFinding
+		err      error
+	}
 	serviceStartedMsg struct{ err error }
 	// updateCheckedMsg carries CheckUpdate's verdict (spec §11): tag is the
 	// newer release, "" when current. err is best-effort — the hub shows
@@ -188,6 +203,18 @@ type Config struct {
 	// updateEngine seam + restartServiceForUpdate with an io.Discard writer.
 	// nil disables the one-key self-update.
 	ApplyUpdate func(ctx context.Context, tag string) error
+	// RunDoctorFix is the quiesce-aware `doctor --fix` (quiesce best-effort →
+	// doctor.Fix → resume): cli's runDoctorFixWithQuiesce with stderr routed to
+	// io.Discard, since the hub reports the outcome through the Doctor view, not
+	// stderr. The Doctor tab's f action runs it (spec §11); nil disables that
+	// action (available("doctor-fix") gates on it).
+	RunDoctorFix func(context.Context) (doctor.Report, error)
+	// Scan runs the advisory gitleaks sweep for one folder ("" = every enrolled
+	// unit), mapping cli's scanFinding rows to the hub's views.ScanFinding. The
+	// Doctor tab's s action runs it (spec §12). Advisory only — a finding never
+	// joins SafetyGate. nil disables the action. Its return type is a views type
+	// (like Discover's TrackCandidate) because the Doctor view renders it.
+	Scan func(ctx context.Context, folder string) ([]views.ScanFinding, error)
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -298,6 +325,15 @@ type Model struct {
 	updatePhase      updatePhase
 	reExec           bool
 
+	// Doctor action seams (spec §11/§12), injected by the cli root command
+	// because the doctor.Deps / gitleaks composition they need lives outside
+	// this package's import allowlist (same edge-composition pattern as the
+	// doctor runner). runDoctorFix is the quiesce-aware `doctor --fix`; scan is
+	// the advisory gitleaks sweep. nil disables the corresponding f/s action
+	// (available/paletteAvailable gate on it).
+	runDoctorFix func(context.Context) (doctor.Report, error)
+	scan         func(ctx context.Context, folder string) ([]views.ScanFinding, error)
+
 	quitting bool
 }
 
@@ -312,6 +348,8 @@ func New(cfg Config) Model {
 		version:      cfg.Version,
 		checkUpdate:  cfg.CheckUpdate,
 		applyUpdate:  cfg.ApplyUpdate,
+		runDoctorFix: cfg.RunDoctorFix,
+		scan:         cfg.Scan,
 		getenv:       os.Getenv,
 		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
@@ -543,6 +581,36 @@ func (m Model) doctorCmd() tea.Cmd {
 	}
 }
 
+// doctorFixCmd runs the injected quiesce-aware `doctor --fix` off the UI thread
+// (spec §11). Like applyUpdateCmd, it uses a background context rather than the
+// 2s-poll RequestTimeout: the fix holds a daemon quiesce and rewrites the
+// checkout's git config, work whose own steps carry their bounds (the quiesce
+// TTL, gitx's operations), and a hard deadline mid-surgery is worse than
+// letting the idempotent repair finish. The Doctor view shows "fixing…"
+// meanwhile, so the UI stays responsive without a timer. Reached only when
+// runDoctorFix is wired (available("doctor-fix")).
+func (m Model) doctorFixCmd() tea.Cmd {
+	run := m.runDoctorFix
+	return func() tea.Msg {
+		report, err := run(context.Background())
+		return doctorFixedMsg{report: report, err: err}
+	}
+}
+
+// doctorScanCmd runs the injected advisory gitleaks sweep over every enrolled
+// unit (folder "") off the UI thread (spec §12). Background context for the
+// same reason the cli `scan` command leaves it to the process signal context:
+// a sweep shells gitleaks over potentially many files and must not be capped at
+// the 2s-poll bound; the child carries its own WaitDelay. The Doctor view shows
+// "scanning…" meanwhile. Reached only when scan is wired (available("scan")).
+func (m Model) doctorScanCmd() tea.Cmd {
+	scan := m.scan
+	return func() tea.Msg {
+		findings, err := scan(context.Background(), "")
+		return doctorScannedMsg{findings: findings, err: err}
+	}
+}
+
 func (m Model) startServiceCmd() tea.Cmd {
 	start := m.startService
 	return func() tea.Msg {
@@ -646,6 +714,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case doctorMsg:
 		m.doctor.Set(msg.report, msg.err)
+		return m, nil
+
+	case doctorFixedMsg:
+		// The re-checked report (or the failure, rendered inline) lands in the
+		// view; only a clean fix earns the info toast — immediate feedback with
+		// the re-rendered battery right there, so INFO, not sticky (spec §11).
+		m.doctor.SetFixResult(msg.report, msg.err)
+		if msg.err == nil {
+			m.pushToast("fix applied — re-checked")
+		}
+		return m, nil
+
+	case doctorScannedMsg:
+		m.doctor.SetScanResult(msg.findings, msg.err)
 		return m, nil
 
 	case views.SyncResultMsg:
@@ -1013,13 +1095,38 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Everything else belongs to the active view: Projects' table nav + s/u/a,
-	// or the Conflicts list's cursor + enter-to-detail. Both route here, after
-	// the globals, exactly as they do on the Projects tab today.
+	// the Conflicts list's cursor + enter-to-detail, or the Doctor tab's
+	// r/f/s actions. All route here, after the globals, exactly as they do on
+	// the Projects tab today.
 	switch m.active {
 	case tabProjects:
 		return m, m.projects.Update(msg, m.data, m.actions)
 	case tabConflicts:
 		return m, m.conflicts.Update(msg)
+	case tabDoctor:
+		return m.handleDoctorKey(msg)
+	}
+	return m, nil
+}
+
+// handleDoctorKey routes the Doctor tab's own keys (spec §11/§12). r re-runs
+// the read-only battery on demand — matched directly (no runner), reusing the
+// existing doctorCmd, so like the Projects/Conflicts cursor rows it never lists
+// in the palette. f (fix) and s (scan) dispatch through the registry so a
+// direct key and a palette choice run the identical runner and honor the same
+// availability/quiesce gates (spec §14). Reached only while the Doctor tab is
+// active and nothing else owns the keyboard (handleKey's precedence chain);
+// a quiesced f is already refused upstream by quiesceGate, so it never reaches
+// dispatch here.
+func (m Model) handleDoctorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	for _, candidate := range actions.ForScope(actions.ScopeDoctor) {
+		if !keybinding.Matches(msg, actions.Binding(candidate)) {
+			continue
+		}
+		if candidate.ID == "doctor-rerun" {
+			return m, m.doctorCmd()
+		}
+		return m, m.dispatch(candidate.ID)
 	}
 	return m, nil
 }
@@ -1647,8 +1754,20 @@ func (m *Model) available(id string) bool {
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
 		"insights-back",
-		"conflicts-select", "conflicts-open", "conflictdetail-back":
+		"conflicts-select", "conflicts-open", "conflictdetail-back",
+		"doctor-rerun":
+		// doctor-rerun is a read-only refetch matched directly by
+		// handleDoctorKey (no runner), always offerable so the Doctor footer
+		// keeps naming it — the same shape as select/conflicts-select.
 		return true
+	case "scan":
+		// Advisory gitleaks sweep — live exactly when its runner is wired.
+		return m.scan != nil
+	case "doctor-fix":
+		// The quiesce-aware `doctor --fix`: wired AND the battery is in a
+		// fixable state (report failed with a fixable row) — the same gate
+		// CanFix computes, so the footer, palette, and the f key agree.
+		return m.runDoctorFix != nil && m.doctor.CanFix()
 	case "browser-edit", "browser-new", "browser-rename", "browser-delete", "reading-edit", "conflictdetail-edit":
 		return m.flowAvailable(id)
 	case "history-restore":
@@ -1704,6 +1823,14 @@ func (m *Model) paletteAvailable(id string) bool {
 		// while a newer release is available, so the palette lists it exactly
 		// then and never as a dead row.
 		return m.updatePhase == updateOffered
+	case "scan":
+		return m.scan != nil
+	case "doctor-fix":
+		// Mirrors available's gate: the palette lists fix only when it would
+		// actually run — wired and the battery is fixable — never as a dead row
+		// on a clean report. doctor-rerun is deliberately absent (no runner),
+		// so the default below keeps it out of the palette entirely.
+		return m.runDoctorFix != nil && m.doctor.CanFix()
 	default:
 		_, ok := m.runners()[id]
 		return ok
@@ -1737,6 +1864,20 @@ func (m *Model) runners() map[string]func() tea.Cmd {
 		},
 		"sync-fleet": func() tea.Cmd {
 			return views.SyncCmd(m.data, "")
+		},
+		// doctor-fix/scan switch to the Doctor tab first (a palette choice made
+		// from elsewhere lands where the user can watch it), latch the in-flight
+		// indicator, and schedule the work — the same shape sync-project uses,
+		// so a direct f/s key and a palette choice run the identical path.
+		"doctor-fix": func() tea.Cmd {
+			m.active = tabDoctor
+			m.doctor.SetFixing()
+			return m.doctorFixCmd()
+		},
+		"scan": func() tea.Cmd {
+			m.active = tabDoctor
+			m.doctor.SetScanning()
+			return m.doctorScanCmd()
 		},
 		"open-palette": func() tea.Cmd {
 			m.paletteOpen = true

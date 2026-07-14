@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -313,4 +315,63 @@ func TestDoctorFixNotesFailedQuiesce(t *testing.T) {
 	if !strings.Contains(string(stderr), "could not quiesce the daemon") {
 		t.Fatalf("doctor --fix did not note the failed quiesce on stderr:\n%s", stderr)
 	}
+}
+
+// TestRunDoctorFixWithQuiesceQuiesces pins the shared --fix orchestration the
+// command and the hub both call (extracted from doctor.go's RunE): a live
+// daemon is held exactly once and resumed, the repair lands — and, critically,
+// a FAILED fix still attempts the resume (the resume is deferred, never
+// sequenced after a successful Fix), so a fix error can never strand the
+// daemon quiesced. Driven against the recording fake daemon the command's own
+// --fix tests use, but calling the function directly.
+func TestRunDoctorFixWithQuiesceQuiesces(t *testing.T) {
+	t.Run("quiesce, fix, resume", func(t *testing.T) {
+		paths := provisionHealthyDoctorMachine(t)
+		fakeGhOnPath(t)
+		hits := startFakeDaemonRecordingQuiesce(t)
+
+		// Break a repairable axis so Fix has real work and the re-check confirms it.
+		mustGitCLI(t, paths.MemoriesDir(), "config", "--local", "filter.agentbrain.required", "false")
+
+		var stderr bytes.Buffer
+		report, err := runDoctorFixWithQuiesce(context.Background(), &stderr)
+		if err != nil {
+			t.Fatalf("runDoctorFixWithQuiesce: %v\nstderr: %s", err, stderr.String())
+		}
+		if report.Failed() {
+			t.Fatalf("report still failed after fix: %+v", report.Results)
+		}
+		got := hits()
+		if len(got.held) != 1 || got.held[0] != quiesceHoldForInit {
+			t.Fatalf("quiesce holds = %v, want exactly one of %d seconds", got.held, quiesceHoldForInit)
+		}
+		if got.resumed != 1 {
+			t.Fatalf("resume count = %d, want 1", got.resumed)
+		}
+	})
+
+	t.Run("failed fix still resumes", func(t *testing.T) {
+		paths := provisionHealthyDoctorMachine(t)
+		fakeGhOnPath(t)
+		hits := startFakeDaemonRecordingQuiesce(t)
+
+		// Remove the checkout's .git so Fix's first step (InstallFilters, which
+		// `git config --local` fails closed off a repo) errors AFTER the quiesce
+		// hold is taken — exercising the deferred resume on the error return.
+		if err := os.RemoveAll(filepath.Join(paths.MemoriesDir(), ".git")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := runDoctorFixWithQuiesce(context.Background(), io.Discard)
+		if err == nil {
+			t.Fatal("runDoctorFixWithQuiesce succeeded on a broken checkout; want a fix error")
+		}
+		got := hits()
+		if len(got.held) != 1 || got.held[0] != quiesceHoldForInit {
+			t.Fatalf("quiesce holds = %v, want exactly one of %d seconds", got.held, quiesceHoldForInit)
+		}
+		if got.resumed != 1 {
+			t.Fatalf("resume count = %d after a failed fix, want 1 — resume must still be attempted", got.resumed)
+		}
+	})
 }

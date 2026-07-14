@@ -406,3 +406,49 @@ func TestFlowRegistryRowsShape(t *testing.T) {
 		})
 	}
 }
+
+// TestDoctorRegistryRowsShape pins Task 19's registry additions (spec §11/§12):
+// the Doctor tab's r/f/s actions. The Mutates flags are the load-bearing part —
+// doctor-fix quiesces the daemon, so it MUST be Mutates (greyed and refused
+// while quiesced); re-run (a read-only refetch) and scan (an advisory sweep
+// that never joins SafetyGate) MUST NOT be, or a quiesce would wrongly refuse
+// them.
+func TestDoctorRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id      string
+		keys    []string
+		mutates bool
+	}{
+		{id: "doctor-rerun", keys: []string{"r"}, mutates: false},
+		{id: "doctor-fix", keys: []string{"f"}, mutates: true},
+		{id: "scan", keys: []string{"s"}, mutates: false},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff(testCase.keys, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if action.Mutates != testCase.mutates {
+				t.Errorf("Mutates = %v, want %v", action.Mutates, testCase.mutates)
+			}
+			if action.Scope != ScopeDoctor {
+				t.Errorf("Scope = %v, want %v", action.Scope, ScopeDoctor)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
+	}
+}

@@ -100,6 +100,18 @@ var registry = []Action{
 	{ID: "untrack", Title: "untrack", Keys: []string{"u"}, KeyHint: "u", Scope: ScopeProjects, Mutates: true},
 	{ID: "add-project", Title: "add", Keys: []string{"a"}, KeyHint: "a", Scope: ScopeProjects, Mutates: true},
 	{ID: "open-browser", Title: "open", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeProjects},
+	// ScopeDoctor rows (Task 19, spec §11/§12): the Doctor tab's own actions.
+	// re-run refetches the read-only battery on demand — matched directly by
+	// handleDoctorKey like the Projects/Conflicts cursor rows (no root runner),
+	// so it stays out of the palette. fix runs the quiesce-aware `doctor --fix`
+	// (Mutates — it holds the daemon's cycles during the wiring surgery, so it
+	// greys and is refused while quiesced); its live availability is the root's
+	// report-failed ∧ fixable-row gate (available("doctor-fix")). scan runs the
+	// advisory gitleaks sweep — never Mutates (it touches no daemon state and
+	// never joins SafetyGate, spec §12), available once its runner is wired.
+	{ID: "doctor-rerun", Title: "re-run", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeDoctor},
+	{ID: "doctor-fix", Title: "fix", Keys: []string{"f"}, KeyHint: "f", Scope: ScopeDoctor, Mutates: true},
+	{ID: "scan", Title: "scan", Keys: []string{"s"}, KeyHint: "s", Scope: ScopeDoctor},
 	{ID: "sync-fleet", Title: "sync fleet", Scope: ScopeGlobal, Mutates: true},
 	{ID: "search", Title: "search", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeGlobal},
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},

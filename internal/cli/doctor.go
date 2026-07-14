@@ -39,36 +39,18 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor",
 		Short: "Check (and optionally repair) this machine's agent-brain wiring",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			deps, err := buildDoctorDeps(offline, os.Getenv(testBinaryPathEnv))
-			if err != nil {
-				return err
-			}
 			var report doctor.Report
 			if fix {
-				// --fix re-wires the checkout's git config and rewrites
-				// .gitattributes; a resident daemon's cycle racing that surgery
-				// contends on git locks (same Phase-3 F2 hazard init closes).
-				// Hold its cycles best-effort — a daemon that is down or refuses
-				// is the status quo, never a reason to fail the repair. A
-				// refusal still gets an operator-visible note (stderr, so a
-				// --json stdout consumer stays clean) mirroring init's
-				// identical situation (initsteps.go's stepRepoState) — Task 4.5
-				// absorbs this as a T2 residual Minor: doctor used to swallow
-				// this case silently.
-				if client := tryAPIClient(cmd.Context()); client != nil {
-					if _, qerr := client.Quiesce(cmd.Context(), quiesceHoldForInit); qerr != nil {
-						if _, werr := fmt.Fprintf(cmd.ErrOrStderr(), "doctor: could not quiesce the daemon (%v) — proceeding\n", qerr); werr != nil {
-							return werr
-						}
-					} else {
-						defer resumeQuietly(client)
-					}
-				}
-				report, err = doctor.Fix(cmd.Context(), deps)
+				fixed, err := runDoctorFixWithQuiesce(cmd.Context(), cmd.ErrOrStderr())
 				if err != nil {
 					return err
 				}
+				report = fixed
 			} else {
+				deps, err := buildDoctorDeps(offline, os.Getenv(testBinaryPathEnv))
+				if err != nil {
+					return err
+				}
 				report = doctor.Run(cmd.Context(), deps)
 			}
 
@@ -95,6 +77,40 @@ func newDoctorCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the report as JSON")
 	cmd.Flags().BoolVar(&offline, "offline", false, "skip the network reachability check")
 	return cmd
+}
+
+// runDoctorFixWithQuiesce applies the idempotent wiring repairs behind a
+// best-effort daemon quiesce, then resumes — the shared orchestration the
+// `doctor --fix` command and the dashboard hub's one-key fix both call, so the
+// two can never drift in how they hold the daemon or what they repair. deps are
+// built with offline=true: the repair rewires local git config and never needs
+// the network, and the hub's doctor posture is offline throughout
+// (offlineDoctorRunner); binaryPath comes from testBinaryPathEnv, the same
+// fork-bomb guard buildDoctorDeps applies everywhere. --fix re-wires the
+// checkout's git config and rewrites .gitattributes; a resident daemon's cycle
+// racing that surgery contends on git locks (the same Phase-3 F2 hazard init
+// closes), so its cycles are held best-effort. A daemon that is down or refuses
+// the hold is the status quo, never a reason to fail the repair — a refusal
+// gets an operator-visible note on stderr (which the command routes to its real
+// stderr, keeping a --json stdout clean, and the hub routes to io.Discard,
+// reporting via the view instead), mirroring init's stepRepoState. The resume
+// is DEFERRED on a successful quiesce, so even a failed doctor.Fix still
+// releases the hold: a fix error can never strand the daemon quiesced.
+func runDoctorFixWithQuiesce(ctx context.Context, stderr io.Writer) (doctor.Report, error) {
+	deps, err := buildDoctorDeps(true, os.Getenv(testBinaryPathEnv))
+	if err != nil {
+		return doctor.Report{}, err
+	}
+	if client := tryAPIClient(ctx); client != nil {
+		if _, qerr := client.Quiesce(ctx, quiesceHoldForInit); qerr != nil {
+			if _, werr := fmt.Fprintf(stderr, "doctor: could not quiesce the daemon (%v) — proceeding\n", qerr); werr != nil {
+				return doctor.Report{}, werr
+			}
+		} else {
+			defer resumeQuietly(client)
+		}
+	}
+	return doctor.Fix(ctx, deps)
 }
 
 // buildDoctorDeps assembles doctor.Deps from the ambient machine — the same
