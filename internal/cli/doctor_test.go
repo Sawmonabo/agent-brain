@@ -377,7 +377,7 @@ func TestRunDoctorFixWithQuiesceQuiesces(t *testing.T) {
 	})
 }
 
-// TestRunDoctorFixWithQuiesceThreadsOfflineFlag pins F1's restored contract: the
+// TestRunDoctorFixWithQuiesceThreadsOfflineFlag pins the threaded offline contract: the
 // extracted --fix orchestration threads its offline argument into doctor.Fix's
 // re-check (Fix re-runs the FULL battery under the same deps), so the `remote`
 // reachability row — and the exit code an unreachable origin drives — track the

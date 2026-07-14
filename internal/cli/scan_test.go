@@ -407,7 +407,7 @@ func TestFilterUnitsByFolder(t *testing.T) {
 	}
 }
 
-// TestHubScanRunnerRelativizesFindingPath pins the hub projection (F3): gitleaks
+// TestHubScanRunnerRelativizesFindingPath pins the hub projection: gitleaks
 // `dir` mode reports File as the scanned LocalDir joined with the in-unit path —
 // absolute, LocalDir-prefixed (the verified model this file's other fixtures
 // use). The Doctor tab renders Folder/File:line, so hubScanRunner must strip that
