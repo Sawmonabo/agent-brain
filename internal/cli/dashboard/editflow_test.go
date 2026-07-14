@@ -947,24 +947,35 @@ func TestFlowRequestRefusedWhileHelpOpen(t *testing.T) {
 // message (PaletteChoiceMsg), which — unlike a keystroke, routed to an open
 // flow modal before any global in handleKey — can land AFTER a flow-request
 // message opened a modal. dispatch must refuse a chrome-opening choice while a
-// flow modal is open, so the help or search overlay can never layer over a
-// modal that owns the screen.
+// flow modal is open, so no chrome layers over a modal that owns the screen.
+// The pinned set is dispatch's FULL flow-modal refusal membership (dashboard.go):
+// help, search, open-palette, and update-agent-brain — every id that opens
+// chrome or a prompt from the message path.
 func TestChromeOpenRefusedWhileFlowModalOpen(t *testing.T) {
 	t.Parallel()
 	const wantRefusal = "a prompt is already open — finish or esc it first"
 	tests := []struct {
-		name         string
-		id           string
+		name string
+		id   string
+		// phase is the update phase in which id is dispatchable: update-agent-brain
+		// is live only in updateOffered (available's gate), so it must be set for
+		// the refusal under test to be the flow-modal gate and not the earlier
+		// availability gate. Zero (updateIdle) for the others, which are not
+		// phase-gated.
+		phase        updatePhase
 		chromeOpened func(Model) bool
 	}{
 		{name: "search", id: "search", chromeOpened: func(m Model) bool { return m.searchOverlay != nil }},
 		{name: "help", id: "help", chromeOpened: func(m Model) bool { return m.helpOpen }},
+		{name: "open-palette", id: "open-palette", chromeOpened: func(m Model) bool { return m.paletteOpen }},
+		{name: "update-agent-brain", id: "update-agent-brain", phase: updateOffered, chromeOpened: func(m Model) bool { return m.updatePhase == updateConfirm }},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			m, _ := newFlowModel(t, terminalEditorSettings())
 			memory := writeFlowMemory(t, t.TempDir(), "note.md", "# note\n")
+			m.updatePhase = testCase.phase
 
 			m, _ = step(m, views.DeleteRequestMsg{Memory: memory})
 			if m.flowModal == nil || m.flowModal.kind != flowModalDeleteConfirm {

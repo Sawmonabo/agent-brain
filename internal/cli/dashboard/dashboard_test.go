@@ -3101,6 +3101,82 @@ func TestApplyingHoldsThroughTransientDaemonDown(t *testing.T) {
 	}
 }
 
+// TestDaemonDownSuppressionEndsWhenApplyResolves is the release counterpart to
+// TestApplyingHoldsThroughTransientDaemonDown: the daemon-down suppression is
+// scoped to the applying window ONLY. The moment the apply resolves — installed
+// on success, back to the offer on failure — the next daemon-down status must
+// flip the daemon-down screen again, so a genuinely dead daemon after an update
+// is never masked behind a normal-looking tab with a stale header. Pins the
+// suppression conjunct's BOUND (m.updatePhase != updateApplying), which a later
+// refactor could widen (e.g. to keep suppressing "while the daemon settles")
+// with no other red test.
+func TestDaemonDownSuppressionEndsWhenApplyResolves(t *testing.T) {
+	t.Parallel()
+
+	t.Run("installed: a daemon-down status flips the screen", func(t *testing.T) {
+		t.Parallel()
+		m := newUpdateModel(nil, nil)
+		m.updateTag = "v2.1.0"
+		m.updatePhase = updateInstalled
+
+		m, _ = step(m, statusMsg{err: api.ErrDaemonNotRunning})
+		if !m.daemonDown {
+			t.Error("a daemon-down status at updateInstalled did not flip the daemon-down screen; suppression must end on the success side")
+		}
+	})
+
+	t.Run("offered after a failed apply: a daemon-down status flips the screen", func(t *testing.T) {
+		t.Parallel()
+		m := newUpdateModel(nil, nil)
+		m.updateTag = "v2.1.0"
+		m.updatePhase = updateApplying
+		// A failed apply returns the machine to the offer (the transition
+		// TestUpdateApplyErrorTogglesStickyAndOffers pins).
+		m, _ = step(m, updateAppliedMsg{err: errors.New("update: download failed")})
+		if m.updatePhase != updateOffered {
+			t.Fatalf("setup: a failed apply did not return to the offer; phase = %v", m.updatePhase)
+		}
+
+		m, _ = step(m, statusMsg{err: api.ErrDaemonNotRunning})
+		if !m.daemonDown {
+			t.Error("a daemon-down status at updateOffered (after a failed apply) did not flip the daemon-down screen; suppression must end on the error side too")
+		}
+	})
+}
+
+// TestForeignKeysInertWhileUpdateConfirmOpen mirrors
+// TestSlashInertWhileQuitPromptOpen for the update confirm (spec §11): the
+// confirm prompt owns the keyboard, so a foreign key — a chrome opener like `/`,
+// or the very `U` that opened the confirm — neither opens an overlay, decides
+// the prompt, nor produces a Cmd. Only y/Y/n/N/esc answer it. The `/` case is
+// the load-bearing probe of the confirm block's default return: search-open is
+// not phase-gated, so that catch-all is its only guard. The `U` case documents
+// the finding's literal concern — U is inert here via the catch-all AND the
+// offered-only availability gate (defense in depth), so it stands as regression
+// cover even though either guard alone would hold it.
+func TestForeignKeysInertWhileUpdateConfirmOpen(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"/", "U"} {
+		t.Run("key "+name, func(t *testing.T) {
+			t.Parallel()
+			m := newUpdateModel(nil, nil)
+			m.updateTag = "v2.1.0"
+			m.updatePhase = updateConfirm
+
+			m2, cmd := step(m, key(name))
+			if m2.searchOverlay != nil {
+				t.Errorf("%q opened the search overlay while the update confirm owns the keyboard", name)
+			}
+			if cmd != nil {
+				t.Errorf("%q at the update confirm produced a Cmd; want none", name)
+			}
+			if m2.updatePhase != updateConfirm {
+				t.Errorf("%q disturbed the update confirm phase (got %v); only y/n/esc may decide it", name, m2.updatePhase)
+			}
+		})
+	}
+}
+
 // TestFlowStartRefusedDuringUpdateFlow pins that a queued flow-request message
 // (the bubbletea no-ordering-guarantee race the chrome gates already close) is
 // refused while an update confirm or apply owns the interaction — no flow modal
