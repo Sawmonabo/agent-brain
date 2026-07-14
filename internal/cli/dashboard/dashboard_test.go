@@ -1947,6 +1947,35 @@ func TestApplyStackThemeInvalidatesPushedBrowserPreviewCache(t *testing.T) {
 	}
 }
 
+// TestApplyStackThemePropagatesStylesToPushedInsights is the root-level sentinel
+// that keeps applyStackTheme's styledScreen arm alive. Insights implements only
+// styledScreen — it renders no markdown, so it has no renderedScreen arm — making
+// it the one pushed screen whose theme propagation rides SOLELY on the styledScreen
+// arm. Drives the real applyStackTheme wiring (not a direct SetStyles call) with a
+// sentinel Header installed on the incoming styles, and asserts the very next View
+// carries it; deleting the styledScreen arm leaves the whole suite green except
+// here.
+func TestApplyStackThemePropagatesStylesToPushedInsights(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	insights := views.NewInsights(views.InsightsDeps{
+		Folder:   "acme",
+		Memories: []memoryfs.Memory{{Provider: "claude", Folder: "acme", RepoPath: "claude/a.md", ModTime: base.Add(-time.Hour), Size: 100}},
+		Now:      base,
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: insights})
+
+	m.styles.Header = lipgloss.NewStyle().Transform(func(s string) string { return "STYLED<" + s + ">" })
+	m.applyStackTheme()
+
+	got := plain(insights.View(m.width, m.stackBodyHeight()))
+	if !strings.Contains(got, "STYLED<Memories>") {
+		t.Errorf("applyStackTheme did not propagate the swapped styles to the pushed Insights (styledScreen arm); got:\n%s", got)
+	}
+}
+
 // TestStackFooterAdvertisesScopedKeys pins the footer's scope switch: while
 // a screen is pushed, the footer must name exactly that screen's own keys
 // (ScopeBrowser's o/(/)/esc) and nothing from the tab level or

@@ -2,6 +2,8 @@ package views
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +104,50 @@ func assertBefore(t *testing.T, haystack, first, second string) {
 	}
 }
 
+// insightsWithVersions builds the standard fixture but with an arbitrary
+// folder-wide history, for driving the fetch-cap boundary directly.
+func insightsWithVersions(versions []api.HistoryVersion) *Insights {
+	return newInsightsFixture(&fakeHistoryData{historyResp: api.HistoryResponse{Versions: versions}})
+}
+
+// manyVersions fabricates n commits touching one path, for exercising the
+// fetch-cap edge without hand-writing hundreds of rows. foreignOnly commits
+// carry no host/timestamp (no capture subject), which drives the
+// empty-captures-at-cap path.
+func manyVersions(n int, foreignOnly bool) []api.HistoryVersion {
+	out := make([]api.HistoryVersion, n)
+	for idx := range n {
+		version := api.HistoryVersion{Rev: fmt.Sprintf("r%d", idx), Paths: []string{"claude/one.md"}}
+		if !foreignOnly {
+			stamp := insightsBase.Add(-time.Duration(idx) * time.Minute)
+			version.Host, version.Timestamp = "workstation", &stamp
+		}
+		out[idx] = version
+	}
+	return out
+}
+
+// sectionLines returns the rows rendered under a section header (matched by its
+// trimmed text) up to the blank line that separates sections — so a section's
+// exact row set can be asserted, not merely membership.
+func sectionLines(rendered, header string) []string {
+	lines := strings.Split(rendered, "\n")
+	for idx, line := range lines {
+		if strings.TrimSpace(line) != header {
+			continue
+		}
+		var rows []string
+		for _, row := range lines[idx+1:] {
+			if strings.TrimSpace(row) == "" {
+				break // the blank line (or height padding) after the last row
+			}
+			rows = append(rows, strings.TrimRight(row, " ")) // drop viewport width padding
+		}
+		return rows
+	}
+	return nil
+}
+
 func TestInsightsSectionsExactNumbers(t *testing.T) {
 	t.Parallel()
 	fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: insightsVersions()}}
@@ -130,6 +176,87 @@ func TestInsightsSectionsExactNumbers(t *testing.T) {
 	// most edited ranks busiest first; stalest lists oldest first.
 	assertBefore(t, got, "claude/one.md  3", "cursor/three.md  1")
 	assertBefore(t, got, "cursor/four.md  10d ago", "claude/one.md  1h ago")
+}
+
+// TestInsightsTruncationDisclosesItsOwnCap pins that a history scan at the fetch
+// cap discloses insights' real 500-commit window, never history's unrelated 200:
+// the two screens fetch different caps, so a shared hardcoded notice would state
+// a false count. Pinned at both edges — at the cap the notice fires with the real
+// number, one under it fires not at all.
+func TestInsightsTruncationDisclosesItsOwnCap(t *testing.T) {
+	t.Parallel()
+	atCap := adoptInsights(t, insightsWithVersions(manyVersions(insightsHistoryLimit, false)))
+	got := plain(atCap.View(100, 200))
+	if !strings.Contains(got, "newest 500 commits — older history not scanned") {
+		t.Errorf("truncation notice missing the real 500-commit disclosure; got:\n%s", got)
+	}
+	if strings.Contains(got, "newest 200 commits") {
+		t.Errorf("truncation notice claims history's 200-commit window over a 500-commit scan; got:\n%s", got)
+	}
+
+	// One under the cap: the scan saw the whole timeline, so no disclosure at all.
+	below := adoptInsights(t, insightsWithVersions(manyVersions(insightsHistoryLimit-1, false)))
+	if b := plain(below.View(100, 200)); strings.Contains(b, "older history not scanned") {
+		t.Errorf("a %d-version scan (one under the cap) rendered a truncation notice; want none; got:\n%s", insightsHistoryLimit-1, b)
+	}
+}
+
+// TestInsightsEmptyHistoryAtCapIsQualified pins that when the scan hits the cap
+// yet holds no captures, the empty-state notices carry the truncation disclosure
+// too: "no captures recorded" over a truncated window would be a false
+// whole-history claim. Below the cap the same states make the plain whole-history
+// statement with no hedge.
+func TestInsightsEmptyHistoryAtCapIsQualified(t *testing.T) {
+	t.Parallel()
+	atCap := adoptInsights(t, insightsWithVersions(manyVersions(insightsHistoryLimit, true)))
+	got := plain(atCap.View(100, 200))
+	for _, want := range []string{
+		"no captures in the newest 500 commits — older history not scanned",          // last capture
+		"no captures recorded in the newest 500 commits — older history not scanned", // machines
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("empty-state over a truncated window is unqualified; missing %q; got:\n%s", want, got)
+		}
+	}
+
+	small := adoptInsights(t, insightsWithVersions([]api.HistoryVersion{{Rev: "r0", Paths: []string{"claude/one.md"}}}))
+	s := plain(small.View(100, 200))
+	if !strings.Contains(s, "no captures in this project's history") {
+		t.Errorf("untruncated empty last-capture lost its whole-history wording; got:\n%s", s)
+	}
+	if strings.Contains(s, "older history not scanned") {
+		t.Errorf("untruncated empty history should carry no truncation notice; got:\n%s", s)
+	}
+}
+
+// TestInsightsMachinesExcludesForeignHost pins that the machines tally skips the
+// foreign commit's blank host (spec §9: machines are capture subjects). Asserts
+// the exact row set, not membership — a Contains("workstation  4") check survives
+// a stray blank-label row, but the machines section owning exactly the two real
+// hosts does not.
+func TestInsightsMachinesExcludesForeignHost(t *testing.T) {
+	t.Parallel()
+	screen := adoptInsights(t, newInsightsFixture(&fakeHistoryData{historyResp: api.HistoryResponse{Versions: insightsVersions()}}))
+	got := plain(screen.View(100, 60))
+	rows := sectionLines(got, "Machines")
+	want := []string{tallyRow("workstation", 4), tallyRow("laptop", 2)}
+	if !slices.Equal(rows, want) {
+		t.Errorf("machines rows = %q, want %q (foreign r7's blank host must not be tallied)", rows, want)
+	}
+}
+
+// TestInsightsIgnoresHistoryVersionsMsg pins the distinct-message-type guard: the
+// browser's deleted-scan result (HistoryVersionsMsg) rides the same folder-wide
+// path "" that insights' own fetch does, so the message type is the only thing
+// keeping the wires apart. An adopted HistoryVersionsMsg would wrongly load the
+// activity sections; the screen must stay pending.
+func TestInsightsIgnoresHistoryVersionsMsg(t *testing.T) {
+	t.Parallel()
+	screen := newInsightsFixture(&fakeHistoryData{})
+	next, _ := screen.Update(HistoryVersionsMsg{Folder: "acme", RepoPath: "", Versions: insightsVersions()})
+	if got := plain(next.(*Insights).View(100, 60)); !strings.Contains(got, "loading history…") {
+		t.Errorf("Insights adopted a foreign HistoryVersionsMsg; want still loading; got:\n%s", got)
+	}
 }
 
 func TestInsightsHistoryErrorKeepsFilesystemSections(t *testing.T) {
@@ -296,14 +423,21 @@ func TestBrowserInsightsKeyPushesScreen(t *testing.T) {
 	t.Parallel()
 	memories := insightsMemories()
 	browser := NewBrowser(BrowserDeps{
-		Folder:   "acme",
-		Units:    []api.UnitInfo{{Folder: "acme", Provider: "claude"}},
-		Styles:   theme.Default(true),
-		Now:      insightsBase,
-		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		Folder: "acme",
+		Units:  []api.UnitInfo{{Folder: "acme", Provider: "claude"}},
+		Styles: theme.Default(true),
+		Now:    insightsBase,
+		// A dangling wiki-link makes the construction-time lint pass emit a real
+		// finding, so the hand-across below compares NON-empty slices — with an
+		// empty body the tally would be 0 and a Lint:nil regression would tie
+		// 0 == 0, proving nothing.
+		ReadBody: func(memoryfs.Memory) (string, error) { return "see [[does-not-exist]]", nil },
 		List:     func() ([]memoryfs.Memory, error) { return memories, nil },
 		Data:     &fakeHistoryData{},
 	})
+	if len(browser.lintResults) == 0 {
+		t.Fatal("setup: fixture produced no lint results; the lint hand-across assertion would be vacuous")
+	}
 
 	_, cmd := browser.Update(key("i"))
 	if cmd == nil {

@@ -634,20 +634,22 @@ func (h *History) listView(height int) string {
 		lines = append(lines, h.renderVersionRow(row))
 	}
 	if truncated {
-		lines = append(lines, h.deps.Styles.Dim.Render(historyTruncationNotice()))
+		lines = append(lines, h.deps.Styles.Dim.Render(historyTruncationNotice(historyVersionLimit)))
 	}
 	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")
 }
 
-// historyTruncationNotice discloses that a version list came back at the fetch
-// cap (historyVersionLimit) — the newest slice only, older commits not scanned.
-// Shared by the per-memory list and the folder-wide deleted scan, whose cap is
-// the same. The count is the limit itself, so the wording stays exactly true at
-// the len == limit boundary this fires on (an over-approximation: a memory with
-// exactly limit commits and no more is disclosed too, the safe direction).
-func historyTruncationNotice() string {
-	return fmt.Sprintf("showing the newest %d commits — older history not scanned", historyVersionLimit)
+// historyTruncationNotice discloses that a scan came back at its fetch cap — the
+// newest `limit` commits only, older history not scanned. The caller passes its
+// own cap because the callers do NOT share one: the per-memory list and the
+// folder-wide deleted scan use historyVersionLimit, insights' activity sections
+// use insightsHistoryLimit. The count is the caller's actual limit, so the
+// wording stays exactly true at the len == limit boundary this fires on (an
+// over-approximation: a scan with exactly limit commits and no more is disclosed
+// too, the safe direction).
+func historyTruncationNotice(limit int) string {
+	return fmt.Sprintf("showing the newest %d commits — older history not scanned", limit)
 }
 
 func (h *History) renderVersionRow(row int) string {

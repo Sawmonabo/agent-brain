@@ -1446,6 +1446,31 @@ func TestBrowserDeletedHistoryReadsLiveContent(t *testing.T) {
 	}
 }
 
+// TestBrowserIgnoresInsightsDataMsg pins the distinct-message-type guard from the
+// browser's side: a deleted-scanning browser awaits a folder-wide
+// HistoryVersionsMsg (path ""), and insights' InsightsDataMsg rides the same path
+// "", so only the message type keeps the wires apart. An InsightsDataMsg must
+// never satisfy the pending deleted scan.
+func TestBrowserIgnoresInsightsDataMsg(t *testing.T) {
+	t.Parallel()
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+		Data:     &fakeHistoryData{},
+	})
+	browser.showDeleted = true // deleted-scan mode, awaiting its folder-wide result
+
+	next, _ := browser.Update(InsightsDataMsg{
+		Folder:   "acme",
+		Versions: []api.HistoryVersion{{Rev: "r1", Paths: []string{"claude/one.md"}}},
+	})
+	if next.(*Browser).deletedLoaded {
+		t.Error("browser adopted an InsightsDataMsg as its deleted scan; the distinct-type guard failed")
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

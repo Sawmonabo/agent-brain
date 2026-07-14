@@ -816,7 +816,7 @@ func (b *Browser) deletedView(height int) string {
 		lines = append(lines, line)
 	}
 	if truncated {
-		lines = append(lines, b.deps.Styles.Dim.Render(historyTruncationNotice()))
+		lines = append(lines, b.deps.Styles.Dim.Render(historyTruncationNotice(historyVersionLimit)))
 	}
 	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")

@@ -302,7 +302,7 @@ func (i *Insights) lastCaptureBlock() string {
 		return i.block("Last capture", []string{placeholder})
 	}
 	if !i.captured {
-		return i.block("Last capture", i.dimLine("no captures in this project's history"))
+		return i.block("Last capture", i.historyEmptyNotice("no captures"))
 	}
 	host := i.lastCapture.Host
 	if host == "" {
@@ -321,7 +321,7 @@ func (i *Insights) mostEditedBlock() string {
 		return i.block("Most edited", []string{placeholder})
 	}
 	if len(i.mostEdited) == 0 {
-		return i.block("Most edited", i.dimLine("no edits recorded"))
+		return i.block("Most edited", i.historyEmptyNotice("no edits recorded"))
 	}
 	rows := make([]string, len(i.mostEdited))
 	for idx, row := range i.mostEdited {
@@ -366,7 +366,7 @@ func (i *Insights) machinesBlock() string {
 		return i.block("Machines", []string{placeholder})
 	}
 	if len(i.machines) == 0 {
-		return i.block("Machines", i.dimLine("no captures recorded"))
+		return i.block("Machines", i.historyEmptyNotice("no captures recorded"))
 	}
 	rows := make([]string, len(i.machines))
 	for idx, machine := range i.machines {
@@ -382,7 +382,20 @@ func (i *Insights) withTruncation(rows []string) []string {
 	if !i.truncated {
 		return rows
 	}
-	return append(rows, i.deps.Styles.Dim.Render(historyTruncationNotice()))
+	return append(rows, i.deps.Styles.Dim.Render(historyTruncationNotice(insightsHistoryLimit)))
+}
+
+// historyEmptyNotice qualifies a history section's empty-state line. Below the
+// cap the scan saw the whole timeline, so "<subject> in this project's history"
+// is the literal truth; at the cap that same phrasing would be a false
+// whole-history claim over only the newest slice, so the empty state carries the
+// same disclosure the populated sections do (withTruncation). subject is the
+// section's own noun phrase ("no captures", "no edits recorded").
+func (i *Insights) historyEmptyNotice(subject string) []string {
+	if i.truncated {
+		return i.dimLine(fmt.Sprintf("%s in the newest %d commits — older history not scanned", subject, insightsHistoryLimit))
+	}
+	return i.dimLine(subject + " in this project's history")
 }
 
 // historyPlaceholder returns the inline line the history-derived sections show
