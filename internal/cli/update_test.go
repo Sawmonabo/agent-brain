@@ -232,6 +232,51 @@ func TestRunUpdateCheckOnlyExplicitHintEchoesVersion(t *testing.T) {
 	}
 }
 
+// TestAdaptCheckDecision pins the pure reduction from a selfupdate check to
+// the hub banner's contract (spec §11): a check error propagates unchanged
+// with an empty tag (the hub swallows it — no banner), "up to date" collapses
+// to the empty tag, and an available release surfaces its resolved latest tag
+// — the exact string the banner advertises and U installs.
+func TestAdaptCheckDecision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("check error propagates with an empty tag", func(t *testing.T) {
+		t.Parallel()
+		wantErr := errors.New("ls-remote: network unreachable")
+		// UpdateNeeded is deliberately true here: on error the decision is
+		// ignored entirely, so the tag must still be empty.
+		tag, err := adaptCheckDecision(selfupdate.Decision{Latest: "v2.1.0", UpdateNeeded: true}, wantErr)
+		if !errors.Is(err, wantErr) {
+			t.Errorf("err = %v, want %v", err, wantErr)
+		}
+		if tag != "" {
+			t.Errorf("tag = %q, want empty on error", tag)
+		}
+	})
+
+	t.Run("up to date offers no tag", func(t *testing.T) {
+		t.Parallel()
+		tag, err := adaptCheckDecision(selfupdate.Decision{Latest: "v2.0.0", UpdateNeeded: false}, nil)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if tag != "" {
+			t.Errorf("tag = %q, want empty when up to date", tag)
+		}
+	})
+
+	t.Run("an available release surfaces its latest tag", func(t *testing.T) {
+		t.Parallel()
+		tag, err := adaptCheckDecision(selfupdate.Decision{Latest: "v2.1.0", UpdateNeeded: true}, nil)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if tag != "v2.1.0" {
+			t.Errorf("tag = %q, want v2.1.0", tag)
+		}
+	})
+}
+
 // TestReleasePickerCandidates proves the picker rows: semver-descending
 // order regardless of list order, drafts and non-semver tags dropped, the
 // prerelease badge, and the running marker.

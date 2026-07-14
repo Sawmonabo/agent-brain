@@ -891,6 +891,11 @@ func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
 			}),
 			wantAddAdmitted: true,
 		},
+		// An offered update makes update-agent-brain paletteAvailable — it is a
+		// dispatch special-case (no runner), so this variant walks that row
+		// through the invariant below rather than leaving the special-case
+		// untested (the same reason the add-flow-wired variant exists).
+		{name: "update offered", model: offeredUpdateModel(), wantAddAdmitted: false},
 	}
 	for _, tc := range variants {
 		t.Run(tc.name, func(t *testing.T) {
@@ -903,7 +908,7 @@ func TestPaletteListsOnlyDispatchableActions(t *testing.T) {
 				if !tc.model.paletteAvailable(action.ID) {
 					continue
 				}
-				if action.ID == "help" || action.ID == "search" {
+				if action.ID == "help" || action.ID == "search" || action.ID == "update-agent-brain" {
 					continue // dispatch's non-runner special cases
 				}
 				if _, ok := runners[action.ID]; !ok {
@@ -2762,5 +2767,490 @@ func TestPushHistoryIssuesInitCmdAndForwards(t *testing.T) {
 	}
 	if got := plain(top.View(120, 30)); strings.Contains(got, "loading history") {
 		t.Errorf("History screen still loading after its InitCmd result was forwarded back; got:\n%s", got)
+	}
+}
+
+// --- Task 18: update banner + one-key self-update + re-exec (spec §11) ---
+
+// newUpdateModel builds a sized root model wired with the injected update
+// closures, its daemon already reporting ready — the common setup for the
+// update tests below.
+func newUpdateModel(check func(context.Context) (string, error), apply func(context.Context, string) error) Model {
+	m := New(Config{
+		Data:         &fakeData{status: readyStatus()},
+		StartService: func() error { return nil },
+		CheckUpdate:  check,
+		ApplyUpdate:  apply,
+	})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.status = readyStatus()
+	return m
+}
+
+// offeredUpdateModel is a root model in the offered phase — the state in which
+// update-agent-brain is dispatchable — for the palette/availability pins.
+func offeredUpdateModel() Model {
+	m := newTestModel(&fakeData{})
+	m.updatePhase = updateOffered
+	m.updateTag = "v2.1.0"
+	return m
+}
+
+// TestCheckUpdateFiresOnceAfterFirstStatusSuccess pins spec §11's cadence: the
+// release check is scheduled at most once per hub session, and only after the
+// FIRST successful statusMsg — a status error (daemon down) never triggers it,
+// and a second success does not re-fire it (the "two ticks, one call" shape,
+// driven here with the statusMsg each tick resolves to).
+func TestCheckUpdateFiresOnceAfterFirstStatusSuccess(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a status error does not fire the check", func(t *testing.T) {
+		t.Parallel()
+		var checkCalls int
+		check := func(context.Context) (string, error) { checkCalls++; return "v9.9.9", nil }
+		m := newUpdateModel(check, nil)
+
+		_, cmd := step(m, statusMsg{err: api.ErrDaemonNotRunning})
+		drain(cmd)
+		if checkCalls != 0 {
+			t.Errorf("CheckUpdate fired on a status error; want it gated on a status SUCCESS (calls=%d)", checkCalls)
+		}
+	})
+
+	t.Run("two successes fire the check exactly once", func(t *testing.T) {
+		t.Parallel()
+		var checkCalls int
+		check := func(context.Context) (string, error) { checkCalls++; return "v9.9.9", nil }
+		m := newUpdateModel(check, nil)
+
+		m, cmd1 := step(m, statusMsg{resp: readyStatus()})
+		drain(cmd1)
+		_, cmd2 := step(m, statusMsg{resp: readyStatus()})
+		drain(cmd2)
+		if checkCalls != 1 {
+			t.Errorf("CheckUpdate fired %d times across two status successes, want exactly 1 (spec §11: at most once per session)", checkCalls)
+		}
+	})
+
+	t.Run("a nil CheckUpdate simply never checks", func(t *testing.T) {
+		t.Parallel()
+		m := newUpdateModel(nil, nil)
+		_, cmd := step(m, statusMsg{resp: readyStatus()})
+		// No panic, no banner — the best-effort posture with the closure absent.
+		if containsMsg[updateCheckedMsg](drain(cmd)) {
+			t.Error("a nil CheckUpdate produced an updateCheckedMsg")
+		}
+	})
+}
+
+// TestUpdateBannerRendersOfferedTag pins the banner surface (spec §11): once
+// CheckUpdate reports a newer release, the status header names it with the U
+// affordance, and the model records the offered phase.
+func TestUpdateBannerRendersOfferedTag(t *testing.T) {
+	t.Parallel()
+	m := newUpdateModel(nil, nil)
+	m, _ = step(m, updateCheckedMsg{tag: "v2.1.0"})
+
+	if m.updatePhase != updateOffered {
+		t.Fatalf("updatePhase = %v after a tag arrived, want updateOffered", m.updatePhase)
+	}
+	if m.updateTag != "v2.1.0" {
+		t.Errorf("updateTag = %q, want v2.1.0", m.updateTag)
+	}
+	if body := plain(m.View().Content); !strings.Contains(body, "v2.1.0 available — U to update") {
+		t.Errorf("update banner missing from the status header; got:\n%s", body)
+	}
+}
+
+// TestCheckUpdateSilentWhenCurrentOrErrored pins the best-effort posture: a
+// check that errors, and a check that reports "already current" (empty tag),
+// both leave the banner absent and push NO toast — the banner is never noise
+// (Toast-tier addendum: CheckUpdate errors stay silent).
+func TestCheckUpdateSilentWhenCurrentOrErrored(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		msg  updateCheckedMsg
+	}{
+		{name: "errored check", msg: updateCheckedMsg{err: errors.New("gh: not authenticated")}},
+		{name: "already current", msg: updateCheckedMsg{tag: ""}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newUpdateModel(nil, nil)
+			m, cmd := step(m, testCase.msg)
+			if cmd != nil {
+				t.Error("a silent check produced a Cmd")
+			}
+			if m.updatePhase != updateIdle {
+				t.Errorf("updatePhase = %v, want updateIdle (no banner)", m.updatePhase)
+			}
+			if m.updateTag != "" {
+				t.Errorf("updateTag = %q, want empty", m.updateTag)
+			}
+			if m.toast != nil || m.stickyToast != nil {
+				t.Errorf("a best-effort check toasted: info=%+v sticky=%+v", m.toast, m.stickyToast)
+			}
+			if body := plain(m.View().Content); strings.Contains(body, "U to update") {
+				t.Errorf("banner shown after a silent check; got:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestUpdateConfirmAppliesOnYes pins the U → confirm → y path: U opens a footer
+// confirm naming the tag, and y hands ApplyUpdate the exact offered tag and
+// enters the applying phase.
+func TestUpdateConfirmAppliesOnYes(t *testing.T) {
+	t.Parallel()
+	var applyCalls int
+	var appliedTag string
+	apply := func(_ context.Context, tag string) error { applyCalls++; appliedTag = tag; return nil }
+	m := newUpdateModel(nil, apply)
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateOffered
+
+	m, _ = step(m, key("U"))
+	if m.updatePhase != updateConfirm {
+		t.Fatalf("U did not open the confirm; updatePhase = %v", m.updatePhase)
+	}
+	if foot := plain(m.footer()); !strings.Contains(foot, "update to v2.1.0?") {
+		t.Errorf("confirm footer missing the prompt; got %q", foot)
+	}
+
+	m, cmd := step(m, key("y"))
+	if m.updatePhase != updateApplying {
+		t.Fatalf("y did not enter the applying phase; updatePhase = %v", m.updatePhase)
+	}
+	msgs := drain(cmd)
+	if applyCalls != 1 || appliedTag != "v2.1.0" {
+		t.Errorf("ApplyUpdate calls=%d tag=%q, want exactly one call with v2.1.0", applyCalls, appliedTag)
+	}
+	if !containsMsg[updateAppliedMsg](msgs) {
+		t.Errorf("the apply Cmd did not resolve to updateAppliedMsg; drained %#v", msgs)
+	}
+	if applyingFoot := plain(m.footer()); !strings.Contains(applyingFoot, "installing") {
+		t.Errorf("applying footer does not name the in-flight install; got %q", applyingFoot)
+	}
+}
+
+// TestUpdateConfirmDismissed pins that n and esc both back the confirm out to
+// the offer without applying anything.
+func TestUpdateConfirmDismissed(t *testing.T) {
+	t.Parallel()
+	for _, dismiss := range []string{"n", "esc"} {
+		t.Run(dismiss, func(t *testing.T) {
+			t.Parallel()
+			var applyCalls int
+			apply := func(context.Context, string) error { applyCalls++; return nil }
+			m := newUpdateModel(nil, apply)
+			m.updateTag = "v2.1.0"
+			m.updatePhase = updateConfirm
+
+			m, cmd := step(m, key(dismiss))
+			if m.updatePhase != updateOffered {
+				t.Errorf("%s did not return the confirm to the offer; updatePhase = %v", dismiss, m.updatePhase)
+			}
+			drain(cmd)
+			if applyCalls != 0 {
+				t.Errorf("%s applied the update; ApplyUpdate must only run on y", dismiss)
+			}
+		})
+	}
+}
+
+// TestUpdateApplyErrorTogglesStickyAndOffers pins the apply-failure path
+// (Toast-tier addendum): the verbatim error lands in the STICKY slot (an
+// unresolved failure the user must act on, not a 5s info toast), and the banner
+// returns to offering a retry.
+func TestUpdateApplyErrorTogglesStickyAndOffers(t *testing.T) {
+	t.Parallel()
+	m := newUpdateModel(nil, nil)
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateApplying
+
+	m, _ = step(m, updateAppliedMsg{err: errors.New("update: download failed: 503 Service Unavailable")})
+	if m.updatePhase != updateOffered {
+		t.Errorf("a failed apply did not return to the offer; updatePhase = %v", m.updatePhase)
+	}
+	if m.stickyToast == nil || !strings.Contains(m.stickyToast.text, "download failed: 503 Service Unavailable") {
+		t.Errorf("apply error not surfaced verbatim in the sticky slot; got %+v", m.stickyToast)
+	}
+	if m.toast != nil {
+		t.Errorf("apply error went to the info slot; a failure requiring action must be sticky (got %+v)", m.toast)
+	}
+}
+
+// TestUpdateApplySuccessOffersRestart pins the clean-apply path: the banner
+// swaps to the installed state with the R restart affordance.
+func TestUpdateApplySuccessOffersRestart(t *testing.T) {
+	t.Parallel()
+	m := newUpdateModel(nil, nil)
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateApplying
+
+	m, _ = step(m, updateAppliedMsg{err: nil})
+	if m.updatePhase != updateInstalled {
+		t.Fatalf("a clean apply did not reach the installed phase; updatePhase = %v", m.updatePhase)
+	}
+	if m.stickyToast != nil {
+		t.Errorf("a clean apply pushed a sticky toast; want none (got %+v)", m.stickyToast)
+	}
+	if body := plain(m.View().Content); !strings.Contains(body, "installed v2.1.0 — R to restart the hub on it (or restart manually)") {
+		t.Errorf("installed banner / R offer missing; got:\n%s", body)
+	}
+}
+
+// TestRestartKeyLatchesReExecAndQuits pins R (spec §11): from the installed
+// state R latches the re-exec and quits, so launchHub restarts the process onto
+// the freshly installed binary.
+func TestRestartKeyLatchesReExecAndQuits(t *testing.T) {
+	t.Parallel()
+	m := newUpdateModel(nil, nil)
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateInstalled
+
+	m, cmd := step(m, key("R"))
+	if !m.reExec || !m.ReExecRequested() {
+		t.Error("R did not latch the re-exec request")
+	}
+	if !m.quitting {
+		t.Error("R did not set the model quitting")
+	}
+	if cmd == nil {
+		t.Fatal("R produced no Cmd; want tea.Quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("R's Cmd did not produce a QuitMsg")
+	}
+}
+
+// TestRestartKeyInertUntilInstalled pins that R is only the restart key in the
+// installed state — before an install lands it is not latched.
+func TestRestartKeyInertUntilInstalled(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []updatePhase{updateIdle, updateOffered} {
+		m := newUpdateModel(nil, nil)
+		m.updateTag = "v2.1.0"
+		m.updatePhase = phase
+		m, _ = step(m, key("R"))
+		if m.reExec {
+			t.Errorf("R latched a re-exec in phase %v; it must only restart from the installed state", phase)
+		}
+	}
+}
+
+// TestApplyingFreezesInputExceptCtrlC pins the applying-state precedence: every
+// key but ctrl+c is ignored while the binary swap is in flight (spec §11), so a
+// mutating tab key cannot reach the daemon and a tab switch cannot navigate away
+// mid-swap.
+func TestApplyingFreezesInputExceptCtrlC(t *testing.T) {
+	t.Parallel()
+	fake := &fakeData{status: readyStatus(), syncResp: api.SyncResponse{Status: "completed"}}
+	m := New(Config{Data: fake, StartService: func() error { return nil }})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 40})
+	m.status = readyStatus()
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateApplying
+	m.active = tabProjects
+	m.projects.SetUnits([]api.UnitInfo{{Provider: "claude", Folder: "x", LocalDir: "/l/x", WatchState: "watching"}})
+
+	if m2, cmd := step(m, key("s")); cmd != nil || m2.updatePhase != updateApplying {
+		t.Errorf("s during applying produced a Cmd or changed phase; want frozen (cmd=%v phase=%v)", cmd, m2.updatePhase)
+	}
+	if len(fake.syncCalls) != 0 {
+		t.Errorf("s during applying reached the daemon: %v", fake.syncCalls)
+	}
+	if m3, _ := step(m, key("2")); m3.active != tabProjects {
+		t.Error("a tab switch worked during applying; want frozen")
+	}
+
+	m4, cmd := step(m, key("ctrl+c"))
+	if !m4.quitting {
+		t.Error("ctrl+c did not quit during applying")
+	}
+	if cmd == nil {
+		t.Fatal("ctrl+c produced no Cmd during applying")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Error("ctrl+c Cmd did not produce a QuitMsg during applying")
+	}
+}
+
+// TestApplyingHoldsThroughTransientDaemonDown pins the interaction between the
+// self-managed restart and daemon-down detection: while applying, the daemon we
+// restart ourselves is transiently unreachable, which is EXPECTED — it must not
+// flip the alarming daemon-down screen. The installing banner holds instead.
+func TestApplyingHoldsThroughTransientDaemonDown(t *testing.T) {
+	t.Parallel()
+	m := newUpdateModel(nil, nil)
+	m.updateTag = "v2.1.0"
+	m.updatePhase = updateApplying
+
+	m, _ = step(m, statusMsg{err: api.ErrDaemonNotRunning})
+	if m.daemonDown {
+		t.Error("a transient daemon-down during our own restart flipped the daemon-down screen")
+	}
+	body := plain(m.View().Content)
+	if !strings.Contains(body, "installing v2.1.0") {
+		t.Errorf("installing banner not held through the restart; got:\n%s", body)
+	}
+	if strings.Contains(body, "daemon is not running") {
+		t.Errorf("daemon-down screen shown mid-apply; got:\n%s", body)
+	}
+}
+
+// TestFlowStartRefusedDuringUpdateFlow pins that a queued flow-request message
+// (the bubbletea no-ordering-guarantee race the chrome gates already close) is
+// refused while an update confirm or apply owns the interaction — no flow modal
+// opens underneath it, and the update phase is untouched.
+func TestFlowStartRefusedDuringUpdateFlow(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []updatePhase{updateConfirm, updateApplying} {
+		m := newUpdateModel(nil, nil)
+		m.updateTag = "v2.1.0"
+		m.updatePhase = phase
+
+		m2, cmd := step(m, views.EditRequestMsg{Memory: memoryfs.Memory{}})
+		if m2.flowModal != nil {
+			t.Errorf("phase %v: a flow modal opened under the update flow", phase)
+		}
+		if cmd != nil {
+			t.Errorf("phase %v: the refused flow request produced a Cmd", phase)
+		}
+		if m2.toast == nil {
+			t.Errorf("phase %v: the refused flow start did not toast", phase)
+		}
+		if m2.updatePhase != phase {
+			t.Errorf("phase %v: the update phase changed on a refused flow request (got %v)", phase, m2.updatePhase)
+		}
+	}
+}
+
+// TestUpdateAgentBrainAvailability pins the U row's live gate: it is available
+// (footer + palette) exactly in the offered phase — never idle (nothing to
+// update), never installed (already applied; U must not re-open the confirm).
+func TestUpdateAgentBrainAvailability(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+
+	if m.available("update-agent-brain") || m.paletteAvailable("update-agent-brain") {
+		t.Error("update-agent-brain available while idle")
+	}
+
+	m.updatePhase = updateOffered
+	m.updateTag = "v2.1.0"
+	if !m.available("update-agent-brain") || !m.paletteAvailable("update-agent-brain") {
+		t.Error("update-agent-brain not available while an update is offered")
+	}
+
+	m.updatePhase = updateInstalled
+	if m.available("update-agent-brain") || m.paletteAvailable("update-agent-brain") {
+		t.Error("update-agent-brain available while installed — U must not re-enter the confirm")
+	}
+}
+
+// TestStackFrameExactFillWithBannerPresent extends the pushed-screen exact-fill
+// pin to the banner-present case: the update banner is an inline segment on the
+// status-header LINE (spec §2), so it adds no header row and the frame line
+// count is IDENTICAL to the banner-absent pin at every toast occupancy. A width
+// wide enough that the longest banner never wraps isolates the reservation
+// arithmetic from wrapping. Asserting == both directions makes a banner that
+// silently grew the header (pushing the footer off the bottom) fail here.
+func TestStackFrameExactFillWithBannerPresent(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	const width = 160
+	tests := []struct {
+		name      string
+		phase     updatePhase
+		sticky    string
+		info      string
+		wantLines int
+	}{
+		{name: "offered, zero toasts", phase: updateOffered, wantLines: height - 4},
+		{name: "offered, both toasts", phase: updateOffered, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+		{name: "installed, zero toasts", phase: updateInstalled, wantLines: height - 4},
+		{name: "installed, both toasts", phase: updateInstalled, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{status: readyStatus()})
+			m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
+			m.status = readyStatus()
+			m.updateTag = "v2.1.0"
+			m.updatePhase = testCase.phase
+			m = m.pushScreen(fixedHeightScreen{title: "stub"})
+			if testCase.sticky != "" {
+				m.pushStickyToast(testCase.sticky)
+			}
+			if testCase.info != "" {
+				m.pushToast(testCase.info)
+			}
+
+			body := plain(m.View().Content)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
+				t.Errorf("banner-present stack frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, testCase.wantLines)
+			}
+			wantBanner := "v2.1.0 available — U to update"
+			if testCase.phase == updateInstalled {
+				wantBanner = "installed v2.1.0 — R to restart"
+			}
+			if !strings.Contains(body, wantBanner) {
+				t.Errorf("banner %q missing from the frame:\n%s", wantBanner, body)
+			}
+		})
+	}
+}
+
+// TestProjectsTabFrameExactFillWithBannerPresent extends the Projects TAB
+// exact-fill pin to the banner-present case: the status header the tab budget
+// reserves one line for stays one line with the banner, so the frame still
+// fills the terminal exactly at full chrome and runs short with fewer toasts.
+func TestProjectsTabFrameExactFillWithBannerPresent(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	const width = 160
+	tests := []struct {
+		name      string
+		sticky    string
+		info      string
+		wantLines int
+	}{
+		{name: "zero toasts", wantLines: height - 4},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{status: readyStatus(), syncResp: api.SyncResponse{Status: "completed"}})
+			m.version = "vtest"
+			m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
+			m.status = readyStatus()
+			m.now = time.Date(2026, 7, 9, 13, 0, 0, 0, time.UTC)
+			m.updateTag = "v2.1.0"
+			m.updatePhase = updateOffered
+			m.projects.SetUnits([]api.UnitInfo{
+				{Provider: "claude", Folder: "agent-brain", LocalDir: "/l/a", WatchState: "watching"},
+				{Provider: "codex", Folder: "_global", LocalDir: "/l/c", WatchState: "failed: x"},
+			})
+			m, _ = step(m, key("s")) // action notice — the reservation's last chrome line
+			if testCase.sticky != "" {
+				m.pushStickyToast(testCase.sticky)
+			}
+			if testCase.info != "" {
+				m.pushToast(testCase.info)
+			}
+
+			body := plain(m.View().Content)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
+				t.Errorf("banner-present Projects frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, testCase.wantLines)
+			}
+			if !strings.Contains(body, "v2.1.0 available — U to update") {
+				t.Errorf("banner missing from the Projects frame:\n%s", body)
+			}
+		})
 	}
 }

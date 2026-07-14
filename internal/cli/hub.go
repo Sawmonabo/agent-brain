@@ -6,10 +6,46 @@ import (
 	"fmt"
 	"os"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
+
+// reExecRequester is the narrow behaviour launchHub needs off the final model
+// to decide a re-exec (spec §11): the dashboard root implements it. maybeReExec
+// asserts against this interface rather than the concrete dashboard.Model so
+// the seam is unit-testable with a recording fake — production always hands it
+// a dashboard.Model, for which the two are equivalent.
+type reExecRequester interface {
+	ReExecRequested() bool
+}
+
+// maybeReExec replaces the running process with a fresh exec of the installed
+// binary when the hub latched a re-exec request (the R key after a self-update,
+// spec §11), so the restarted hub runs on the just-installed binary. execFn is
+// syscall.Exec in production — a unix execve that, on success, never returns
+// (the image is replaced); a test injects a recording fn. darwin/linux only,
+// the supported matrix.
+//
+// The current argv and environment are handed through unchanged, so the
+// restarted hub is the same invocation the user launched, now on the new
+// binary. A final model that is not a re-exec requester, or one that never
+// latched R, leaves the process untouched.
+func maybeReExec(finalModel tea.Model, execFn func(argv0 string, argv []string, envv []string) error) error {
+	requester, ok := finalModel.(reExecRequester)
+	if !ok || !requester.ReExecRequested() {
+		return nil
+	}
+	binary, err := resolveBinary()
+	if err != nil {
+		return err
+	}
+	if err := execFn(binary, os.Args, os.Environ()); err != nil {
+		return fmt.Errorf("restart on the updated binary failed — run agent-brain again to use it: %w", err)
+	}
+	return nil
+}
 
 // agentEnvVars is the coding-agent fingerprint (spec §1 exact list, ADR 20
 // D1): stripe-cli/vercel-style detection so a coding agent driving this

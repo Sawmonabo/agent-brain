@@ -90,13 +90,7 @@ func newUpdateCmd() *cobra.Command {
 				return err
 			}
 			updater := &selfupdate.Updater{Source: ghClient, Getenv: os.Getenv}
-			opts := selfupdate.Options{
-				Repo:           productRepo,
-				CurrentVersion: Version,
-				TargetPath:     binaryPath,
-				GOOS:           runtime.GOOS,
-				GOARCH:         runtime.GOARCH,
-			}
+			opts := updateOptions(binaryPath)
 			if len(args) == 1 {
 				opts.RequestedVersion = args[0]
 			}
@@ -110,21 +104,7 @@ func newUpdateCmd() *cobra.Command {
 				}
 				opts.RequestedVersion = tag
 			}
-			restart := func(ctx context.Context, out io.Writer) error {
-				controller, err := service.NewController(binaryPath)
-				if err != nil {
-					return err
-				}
-				return restartServiceForUpdate(ctx, out, controller, func(pollCtx context.Context) string {
-					if client := pollForDaemonClient(pollCtx, updateDaemonPollTimeout, updateDaemonPollInterval); client != nil {
-						if status, err := client.Status(pollCtx); err == nil {
-							return status.Version
-						}
-					}
-					return ""
-				})
-			}
-			return runUpdate(cmd.Context(), cmd.OutOrStdout(), updater, opts, check, noRestart, restart)
+			return runUpdate(cmd.Context(), cmd.OutOrStdout(), updater, opts, check, noRestart, updateRestartFunc(binaryPath))
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false,
@@ -141,6 +121,98 @@ func newUpdateCmd() *cobra.Command {
 	cmd.MarkFlagsMutuallyExclusive("list", "check")
 	cmd.MarkFlagsMutuallyExclusive("list", "no-restart")
 	return cmd
+}
+
+// updateOptions is the selfupdate.Options shared by every in-process update
+// path: the product repo, the running version as the downgrade floor, and
+// this platform's own binary as the atomic-replace target. Callers pin a
+// specific release by setting RequestedVersion; the zero value resolves the
+// newest.
+func updateOptions(binaryPath string) selfupdate.Options {
+	return selfupdate.Options{
+		Repo:           productRepo,
+		CurrentVersion: Version,
+		TargetPath:     binaryPath,
+		GOOS:           runtime.GOOS,
+		GOARCH:         runtime.GOARCH,
+	}
+}
+
+// updateRestartFunc is the post-install restart step: bounce the daemon
+// service onto the freshly written binary and poll it back to ready. Shared
+// by `agent-brain update` and the hub's one-key self-update so both restart
+// the service identically.
+func updateRestartFunc(binaryPath string) func(context.Context, io.Writer) error {
+	return func(ctx context.Context, out io.Writer) error {
+		controller, err := service.NewController(binaryPath)
+		if err != nil {
+			return err
+		}
+		return restartServiceForUpdate(ctx, out, controller, func(pollCtx context.Context) string {
+			if client := pollForDaemonClient(pollCtx, updateDaemonPollTimeout, updateDaemonPollInterval); client != nil {
+				if status, err := client.Status(pollCtx); err == nil {
+					return status.Version
+				}
+			}
+			return ""
+		})
+	}
+}
+
+// newSelfUpdater builds the selfupdate engine over a fresh gh client — the
+// same construction `update` runs, lifted so the hub's update closures share
+// it. A gh-client failure surfaces to the caller (the hub swallows it on
+// check, reports it as a toast on apply).
+func newSelfUpdater() (*selfupdate.Updater, error) {
+	ghClient, err := ghx.NewClient()
+	if err != nil {
+		return nil, err
+	}
+	return &selfupdate.Updater{Source: ghClient, Getenv: os.Getenv}, nil
+}
+
+// hubUpdateClosures builds the dashboard's update seams (spec §11) over the
+// same machinery `agent-brain update` uses. checkUpdate resolves the newest
+// release and reduces it to a banner tag (empty when up to date); applyUpdate
+// installs a named tag and restarts the daemon by DELEGATING to runUpdate
+// with the command's exact check→apply→restart composition, its progress
+// output discarded (the hub speaks through its status line, not stdout).
+func hubUpdateClosures(binaryPath string) (
+	checkUpdate func(context.Context) (string, error),
+	applyUpdate func(context.Context, string) error,
+) {
+	checkUpdate = func(ctx context.Context) (string, error) {
+		updater, err := newSelfUpdater()
+		if err != nil {
+			return "", err
+		}
+		return adaptCheckDecision(updater.Check(ctx, updateOptions(binaryPath)))
+	}
+	applyUpdate = func(ctx context.Context, tag string) error {
+		updater, err := newSelfUpdater()
+		if err != nil {
+			return err
+		}
+		opts := updateOptions(binaryPath)
+		opts.RequestedVersion = tag
+		return runUpdate(ctx, io.Discard, updater, opts, false, false, updateRestartFunc(binaryPath))
+	}
+	return checkUpdate, applyUpdate
+}
+
+// adaptCheckDecision reduces a selfupdate check to the hub banner's contract:
+// the available release tag, or "" when there is nothing to offer. A check
+// error propagates unchanged (the hub swallows it — no banner); "up to date"
+// becomes the empty tag; otherwise the resolved latest tag is what the banner
+// advertises and U installs.
+func adaptCheckDecision(decision selfupdate.Decision, err error) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if !decision.UpdateNeeded {
+		return "", nil
+	}
+	return decision.Latest, nil
 }
 
 // releaseListRow is `update --list --json`'s wire shape.

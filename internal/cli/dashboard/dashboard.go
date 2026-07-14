@@ -86,6 +86,17 @@ type (
 		err    error
 	}
 	serviceStartedMsg struct{ err error }
+	// updateCheckedMsg carries CheckUpdate's verdict (spec §11): tag is the
+	// newer release, "" when current. err is best-effort — the hub shows
+	// nothing on a failed check, so an errored result never surfaces a banner.
+	updateCheckedMsg struct {
+		tag string
+		err error
+	}
+	// updateAppliedMsg is ApplyUpdate's outcome: nil err → the banner offers R;
+	// a non-nil err is toasted verbatim (sticky) and the banner returns to
+	// offering a retry.
+	updateAppliedMsg struct{ err error }
 )
 
 // toast is a transient status-area notification (spec §2's "status bar: …
@@ -111,6 +122,23 @@ type toast struct {
 func (t *toast) expired(now time.Time) bool {
 	return !t.visibleSince.IsZero() && !now.Before(t.visibleSince.Add(toastTTL))
 }
+
+// updatePhase is the update banner's lifecycle (spec §11, Task 18). It advances
+// strictly forward on user action: an available release is OFFERED (banner: "U
+// to update"), U opens the CONFIRM footer prompt, y starts APPLYING (the binary
+// swap + daemon restart are in flight; every key but ctrl+c is frozen), and a
+// clean apply lands on INSTALLED (banner: "R to restart"). A failed apply drops
+// back to OFFERED so the user can retry. updateTag names the release across
+// every non-idle phase; the two are kept in lockstep (idle iff updateTag == "").
+type updatePhase int
+
+const (
+	updateIdle      updatePhase = iota // no update known (updateTag == "")
+	updateOffered                      // a newer release is available: banner offers U
+	updateConfirm                      // U pressed: the confirm prompt owns the footer
+	updateApplying                     // confirmed: ApplyUpdate Cmd in flight, inputs frozen
+	updateInstalled                    // applied cleanly: banner offers R (re-exec)
+)
 
 // Config is what the cli root command supplies to build the root model.
 type Config struct {
@@ -148,6 +176,18 @@ type Config struct {
 	// 18 once the release check exists; until then this is shown plain, no
 	// placeholder. Empty in tests that do not set it.
 	Version string
+	// CheckUpdate returns the newer release tag ("v2.1.0"), "" when the running
+	// binary is current, or an error the hub SWALLOWS — the update banner is
+	// best-effort and never noise (spec §11). Wired in the cli root command to
+	// selfupdate.Updater.Check via the same gh composition `update` uses (ADR
+	// 18); the hub never talks to gh itself. nil disables the banner entirely.
+	CheckUpdate func(context.Context) (string, error)
+	// ApplyUpdate runs the Check→Apply→service-restart sequence for tag — the
+	// exact runUpdate pipeline minus its stdout prose (the hub reports via its
+	// modal and toasts). Wired in the cli root command through the existing
+	// updateEngine seam + restartServiceForUpdate with an io.Discard writer.
+	// nil disables the one-key self-update.
+	ApplyUpdate func(ctx context.Context, tag string) error
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -244,6 +284,20 @@ type Model struct {
 	// one place that drops it once the overlay latches Closed.
 	searchOverlay *views.SearchOverlay
 
+	// Update banner + self-update state (spec §11, Task 18). checkUpdate/
+	// applyUpdate are the cli-injected closures (nil in tests that do not wire
+	// them, which simply never surfaces a banner — the best-effort posture).
+	// updateCheckFired guards the at-most-once CheckUpdate, flipped true the
+	// first time a successful statusMsg schedules the check. updateTag is the
+	// release the banner names; updatePhase drives the U→confirm→apply→installed
+	// progression; reExec latches R so launchHub re-execs onto the new binary.
+	checkUpdate      func(context.Context) (string, error)
+	applyUpdate      func(ctx context.Context, tag string) error
+	updateCheckFired bool
+	updateTag        string
+	updatePhase      updatePhase
+	reExec           bool
+
 	quitting bool
 }
 
@@ -256,12 +310,21 @@ func New(cfg Config) Model {
 		registry:     cfg.Registry,
 		settings:     cfg.Settings,
 		version:      cfg.Version,
+		checkUpdate:  cfg.CheckUpdate,
+		applyUpdate:  cfg.ApplyUpdate,
 		getenv:       os.Getenv,
 		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
 		projects:     views.NewProjectsView(),
 	}
 	return m.withStyles(theme.Default(true), true) // dark until the terminal answers (Init requests it)
+}
+
+// ReExecRequested reports whether the hub latched a re-exec (the R key after a
+// successful self-update, spec §11). launchHub reads it off the final model and
+// replaces the process image with a fresh exec of the newly installed binary.
+func (m Model) ReExecRequested() bool {
+	return m.reExec
 }
 
 // withStyles installs styles (and the matching glamour renderer) on the
@@ -490,6 +553,40 @@ func (m Model) startServiceCmd() tea.Cmd {
 	}
 }
 
+// checkUpdateCmd runs the injected release check off the poll and adapts its
+// (tag, err) into an updateCheckedMsg. Best-effort: a nil closure yields no Cmd,
+// and the message handler swallows an errored result (the banner is never
+// noise, spec §11). The 10s RequestTimeout bounds the gh round trip the check
+// makes; a timeout simply yields no banner.
+func (m Model) checkUpdateCmd() tea.Cmd {
+	check := m.checkUpdate
+	if check == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), views.RequestTimeout)
+		defer cancel()
+		tag, err := check(ctx)
+		return updateCheckedMsg{tag: tag, err: err}
+	}
+}
+
+// applyUpdateCmd runs the injected self-update for tag and reports the outcome.
+// It uses a background context, NOT the 2s poll's RequestTimeout: the download/
+// verify/sanity/restart steps carry their own timeouts (internal/selfupdate,
+// restartServiceForUpdate), and a hard deadline mid-swap is worse than letting
+// the atomic replace finish. A nil closure — a misconfiguration, since the cli
+// wires check and apply together — reports an error rather than nil-calling.
+func (m Model) applyUpdateCmd(tag string) tea.Cmd {
+	apply := m.applyUpdate
+	return func() tea.Msg {
+		if apply == nil {
+			return updateAppliedMsg{err: errors.New("self-update is not available in this build")}
+		}
+		return updateAppliedMsg{err: apply(context.Background(), tag)}
+	}
+}
+
 // Update is the root reducer. It owns the shared status, tab switching, and the
 // daemon-down/service-start flow; view-specific data and keys are forwarded to
 // the owning view.
@@ -516,10 +613,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusMsg:
 		m.status, m.statusErr = msg.resp, msg.err
-		m.daemonDown = errors.Is(msg.err, api.ErrDaemonNotRunning)
+		// A daemon we restart ourselves mid-update is EXPECTED to be transiently
+		// unreachable; that must not flip the alarming daemon-down screen (which
+		// the applying gate would also freeze). Hold the current view — the
+		// installing banner — until the apply resolves.
+		if m.updatePhase != updateApplying {
+			m.daemonDown = errors.Is(msg.err, api.ErrDaemonNotRunning)
+		}
 		// The capture wait resolves off the same poll that carries every
 		// other daemon fact — no dedicated timer (editflow.go).
 		m.checkPendingCapture()
+		// The release check fires at most once per session, only after the
+		// FIRST successful status (spec §11): a status error never triggers it,
+		// and updateCheckFired makes every later success a no-op.
+		if msg.err == nil && !m.updateCheckFired && m.checkUpdate != nil {
+			m.updateCheckFired = true
+			return m, m.checkUpdateCmd()
+		}
 		return m, nil
 
 	case projectsMsg:
@@ -676,6 +786,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.serviceErr = msg.err
 		return m, m.statusCmd() // re-poll to see whether it came up
 
+	case updateCheckedMsg:
+		// Best-effort (spec §11): a failed check or an "already current" (empty
+		// tag) result surfaces nothing — no banner, no toast. Only a newer tag
+		// opens the offer, and only from idle (the check fires once, so this
+		// can never clobber a later phase).
+		if msg.err == nil && msg.tag != "" && m.updatePhase == updateIdle {
+			m.updateTag = msg.tag
+			m.updatePhase = updateOffered
+		}
+		return m, nil
+
+	case updateAppliedMsg:
+		if msg.err != nil {
+			// A failed apply is an unresolved failure the user must act on
+			// (ErrBrewManaged/ErrDevBuild are self-remediating and surface at
+			// CHECK time, so they never reach here; a download/verify/restart
+			// failure lands verbatim). Sticky, never a 5s info toast — then the
+			// banner returns to offering a retry.
+			m.pushStickyToast(msg.err.Error())
+			m.updatePhase = updateOffered
+			return m, nil
+		}
+		m.updatePhase = updateInstalled
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -686,6 +821,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		m.quitting = true
 		return m, tea.Quit
+	}
+
+	// While an update is applying the binary is being swapped and the daemon
+	// restarted under us; every key but ctrl+c is ignored until ApplyUpdate
+	// resolves (spec §11). Checked above the daemon-down gate so the expected
+	// mid-restart unreachability cannot pull in that screen's s/q keys either.
+	if m.updatePhase == updateApplying {
+		return m, nil
 	}
 
 	// The daemon-down screen owns the keyboard until the daemon answers again.
@@ -735,6 +878,30 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// binding.
 	if m.searchOverlay != nil {
 		return m.forwardToSearchOverlay(msg)
+	}
+
+	// The update confirm owns the keyboard while open (spec §11): y/Y applies
+	// the pending release, n/N/esc back out to the offer. Like the quit prompt
+	// below, any other key is inert. It can only be entered on a bare tab — U
+	// reaches the global dispatch only with no chrome and no stack open — so no
+	// overlay or modal ever coexists with it, and refuseFlowStart refuses a
+	// raced-in flow request the same way it does for the chrome above.
+	if m.updatePhase == updateConfirm {
+		switch {
+		case keybinding.Matches(msg, views.DashboardKeys.ConfirmDecision):
+			switch msg.String() {
+			case "y", "Y":
+				m.updatePhase = updateApplying
+				return m, m.applyUpdateCmd(m.updateTag)
+			default: // n / N
+				m.updatePhase = updateOffered
+				return m, nil
+			}
+		case keybinding.Matches(msg, views.DashboardKeys.Cancel):
+			m.updatePhase = updateOffered
+			return m, nil
+		}
+		return m, nil
 	}
 
 	// The quit prompt owns the keyboard while open (spec §2): y/Y actually
@@ -825,6 +992,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.quitPrompt = true
 		return m, nil
+	case m.updatePhase == updateInstalled && msg.String() == "R":
+		// The installed banner's "R to restart" (spec §11): latch the re-exec
+		// and quit so launchHub replaces the process image with the freshly
+		// installed binary. Reached only on a bare tab — a pushed screen
+		// consumes keys first, so a History screen's own R still means restore
+		// there — and only in the installed phase, so R is otherwise inert.
+		m.reExec = true
+		m.quitting = true
+		return m, tea.Quit
 	}
 
 	// Every other global action (quit, ctrl+k, ?, /) shares the one dispatch
@@ -1400,7 +1576,7 @@ func (m *Model) dispatch(id string) tea.Cmd {
 	// would starve it); the key path to these is already closed by handleKey's
 	// modal priority. The set is exactly dispatch's chrome openers: the help
 	// and search special-cases below, and the open-palette runner.
-	if m.flowModal != nil && (id == "help" || id == "search" || id == "open-palette") {
+	if m.flowModal != nil && (id == "help" || id == "search" || id == "open-palette" || id == "update-agent-brain") {
 		m.pushToast("a prompt is already open — finish or esc it first")
 		return nil
 	}
@@ -1410,6 +1586,13 @@ func (m *Model) dispatch(id string) tea.Cmd {
 	}
 	if id == "search" {
 		m.openSearchOverlay()
+		return nil
+	}
+	if id == "update-agent-brain" {
+		// A pure state flip into the confirm prompt (no Cmd), like help/search
+		// above — kept out of runners() so it needs no dead nil-returning
+		// runner. available() has already gated it on the offered phase.
+		m.updatePhase = updateConfirm
 		return nil
 	}
 	runner, ok := m.runners()[id]
@@ -1485,6 +1668,12 @@ func (m *Model) available(id string) bool {
 		return m.conflictDetailHistoryAvailable()
 	case "add-project":
 		return m.actions.AddAvailable()
+	case "update-agent-brain":
+		// Live only while a newer release is offered — not idle (nothing to do)
+		// and not after install (already applied; U must not re-open the
+		// confirm). This refines the brief's "updateTag != """ to the phase, so
+		// the installed state never re-advertises U.
+		return m.updatePhase == updateOffered
 	default:
 		_, ok := m.runners()[id]
 		return ok
@@ -1510,6 +1699,11 @@ func (m *Model) paletteAvailable(id string) bool {
 		return true
 	case "add-project":
 		return m.actions.AddAvailable()
+	case "update-agent-brain":
+		// A dispatch special-case (no runner), like help/search — offered only
+		// while a newer release is available, so the palette lists it exactly
+		// then and never as a dead row.
+		return m.updatePhase == updateOffered
 	default:
 		_, ok := m.runners()[id]
 		return ok
@@ -1650,6 +1844,12 @@ func (m Model) tabBar() string {
 // ignores).
 func (m Model) footer() string {
 	switch {
+	case m.updatePhase == updateConfirm:
+		return m.styles.Warn.Render("update to " + m.updateTag + "? (y/n)")
+	case m.updatePhase == updateApplying:
+		// Inputs are frozen except ctrl+c (handleKey); the footer says so rather
+		// than advertising tab keys that do nothing right now.
+		return m.styles.Dim.Render("installing " + m.updateTag + "… — ctrl+c aborts")
 	case m.quitPrompt:
 		return m.styles.Warn.Render("quit agent-brain? (y/n)")
 	case m.flowModal != nil:
@@ -1715,6 +1915,23 @@ func (m Model) activeScope() actions.Scope {
 // keeps only what is fleet-wide and cannot be broken down per unit (daemon
 // state, quiesce, the last fleet cycle), never repeated down every identical row.
 func (m Model) statusHeader() string {
+	base := m.statusHeaderBase()
+	banner := m.updateBanner()
+	if banner == "" {
+		return base
+	}
+	// The update banner is a status-bar segment adjacent to the version (spec
+	// §2: "daemon state · version · update banner · toasts"): appended on the
+	// SAME line, so it adds no header row and every frame budget (stackBodyHeight
+	// chromeLines, ProjectsView height−14) stays put. It renders even when the
+	// base is the status-error placeholder, so the "installing…" line holds
+	// through the self-managed daemon restart an apply performs.
+	return base + m.styles.Dim.Render(" · ") + banner
+}
+
+// statusHeaderBase renders the fleet-level daemon facts (spec §7) — everything
+// on the status line except the update banner statusHeader appends.
+func (m Model) statusHeaderBase() string {
 	if m.statusErr != nil {
 		return m.styles.Dim.Render("daemon status unavailable")
 	}
@@ -1724,6 +1941,24 @@ func (m Model) statusHeader() string {
 	}
 	segments = append(segments, "last cycle: "+lastCycle(m.status))
 	return m.styles.Dim.Render(strings.Join(segments, " · "))
+}
+
+// updateBanner is the status header's update segment (spec §11), empty until a
+// release check offers something. Its text tracks the phase: the U offer, the
+// in-flight install, then the R restart offer. Info (blue) for the available
+// and installing states, OK (green) for the completed install — both Styles
+// fields, so a background swap recolors the banner with the rest of the chrome.
+func (m Model) updateBanner() string {
+	switch m.updatePhase {
+	case updateOffered, updateConfirm:
+		return m.styles.Info.Render(m.updateTag + " available — U to update")
+	case updateApplying:
+		return m.styles.Info.Render("installing " + m.updateTag + "…")
+	case updateInstalled:
+		return m.styles.OK.Render("installed " + m.updateTag + " — R to restart the hub on it (or restart manually)")
+	default:
+		return ""
+	}
 }
 
 // watchState derives the fleet's watch posture from the daemon status. A live

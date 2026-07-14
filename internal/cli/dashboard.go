@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -91,6 +92,8 @@ func launchHub(cmd *cobra.Command) error {
 	// refusing to launch the dashboard over it would invert priorities.
 	_ = editorx.SweepStaleScratch(cacheRoot, time.Now())
 
+	checkUpdate, applyUpdate := hubUpdateClosures(binaryPath)
+
 	model := dashboard.New(dashboard.Config{
 		Data:      dashboard.NewData(client, offlineDoctorRunner()),
 		Discover:  dashboardDiscover(),
@@ -101,6 +104,13 @@ func launchHub(cmd *cobra.Command) error {
 		// The build version stamped into cli.Version (-ldflags), rendered in the
 		// Projects fleet header (spec §9). "dev" for an unstamped local build.
 		Version: Version,
+		// The hub's self-update seams (spec §11): CheckUpdate resolves the
+		// newest release for the status-header banner; ApplyUpdate installs a
+		// chosen tag and restarts the daemon. Both run the same selfupdate
+		// machinery `agent-brain update` uses (hubUpdateClosures), so the hub
+		// and the command can never drift in what they install or how.
+		CheckUpdate: checkUpdate,
+		ApplyUpdate: applyUpdate,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting
@@ -120,7 +130,8 @@ func launchHub(cmd *cobra.Command) error {
 		tea.WithInput(cmd.InOrStdin()),
 		tea.WithOutput(cmd.OutOrStdout()),
 	)
-	if _, err := program.Run(); err != nil {
+	finalModel, err := program.Run()
+	if err != nil {
 		// A context-cancelled run (external signal) is a clean user exit,
 		// not a CLI failure to report as exit code 1.
 		if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
@@ -128,7 +139,12 @@ func launchHub(cmd *cobra.Command) error {
 		}
 		return err
 	}
-	return nil
+	// On a clean quit, hand off to the just-installed binary if the hub
+	// latched the R restart after a self-update (spec §11). When no re-exec
+	// was requested this returns nil and the process exits normally; on
+	// success syscall.Exec never returns — this invocation becomes the new
+	// binary, same argv and environment.
+	return maybeReExec(finalModel, syscall.Exec)
 }
 
 // loadDashboardSettings loads config.toml independently of buildTrackDeps

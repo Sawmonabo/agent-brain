@@ -105,6 +105,15 @@ var registry = []Action{
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},
 	{ID: "help", Title: "help", Keys: []string{"?"}, KeyHint: "?", Scope: ScopeGlobal},
 	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal},
+	// update-agent-brain (Task 18, spec §11) surfaces the one-key self-update
+	// when a newer release is available. NOT Mutates — a binary swap is not a
+	// daemon mutation, so quiesce never refuses it; its live availability is
+	// the root's updatePhase == updateOffered gate (available/paletteAvailable),
+	// and U is dispatched directly by the root like help/search (a pure state
+	// flip into the confirm prompt, no Cmd), so it carries no runners() entry.
+	// The banner itself is the primary surface; this row keeps the palette/help/
+	// footer honest about the same key.
+	{ID: "update-agent-brain", Title: "update agent-brain", Keys: []string{"U"}, KeyHint: "U", Scope: ScopeGlobal},
 	// ScopeBrowser rows (Task 11 seeded o///esc; Task 12 added enter-to-read):
 	// the memory browser's own in-screen keys, matched directly by
 	// Browser.updateKey — no root-level runner, same as select/switch-tabs.

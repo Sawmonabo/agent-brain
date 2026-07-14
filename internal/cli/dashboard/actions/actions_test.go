@@ -226,6 +226,39 @@ func TestSeedRegistryShape(t *testing.T) {
 	}
 }
 
+// TestUpdateRegistryRowShape pins Task 18's registry addition (spec §11): the
+// global update-agent-brain row. NOT Mutates — a self-update is not a daemon
+// mutation, so quiesce never refuses it — and, like help/search, it carries no
+// runner (the root dispatches it directly into the confirm prompt). Its live
+// availability (updatePhase == updateOffered) is root-private, pinned in the
+// dashboard package.
+func TestUpdateRegistryRowShape(t *testing.T) {
+	t.Parallel()
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+	action, ok := byID["update-agent-brain"]
+	if !ok {
+		t.Fatal("registry missing action \"update-agent-brain\"")
+	}
+	if diff := cmp.Diff([]string{"U"}, action.Keys); diff != "" {
+		t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+	}
+	if action.KeyHint != "U" {
+		t.Errorf("KeyHint = %q, want \"U\"", action.KeyHint)
+	}
+	if action.Mutates {
+		t.Error("Mutates = true, want false — a self-update is not a daemon mutation")
+	}
+	if action.Scope != ScopeGlobal {
+		t.Errorf("Scope = %v, want ScopeGlobal", action.Scope)
+	}
+	if action.Title == "" {
+		t.Error("Title must not be empty — it is the palette/help label")
+	}
+}
+
 // TestBrowserRegistryRowsShape pins Task 11's own registry additions: the
 // Projects tab's entry point into the memory browser (open-browser) and the
 // browser's own in-screen keys (ScopeBrowser). None Mutates, and none has a

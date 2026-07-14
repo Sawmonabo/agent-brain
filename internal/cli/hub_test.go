@@ -1,12 +1,105 @@
 package cli
 
 import (
+	"errors"
 	"io"
+	"os"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/spf13/pflag"
 )
+
+// stubReExecModel is a tea.Model that also answers ReExecRequested — the seam
+// maybeReExec asserts against, so the re-exec decision is testable with a
+// recording execFn instead of a real bubbletea program and syscall.Exec.
+type stubReExecModel struct{ requested bool }
+
+func (m stubReExecModel) Init() tea.Cmd                       { return nil }
+func (m stubReExecModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+func (m stubReExecModel) View() tea.View                      { return tea.NewView("") }
+func (m stubReExecModel) ReExecRequested() bool               { return m.requested }
+
+// stubBareModel is a tea.Model with NO ReExecRequested method — the defensive
+// path where the final model is not a re-exec requester at all.
+type stubBareModel struct{}
+
+func (m stubBareModel) Init() tea.Cmd                       { return nil }
+func (m stubBareModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+func (m stubBareModel) View() tea.View                      { return tea.NewView("") }
+
+// TestMaybeReExec pins launchHub's post-Run re-exec seam (spec §11): a model
+// that latched the R restart execs the resolved binary with the current argv
+// and environment (so the restarted hub is the same invocation on the new
+// binary); every other case leaves the process alone, and an exec failure
+// propagates.
+func TestMaybeReExec(t *testing.T) {
+	t.Parallel()
+	binary, err := resolveBinary()
+	if err != nil {
+		t.Fatalf("resolveBinary: %v", err)
+	}
+
+	t.Run("requested re-exec runs the resolved binary with argv+env", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		var gotArgv0 string
+		var gotArgv, gotEnv []string
+		exec := func(argv0 string, argv, env []string) error {
+			called, gotArgv0, gotArgv, gotEnv = true, argv0, argv, env
+			return nil
+		}
+		if err := maybeReExec(stubReExecModel{requested: true}, exec); err != nil {
+			t.Fatalf("maybeReExec returned %v", err)
+		}
+		if !called {
+			t.Fatal("execFn not called when a re-exec was requested")
+		}
+		if gotArgv0 != binary {
+			t.Errorf("argv0 = %q, want the resolved binary %q", gotArgv0, binary)
+		}
+		if diff := cmp.Diff(os.Args, gotArgv); diff != "" {
+			t.Errorf("argv mismatch (-want +got):\n%s", diff)
+		}
+		if diff := cmp.Diff(os.Environ(), gotEnv); diff != "" {
+			t.Errorf("env mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("no request leaves the process alone", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		exec := func(string, []string, []string) error { called = true; return nil }
+		if err := maybeReExec(stubReExecModel{requested: false}, exec); err != nil {
+			t.Fatalf("maybeReExec returned %v", err)
+		}
+		if called {
+			t.Error("execFn called when no re-exec was requested")
+		}
+	})
+
+	t.Run("a non-requester model does not exec", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		exec := func(string, []string, []string) error { called = true; return nil }
+		if err := maybeReExec(stubBareModel{}, exec); err != nil {
+			t.Fatalf("maybeReExec returned %v", err)
+		}
+		if called {
+			t.Error("execFn called for a model that is not a re-exec requester")
+		}
+	})
+
+	t.Run("exec failure propagates", func(t *testing.T) {
+		t.Parallel()
+		wantErr := errors.New("exec: no such file or directory")
+		exec := func(string, []string, []string) error { return wantErr }
+		if err := maybeReExec(stubReExecModel{requested: true}, exec); !errors.Is(err, wantErr) {
+			t.Errorf("maybeReExec err = %v, want %v", err, wantErr)
+		}
+	})
+}
 
 // TestDecideHubEntryMatrix pins spec §1's bare-invocation matrix (ADR 20
 // decision 1) as a pure function: all 8 (initialized × tty × agentEnv)
