@@ -219,6 +219,20 @@ func TestInsightsEmptyHistoryAtCapIsQualified(t *testing.T) {
 		}
 	}
 
+	// A window of pathless commits (a sync-merge yields no changed files, so
+	// git log --name-only returns zero paths) makes most-edited itself empty at
+	// the cap — its empty-state must carry the disclosure too. Pins the
+	// most-edited call site specifically; the machines/last-capture asserts above
+	// exercise the shared helper's other two branches.
+	merges := manyVersions(insightsHistoryLimit, true)
+	for idx := range merges {
+		merges[idx].Paths = nil
+	}
+	mergeCap := plain(adoptInsights(t, insightsWithVersions(merges)).View(100, 200))
+	if want := "no edits recorded in the newest 500 commits — older history not scanned"; !strings.Contains(mergeCap, want) {
+		t.Errorf("most-edited empty-state over a truncated pathless window is unqualified; missing %q; got:\n%s", want, mergeCap)
+	}
+
 	small := adoptInsights(t, insightsWithVersions([]api.HistoryVersion{{Rev: "r0", Paths: []string{"claude/one.md"}}}))
 	s := plain(small.View(100, 200))
 	if !strings.Contains(s, "no captures in this project's history") {
