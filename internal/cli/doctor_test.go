@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -334,7 +335,7 @@ func TestRunDoctorFixWithQuiesceQuiesces(t *testing.T) {
 		mustGitCLI(t, paths.MemoriesDir(), "config", "--local", "filter.agentbrain.required", "false")
 
 		var stderr bytes.Buffer
-		report, err := runDoctorFixWithQuiesce(context.Background(), &stderr)
+		report, err := runDoctorFixWithQuiesce(context.Background(), true, &stderr)
 		if err != nil {
 			t.Fatalf("runDoctorFixWithQuiesce: %v\nstderr: %s", err, stderr.String())
 		}
@@ -362,7 +363,7 @@ func TestRunDoctorFixWithQuiesceQuiesces(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, err := runDoctorFixWithQuiesce(context.Background(), io.Discard)
+		_, err := runDoctorFixWithQuiesce(context.Background(), true, io.Discard)
 		if err == nil {
 			t.Fatal("runDoctorFixWithQuiesce succeeded on a broken checkout; want a fix error")
 		}
@@ -374,4 +375,78 @@ func TestRunDoctorFixWithQuiesceQuiesces(t *testing.T) {
 			t.Fatalf("resume count = %d after a failed fix, want 1 — resume must still be attempted", got.resumed)
 		}
 	})
+}
+
+// TestRunDoctorFixWithQuiesceThreadsOfflineFlag pins F1's restored contract: the
+// extracted --fix orchestration threads its offline argument into doctor.Fix's
+// re-check (Fix re-runs the FULL battery under the same deps), so the `remote`
+// reachability row — and the exit code an unreachable origin drives — track the
+// flag exactly as plain `doctor` does. A hardcoded offline=true would silently
+// drop that row and flip an unreachable-origin `doctor --fix` from exit 1 to
+// exit 0, breaking the CI/health-gate contract; this test fails if the hardcode
+// ever returns.
+//
+// The origin is pointed at a closed loopback port, so `git ls-remote` gets an
+// immediate connection-refused — deterministic, no external network or DNS, well
+// inside remoteCheckTimeout. An https origin also activates checkCredentialHelper,
+// but doctor.Fix wires the gh helper before re-checking (deps.GH is the fake gh
+// on PATH), so that row passes and `remote` is the SOLE offline/online difference.
+func TestRunDoctorFixWithQuiesceThreadsOfflineFlag(t *testing.T) {
+	setup := func(t *testing.T) {
+		paths := provisionHealthyDoctorMachine(t)
+		fakeGhOnPath(t)
+		startFakeDaemon(t, api.StatusResponse{State: "ready"}, api.SyncResponse{}, api.ProjectsResponse{})
+		// An https origin at a closed loopback port: the reachability probe fails
+		// fast and deterministically (connection refused) when online, and is
+		// omitted entirely when offline — the exact axis the flag governs.
+		mustGitCLI(t, paths.MemoriesDir(), "config", "--local", "remote.origin.url", "https://127.0.0.1:1/agent-brain-doctor-test.git")
+	}
+
+	remoteRow := func(report doctor.Report) (doctor.CheckResult, bool) {
+		for _, result := range report.Results {
+			if result.Name == "remote" {
+				return result, true
+			}
+		}
+		return doctor.CheckResult{}, false
+	}
+
+	t.Run("online (offline=false) keeps the failing remote row and fails the report", func(t *testing.T) {
+		setup(t)
+		report, err := runDoctorFixWithQuiesce(context.Background(), false, io.Discard)
+		if err != nil {
+			t.Fatalf("runDoctorFixWithQuiesce(offline=false): %v", err)
+		}
+		row, ok := remoteRow(report)
+		if !ok || row.Status != doctor.StatusFail {
+			t.Fatalf("online --fix re-check must carry a failing remote row; got ok=%v row=%+v\nresults:\n%s", ok, row, reportNames(report))
+		}
+		if !report.Failed() {
+			t.Fatalf("online --fix with an unreachable origin did not fail the report (exit-1 contract broken):\n%s", reportNames(report))
+		}
+	})
+
+	t.Run("offline (offline=true) omits the remote row and passes", func(t *testing.T) {
+		setup(t)
+		report, err := runDoctorFixWithQuiesce(context.Background(), true, io.Discard)
+		if err != nil {
+			t.Fatalf("runDoctorFixWithQuiesce(offline=true): %v", err)
+		}
+		if _, ok := remoteRow(report); ok {
+			t.Fatalf("offline --fix re-check still probed the remote:\n%s", reportNames(report))
+		}
+		if report.Failed() {
+			t.Fatalf("offline --fix reported a failure on an otherwise-healthy machine:\n%s", reportNames(report))
+		}
+	})
+}
+
+// reportNames lists each result's name, status, and detail — a compact dump for
+// a failing doctor-report assertion.
+func reportNames(report doctor.Report) string {
+	var b strings.Builder
+	for _, result := range report.Results {
+		fmt.Fprintf(&b, "  %-20s %-4s %s\n", result.Name, result.Status, result.Detail)
+	}
+	return b.String()
 }

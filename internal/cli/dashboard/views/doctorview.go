@@ -16,10 +16,19 @@ import (
 // advisory only: it never gates a sync (never joins SafetyGate, spec §12).
 type ScanFinding struct {
 	Folder string // enrolled folder whose unit produced the finding
-	File   string // unit-relative path gitleaks reported
+	File   string // path within the unit, relative (hubScanRunner trims gitleaks' scanned-root prefix)
 	Rule   string // gitleaks rule id
 	Line   int    // 1-based line within File
 }
+
+// maxDoctorFindingRows bounds how many advisory findings the Doctor tab renders
+// at once — the same guard ConflictsView applies (maxConflictRows): there is no
+// scroll component here, so a pathological sweep (a pasted credential dump,
+// thousands of hits) must not rebuild a giant frame each tick and push the
+// footer off-screen. The header still counts every finding; only the row list is
+// capped, with the remainder disclosed and the full report available through
+// `agent-brain scan`.
+const maxDoctorFindingRows = 200
 
 // DoctorView renders the doctor battery (spec §7) with a per-check status
 // glyph, plus the two on-demand actions layered beneath it (spec §11/§12): a
@@ -225,8 +234,20 @@ func (v DoctorView) writeFindings(b *strings.Builder) {
 	fmt.Fprintf(b, "\n\n%s in %s — advisory, plaintext hygiene only\n",
 		quantity(len(v.findings), "finding", "findings"),
 		quantity(len(files), "file", "files"))
-	for _, finding := range v.findings {
+	rows := v.findings
+	truncated := 0
+	if len(rows) > maxDoctorFindingRows {
+		truncated = len(rows) - maxDoctorFindingRows
+		rows = rows[:maxDoctorFindingRows]
+	}
+	for _, finding := range rows {
 		fmt.Fprintf(b, "  %s/%s:%d  %s\n", finding.Folder, finding.File, finding.Line, finding.Rule)
+	}
+	if truncated > 0 {
+		fmt.Fprintf(b, "%s\n", v.styles.Dim.Render(fmt.Sprintf(
+			"… and %s — run `agent-brain scan` for the full report",
+			quantity(truncated, "more finding", "more findings"),
+		)))
 	}
 }
 

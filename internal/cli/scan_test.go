@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
 )
@@ -403,5 +404,34 @@ func TestFilterUnitsByFolder(t *testing.T) {
 	got := filterUnitsByFolder(units, "b")
 	if len(got) != 2 {
 		t.Fatalf("filterUnitsByFolder(%q) = %d units, want 2", "b", len(got))
+	}
+}
+
+// TestHubScanRunnerRelativizesFindingPath pins the hub projection (F3): gitleaks
+// `dir` mode reports File as the scanned LocalDir joined with the in-unit path —
+// absolute, LocalDir-prefixed (the verified model this file's other fixtures
+// use). The Doctor tab renders Folder/File:line, so hubScanRunner must strip that
+// prefix; otherwise the location doubles into `work//Users/…:N`. This drives the
+// real runner through a PATH-shimmed gitleaks emitting a realistic absolute path
+// and asserts the mapped hub finding carries the UNIT-RELATIVE path.
+func TestHubScanRunnerRelativizesFindingPath(t *testing.T) {
+	paths := scanTestPaths(t)
+	localDir := t.TempDir()
+	enrollUnits(t, paths, repo.Unit{Provider: "claude", Folder: "work", LocalDir: localDir})
+	withFakeGitleaksOnPath(t, 1, fmt.Sprintf(
+		`[{"RuleID":"generic-api-key","StartLine":7,"File":"%s/sub/notes.md","Secret":"REDACTED","Match":"REDACTED"}]`,
+		localDir,
+	))
+
+	findings, err := hubScanRunner()(context.Background(), "")
+	if err != nil {
+		t.Fatalf("hubScanRunner: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("want 1 hub finding, got %d: %+v", len(findings), findings)
+	}
+	want := views.ScanFinding{Folder: "work", File: "sub/notes.md", Rule: "generic-api-key", Line: 7}
+	if findings[0] != want {
+		t.Fatalf("hub finding = %+v, want %+v — File must be unit-relative, not gitleaks' absolute path", findings[0], want)
 	}
 }

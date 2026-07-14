@@ -3524,7 +3524,6 @@ func TestDoctorFixRefusedWhileQuiesced(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("f produced a Cmd while quiesced; the fix must be refused before it is scheduled")
 	}
-	drain(cmd)
 	if fixCalls != 0 {
 		t.Fatalf("doctor fix ran while quiesced: %d calls", fixCalls)
 	}

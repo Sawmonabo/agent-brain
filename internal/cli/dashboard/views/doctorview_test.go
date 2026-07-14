@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,6 +79,15 @@ func doctorFailingFixableReport() doctor.Report {
 // TestDoctorViewCanFix pins the `f` gate (spec §11): the fix action is offered
 // only when the battery has a hard failure AND some row carries a Fix line —
 // never on a clean report, and never when nothing suggests a repair.
+//
+// The load-bearing case is "warn carrying a fix": the REAL battery routinely
+// emits non-failed rows that carry a Fix line — a StatusWarn `service` row with
+// "run `agent-brain service install`" (checks.go), the claude/codex prereq
+// warns, gitleaks-missing — so the `Failed()` guard, not the fixable-row scan,
+// is what keeps `f` off a green-but-warned machine. A gate that only checked for
+// a fixable row would light up `f` on that stock dev posture and run real
+// quiesce+git surgery from a passing report; this case is what fails if that
+// guard is ever dropped.
 func TestDoctorViewCanFix(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -93,6 +103,11 @@ func TestDoctorViewCanFix(t *testing.T) {
 		{
 			name:   "failure with no fixable row offers no fix",
 			report: doctor.Report{Results: []doctor.CheckResult{{Name: "keyset", Status: doctor.StatusFail, Detail: "keyset.json not found"}}},
+			want:   false,
+		},
+		{
+			name:   "warn carrying a fix still offers no fix — only a hard failure does",
+			report: doctor.Report{Results: []doctor.CheckResult{{Name: "service", Status: doctor.StatusWarn, Detail: "login service not installed", Fix: "run `agent-brain service install`"}}},
 			want:   false,
 		},
 		{
@@ -234,4 +249,64 @@ func TestDoctorViewScanSingularPluralization(t *testing.T) {
 	if got := plain(view.View()); !strings.Contains(got, "1 finding in 1 file — advisory, plaintext hygiene only") {
 		t.Errorf("singular scan header wrong; got:\n%s", got)
 	}
+}
+
+// TestDoctorViewFindingsCap pins the no-scroll-surface guard (mirrors
+// ConflictsView's maxConflictRows): a pathological sweep renders at most
+// maxDoctorFindingRows rows, the header still counts every finding, and the
+// remainder is disclosed — but the note must be exactly-true, absent when the
+// count lands exactly on the cap.
+func TestDoctorViewFindingsCap(t *testing.T) {
+	t.Parallel()
+	makeFindings := func(n int) []ScanFinding {
+		findings := make([]ScanFinding, n)
+		for i := range findings {
+			findings[i] = ScanFinding{Folder: "work", File: fmt.Sprintf("f%d.md", i), Rule: "generic-api-key", Line: i + 1}
+		}
+		return findings
+	}
+
+	t.Run("over the cap truncates rows and discloses the remainder", func(t *testing.T) {
+		t.Parallel()
+		var view DoctorView
+		view.Set(doctorOKReport(), nil)
+		view.SetScanResult(makeFindings(maxDoctorFindingRows+5), nil)
+		body := plain(view.View())
+		// The header counts every finding, not just the rendered window.
+		if want := fmt.Sprintf("%d findings", maxDoctorFindingRows+5); !strings.Contains(body, want) {
+			t.Errorf("header must count all findings (%q); got:\n%s", want, body)
+		}
+		// Exactly maxDoctorFindingRows location rows render (each row carries ".md:").
+		if got := strings.Count(body, ".md:"); got != maxDoctorFindingRows {
+			t.Errorf("rendered %d finding rows, want %d (capped)", got, maxDoctorFindingRows)
+		}
+		if want := "… and 5 more findings — run `agent-brain scan` for the full report"; !strings.Contains(body, want) {
+			t.Errorf("truncation note missing/wrong; want %q; got tail:\n%s", want, tail(body))
+		}
+	})
+
+	t.Run("exactly at the cap renders every row and no note", func(t *testing.T) {
+		t.Parallel()
+		var view DoctorView
+		view.Set(doctorOKReport(), nil)
+		view.SetScanResult(makeFindings(maxDoctorFindingRows), nil)
+		body := plain(view.View())
+		if got := strings.Count(body, ".md:"); got != maxDoctorFindingRows {
+			t.Errorf("rendered %d finding rows at the cap, want %d", got, maxDoctorFindingRows)
+		}
+		if strings.Contains(body, "more finding") {
+			t.Errorf("a truncation note appeared at exactly the cap (must be exactly-true at len==cap); got tail:\n%s", tail(body))
+		}
+	})
+}
+
+// tail returns the last few lines of s for compact failure messages when the
+// rendered body (a capped-but-still-long findings list) would otherwise swamp
+// the output.
+func tail(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	return strings.Join(lines, "\n")
 }

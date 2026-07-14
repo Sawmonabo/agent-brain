@@ -41,7 +41,7 @@ func newDoctorCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var report doctor.Report
 			if fix {
-				fixed, err := runDoctorFixWithQuiesce(cmd.Context(), cmd.ErrOrStderr())
+				fixed, err := runDoctorFixWithQuiesce(cmd.Context(), offline, cmd.ErrOrStderr())
 				if err != nil {
 					return err
 				}
@@ -82,10 +82,16 @@ func newDoctorCmd() *cobra.Command {
 // runDoctorFixWithQuiesce applies the idempotent wiring repairs behind a
 // best-effort daemon quiesce, then resumes — the shared orchestration the
 // `doctor --fix` command and the dashboard hub's one-key fix both call, so the
-// two can never drift in how they hold the daemon or what they repair. deps are
-// built with offline=true: the repair rewires local git config and never needs
-// the network, and the hub's doctor posture is offline throughout
-// (offlineDoctorRunner); binaryPath comes from testBinaryPathEnv, the same
+// two can never drift in how they hold the daemon or what they repair. offline
+// threads straight into the re-check's reachability probe (doctor.Fix re-runs
+// the FULL battery under these same deps): the COMMAND passes its own --offline
+// flag, so `doctor --fix` and plain `doctor` agree on whether the `remote` row
+// appears — and an unreachable origin still flips the command's exit code, the
+// exact CI/health-gate contract a hardcoded offline would have silently broken.
+// The hub passes true: its whole doctor posture is offline (offlineDoctorRunner),
+// never touching the network from the TUI. The repair itself only ever rewires
+// LOCAL git config, so offline never changes what Fix DOES — only how broad the
+// re-check that follows is. binaryPath comes from testBinaryPathEnv, the same
 // fork-bomb guard buildDoctorDeps applies everywhere. --fix re-wires the
 // checkout's git config and rewrites .gitattributes; a resident daemon's cycle
 // racing that surgery contends on git locks (the same Phase-3 F2 hazard init
@@ -96,8 +102,8 @@ func newDoctorCmd() *cobra.Command {
 // reporting via the view instead), mirroring init's stepRepoState. The resume
 // is DEFERRED on a successful quiesce, so even a failed doctor.Fix still
 // releases the hold: a fix error can never strand the daemon quiesced.
-func runDoctorFixWithQuiesce(ctx context.Context, stderr io.Writer) (doctor.Report, error) {
-	deps, err := buildDoctorDeps(true, os.Getenv(testBinaryPathEnv))
+func runDoctorFixWithQuiesce(ctx context.Context, offline bool, stderr io.Writer) (doctor.Report, error) {
+	deps, err := buildDoctorDeps(offline, os.Getenv(testBinaryPathEnv))
 	if err != nil {
 		return doctor.Report{}, err
 	}

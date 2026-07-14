@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,15 +115,16 @@ func launchHub(cmd *cobra.Command) error {
 		CheckUpdate: checkUpdate,
 		ApplyUpdate: applyUpdate,
 		// The Doctor tab's action seams (spec §11/§12). RunDoctorFix is the
-		// exact quiesce-aware `doctor --fix` the command runs, with stderr
-		// discarded (the hub reports through the Doctor view, not stderr), so
-		// the command and the hub can never drift in how they hold the daemon
-		// or what they repair. Scan is the advisory gitleaks sweep, composed
-		// here in package cli because its provider/gitleaks composition sits
-		// outside the dashboard package's import allowlist — the same
-		// edge-composition reason the doctor runner is injected.
+		// exact quiesce-aware `doctor --fix` the command runs, passing offline=true
+		// (the hub's whole doctor posture is offline — offlineDoctorRunner — so it
+		// never probes the network from the TUI) and discarding stderr (the hub
+		// reports through the Doctor view, not stderr), so the command and the hub
+		// can never drift in how they hold the daemon or what they repair. Scan is
+		// the advisory gitleaks sweep, composed here in package cli because its
+		// provider/gitleaks composition sits outside the dashboard package's import
+		// allowlist — the same edge-composition reason the doctor runner is injected.
 		RunDoctorFix: func(ctx context.Context) (doctor.Report, error) {
-			return runDoctorFixWithQuiesce(ctx, io.Discard)
+			return runDoctorFixWithQuiesce(ctx, true, io.Discard)
 		},
 		Scan: hubScanRunner(),
 		// The start offer only appears on the daemon-down screen. A
@@ -234,9 +236,16 @@ func hubScanRunner() func(context.Context, string) ([]views.ScanFinding, error) 
 		for i, finding := range findings {
 			hits[i] = views.ScanFinding{
 				Folder: finding.Folder,
-				File:   finding.Finding.File,
-				Rule:   finding.Finding.RuleID,
-				Line:   finding.Finding.StartLine,
+				// gitleaks `dir` mode reports File as the scanned root joined with
+				// the in-unit path — i.e. LocalDir-prefixed and absolute (verified
+				// model, scan_test.go). The view renders Folder/File:line, so File
+				// must be UNIT-RELATIVE or the location doubles (work//Users/…). Trim
+				// the LocalDir prefix; TrimPrefix returns the path untouched if it
+				// somehow isn't prefixed (symlinked root, future gitleaks change), so
+				// a mismatch degrades to the raw path rather than a wrong join.
+				File: strings.TrimPrefix(finding.Finding.File, finding.LocalDir+"/"),
+				Rule: finding.Finding.RuleID,
+				Line: finding.Finding.StartLine,
 			}
 		}
 		return hits, nil
