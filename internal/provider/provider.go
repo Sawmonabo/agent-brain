@@ -138,6 +138,15 @@ type Provider interface {
 	// consumers: Classify (mirror decisions) and repo attribute
 	// generation (merge-driver wiring).
 	Patterns() []Pattern
+	// PrimaryIndexPath is the provider's human-facing index/entry-point
+	// memory, expressed in the same path space as Patterns() globs
+	// (classifyRel(RepoSubdir, rel)): the file a reader should see first
+	// and open first. Claude's "MEMORY.md", Codex's "memories/MEMORY.md".
+	// Distinct from Class (merge policy) on purpose — an index rides
+	// whatever merge class its provider assigns; being the index is a
+	// display/identity fact, not a merge fact. "" when the provider has
+	// no distinguished index.
+	PrimaryIndexPath() string
 	// ReconcileIndex deterministically rebuilds the provider's derived
 	// index inside dir — a <project>/<provider>/ dir in the checkout —
 	// after integrate (spec §4 step 4). No-op when nothing applies.

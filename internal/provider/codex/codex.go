@@ -48,6 +48,13 @@ func (a *Adapter) Scope() provider.Scope { return provider.ScopeGlobal }
 // or the caller's override wholesale (see New).
 func (a *Adapter) Patterns() []provider.Pattern { return a.patterns }
 
+// PrimaryIndexPath is Codex's human-facing index memory,
+// memories/MEMORY.md — the file the browser sorts first and a reader opens
+// first. It is class ClassRegenerated (Codex's own consolidator owns it,
+// spec §6), not ClassDerivedIndex: being the index is a display fact, kept
+// deliberately separate from the merge class.
+func (a *Adapter) PrimaryIndexPath() string { return "memories/MEMORY.md" }
+
 // builtinPatterns is Codex's default classification table (spec §6).
 // A non-empty overrides argument to New replaces this wholesale.
 func builtinPatterns() []provider.Pattern {

@@ -741,14 +741,15 @@ func (b *Browser) visibleRows() []memoryfs.Memory {
 		if filtered[i].Provider != filtered[j].Provider {
 			return filtered[i].Provider < filtered[j].Provider
 		}
-		// Within a provider the derived index (claude's MEMORY.md, etc.) always
-		// sorts first: it is the map of the group, so it is the memory to open
-		// first, and cursor 0 then makes it the default selection. Keyed
-		// on the class memoryfs already tagged it via the provider's own pattern
-		// table — never a name match in the view — so it stays on top under both
-		// order modes o toggles between (recency would sink an older index, name
-		// order an alphabetically-late one).
-		if iIndex, jIndex := isDerivedIndex(filtered[i]), isDerivedIndex(filtered[j]); iIndex != jIndex {
+		// Within a provider the primary index (claude's MEMORY.md, codex's
+		// memories/MEMORY.md) always sorts first: it is the map of the group, so
+		// it is the memory to open first, and cursor 0 then makes it the default
+		// selection. Keyed on the provider-declared index memoryfs marked via
+		// PrimaryIndexPath — a display fact, never a name match and never a merge
+		// class — so it holds for every provider that declares an index and stays
+		// on top under both order modes o toggles between (recency would sink an
+		// older index, name order an alphabetically-late one).
+		if iIndex, jIndex := isIndex(filtered[i]), isIndex(filtered[j]); iIndex != jIndex {
 			return iIndex
 		}
 		if b.orderByRecency {
@@ -759,14 +760,15 @@ func (b *Browser) visibleRows() []memoryfs.Memory {
 	return filtered
 }
 
-// isDerivedIndex reports whether m is a provider's derived index file
-// (MEMORY.md and its kin), classified as such by memoryfs at enumeration
-// through the provider's own pattern table (spec §6). visibleRows sorts these
-// first within their provider group off this class, never a name match,
-// so the rule holds for any provider whose table declares an index — not just
-// claude's MEMORY.md.
-func isDerivedIndex(m memoryfs.Memory) bool {
-	return m.Class == provider.ClassDerivedIndex
+// isIndex reports whether m is its provider's primary index file (claude's
+// MEMORY.md, codex's memories/MEMORY.md), marked as such by memoryfs at
+// enumeration when its path equals the provider's PrimaryIndexPath (spec §6).
+// visibleRows sorts these first within their provider group off this display
+// identity, never a name match and never a merge class — so the rule holds for
+// every provider that declares an index regardless of the Class its file
+// carries (codex's index is ClassRegenerated, not ClassDerivedIndex).
+func isIndex(m memoryfs.Memory) bool {
+	return m.IsIndex
 }
 
 // fuzzyMatches reports whether query is a case-insensitive subsequence of

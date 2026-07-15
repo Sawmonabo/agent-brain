@@ -1669,24 +1669,27 @@ func TestBrowserIgnoresInsightsDataMsg(t *testing.T) {
 }
 
 // TestBrowserIndexMemorySortsFirst pins the index-first order: within each provider group the
-// derived-index memory (MEMORY.md, provider.ClassDerivedIndex) sorts ahead of
+// provider's primary index memory (marked IsIndex at enumeration) sorts ahead of
 // every fact memory, in BOTH the recency and the name order o toggles between,
 // so it is always the default-selected first memory to open. The fixture buries
 // the index under either order without the fix — its ModTime is the OLDEST in
 // its group (recency would sink it) and its name sorts after a sibling (name
 // order would sink it) — and gives both providers an index so grouping (not a
-// single global pin) is what the ordering respects. A filter that excludes the
-// index simply yields the matching fact rows: no crash, nothing synthetic.
+// single global pin) is what the ordering respects. The codex index carries the
+// realistic Class ClassRegenerated (its consolidator owns it), not a derived-index
+// class, so its sorting first proves the order keys on IsIndex — a display fact —
+// not on any merge class. A filter that excludes the index simply yields the
+// matching fact rows: no crash, nothing synthetic.
 func TestBrowserIndexMemorySortsFirst(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
 	memories := []memoryfs.Memory{
 		{Provider: "claude", RepoPath: "claude/alpha.md", Name: "alpha", Class: provider.ClassFact, ModTime: base.Add(2 * time.Hour)},
 		{Provider: "claude", RepoPath: "claude/zulu.md", Name: "zulu", Class: provider.ClassFact, ModTime: base.Add(time.Hour)},
-		{Provider: "claude", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex, ModTime: base},
+		{Provider: "claude", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex, IsIndex: true, ModTime: base},
 		{Provider: "codex", RepoPath: "codex/beta.md", Name: "beta", Class: provider.ClassFact, ModTime: base.Add(2 * time.Hour)},
 		{Provider: "codex", RepoPath: "codex/yankee.md", Name: "yankee", Class: provider.ClassFact, ModTime: base.Add(time.Hour)},
-		{Provider: "codex", RepoPath: "codex/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex, ModTime: base},
+		{Provider: "codex", RepoPath: "codex/memories/MEMORY.md", Name: "MEMORY", Class: provider.ClassRegenerated, IsIndex: true, ModTime: base},
 	}
 	browser := NewBrowser(BrowserDeps{
 		Folder:   "acme",
@@ -1703,9 +1706,9 @@ func TestBrowserIndexMemorySortsFirst(t *testing.T) {
 				continue
 			}
 			lastProvider = memory.Provider
-			if memory.Class != provider.ClassDerivedIndex {
-				t.Errorf("%s order: provider %q group starts at row %d with %q (class %v), want the derived index first",
-					mode, memory.Provider, row, memory.Name, memory.Class)
+			if !memory.IsIndex {
+				t.Errorf("%s order: provider %q group starts at row %d with %q (IsIndex=%v, class %v), want the provider index first",
+					mode, memory.Provider, row, memory.Name, memory.IsIndex, memory.Class)
 			}
 		}
 	}

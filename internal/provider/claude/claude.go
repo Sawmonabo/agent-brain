@@ -48,6 +48,11 @@ func (a *Adapter) Patterns() []provider.Pattern {
 	}
 }
 
+// PrimaryIndexPath is Claude Code's human-facing index memory, MEMORY.md
+// at the provider-dir root — the file the browser sorts first and a reader
+// opens first (spec §6).
+func (a *Adapter) PrimaryIndexPath() string { return "MEMORY.md" }
+
 // Discover enumerates every ~/.claude/projects/<slug> whose memory/
 // subdirectory exists. A missing projects root means Claude Code is not
 // installed on this machine — not an error. Results are sorted by Label

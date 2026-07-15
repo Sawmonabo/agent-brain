@@ -134,6 +134,80 @@ func TestListClassifiesAndOrders(t *testing.T) {
 	}
 }
 
+// TestListMarksPrimaryIndex pins IsIndex enumeration: exactly the file whose
+// RepoSubdir-prefixed classify path equals its provider's PrimaryIndexPath is
+// marked, every other file stays false, and the match is computed in the same
+// classifyRel(RepoSubdir, rel) space Classify uses — so a codex-shaped unit
+// under RepoSubdir "memories" matches on "memories/MEMORY.md", not the bare
+// "MEMORY.md". The second case's index also sits at ClassRegenerated (not a
+// derived-index class), proving IsIndex is a display fact independent of Class.
+func TestListMarksPrimaryIndex(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		provider   string
+		scope      provider.Scope
+		indexPath  string
+		patterns   []provider.Pattern
+		repoSubdir string
+		files      []string
+		wantIndex  string // the RelPath expected to carry IsIndex==true
+	}{
+		{
+			name:      "per-project index at provider-dir root",
+			provider:  "claude",
+			scope:     provider.ScopePerProject,
+			indexPath: "MEMORY.md",
+			files:     []string{"MEMORY.md", "alpha.md", "zulu.md"},
+			wantIndex: "MEMORY.md",
+		},
+		{
+			name:       "global index under a RepoSubdir prefix",
+			provider:   "codex",
+			scope:      provider.ScopeGlobal,
+			indexPath:  "memories/MEMORY.md",
+			patterns:   []provider.Pattern{{Glob: "memories/MEMORY.md", Class: provider.ClassRegenerated}},
+			repoSubdir: "memories",
+			files:      []string{"MEMORY.md", "notes.md"},
+			wantIndex:  "MEMORY.md",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := providertest.New(tt.provider, tt.scope, tt.patterns).WithPrimaryIndex(tt.indexPath)
+			registry, err := provider.NewRegistry(fake)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			for _, rel := range tt.files {
+				writeFile(t, dir, rel, "# "+rel+"\n")
+			}
+			units := []api.UnitInfo{{Provider: tt.provider, Folder: "acme", LocalDir: dir, RepoSubdir: tt.repoSubdir}}
+
+			got, err := memoryfs.List(registry, units)
+			if err != nil {
+				t.Fatalf("List() error = %v", err)
+			}
+
+			var markedIndex bool
+			for _, memory := range got {
+				wantIsIndex := memory.RelPath == tt.wantIndex
+				if memory.IsIndex != wantIsIndex {
+					t.Errorf("RelPath %q: IsIndex = %v, want %v", memory.RelPath, memory.IsIndex, wantIsIndex)
+				}
+				if memory.IsIndex {
+					markedIndex = true
+				}
+			}
+			if !markedIndex {
+				t.Errorf("no memory marked IsIndex; expected %q to be the index", tt.wantIndex)
+			}
+		})
+	}
+}
+
 // TestListMissingUnitDirIsNotError pins the "enrolled-but-empty unit is
 // normal" contract: a LocalDir that does not exist yet yields no entries and
 // no error, distinguishing it from a genuine walk failure.

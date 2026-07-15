@@ -50,8 +50,11 @@ type Memory struct {
 	Name        string // frontmatter name, else filename stem
 	Description string // frontmatter description, else ""
 	Class       provider.Class
-	ModTime     time.Time
-	Size        int64
+	// IsIndex marks the provider's PrimaryIndexPath file — the browser sorts
+	// it first within its provider group (a display fact, independent of Class).
+	IsIndex bool
+	ModTime time.Time
+	Size    int64
 }
 
 // Path resolves m's on-disk location: LocalDir joined with the
@@ -121,7 +124,13 @@ func listUnit(prov provider.Provider, unit api.UnitInfo) ([]Memory, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		class := provider.Classify(prov, classifyRel(unit.RepoSubdir, rel))
+		// classifyPath is the RepoSubdir-prefixed, provider-dir-relative name
+		// both the merge-policy Classify and the PrimaryIndexPath identity
+		// match against — computed once here so the two decisions cannot drift
+		// onto different path spaces (Classify's would be RepoSubdir-prefixed
+		// while IsIndex's compared the bare rel).
+		classifyPath := classifyRel(unit.RepoSubdir, rel)
+		class := provider.Classify(prov, classifyPath)
 		if class == provider.ClassIgnore {
 			return nil
 		}
@@ -133,6 +142,7 @@ func listUnit(prov provider.Provider, unit api.UnitInfo) ([]Memory, error) {
 		if name == "" {
 			name = strings.TrimSuffix(path.Base(rel), path.Ext(rel))
 		}
+		indexPath := prov.PrimaryIndexPath()
 		out = append(out, Memory{
 			Provider:    unit.Provider,
 			Folder:      unit.Folder,
@@ -142,6 +152,7 @@ func listUnit(prov provider.Provider, unit api.UnitInfo) ([]Memory, error) {
 			Name:        name,
 			Description: description,
 			Class:       class,
+			IsIndex:     indexPath != "" && classifyPath == indexPath,
 			ModTime:     info.ModTime(),
 			Size:        info.Size(),
 		})

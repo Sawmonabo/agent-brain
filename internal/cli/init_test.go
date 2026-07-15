@@ -1149,6 +1149,7 @@ type fakeProvider struct {
 func (f *fakeProvider) Name() string                                 { return f.name }
 func (f *fakeProvider) Scope() provider.Scope                        { return f.scope }
 func (f *fakeProvider) Patterns() []provider.Pattern                 { return nil }
+func (f *fakeProvider) PrimaryIndexPath() string                     { return "" }
 func (f *fakeProvider) ReconcileIndex(context.Context, string) error { return nil }
 
 func (f *fakeProvider) Discover(context.Context) ([]provider.Discovered, error) {

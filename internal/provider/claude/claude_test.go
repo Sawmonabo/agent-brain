@@ -27,6 +27,17 @@ func TestNewNameAndScope(t *testing.T) {
 	}
 }
 
+// TestPrimaryIndexPath pins Claude's human-facing index at the provider-dir
+// root — the identity the browser sorts first, kept distinct from the
+// MEMORY.md merge class (ClassDerivedIndex) it happens to share a file with.
+func TestPrimaryIndexPath(t *testing.T) {
+	t.Parallel()
+	adapter := claude.New(t.TempDir())
+	if got := adapter.PrimaryIndexPath(); got != "MEMORY.md" {
+		t.Errorf("PrimaryIndexPath() = %q, want %q", got, "MEMORY.md")
+	}
+}
+
 // TestDiscover fabricates a ~/.claude/projects tree with one enrollable
 // slug (has a memory/ dir), one non-enrollable slug (no memory/ dir), and
 // a stray non-directory entry, then asserts Discover finds exactly the

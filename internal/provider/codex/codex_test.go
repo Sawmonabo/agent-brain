@@ -27,6 +27,23 @@ func TestNewNameAndScope(t *testing.T) {
 	}
 }
 
+// TestPrimaryIndexPath pins Codex's human-facing index at memories/MEMORY.md
+// and actively proves the decoupling PrimaryIndexPath exists for: that same
+// file classifies as ClassRegenerated (Codex's own consolidator owns it), not
+// ClassDerivedIndex, so being the display index cannot ride the merge class.
+func TestPrimaryIndexPath(t *testing.T) {
+	t.Parallel()
+	adapter := codex.New(t.TempDir(), nil)
+	indexPath := adapter.PrimaryIndexPath()
+	if indexPath != "memories/MEMORY.md" {
+		t.Errorf("PrimaryIndexPath() = %q, want %q", indexPath, "memories/MEMORY.md")
+	}
+	if class := provider.Classify(adapter, indexPath); class != provider.ClassRegenerated {
+		t.Errorf("Classify(%q) = %v, want %v — the index must not ride a derived-index merge class",
+			indexPath, class, provider.ClassRegenerated)
+	}
+}
+
 // TestPatternsClassification pins the built-in classification table
 // (spec §6). Paths are relative to the provider's memory roots, exactly
 // as Classify receives them at sync time — "memories/..." and
