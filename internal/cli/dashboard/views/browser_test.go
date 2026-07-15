@@ -1762,7 +1762,9 @@ func longBodyBrowser(t *testing.T) *Browser {
 // width, a long-body selection must not push the frame past its height budget
 // (in the real hub that overflow shoves the root's footer — the "option keys" —
 // off the terminal and hides the text past the fold). The frame must fit height
-// AND still carry its chrome and the head of the body.
+// AND still carry its chrome, the head of the body, and the overflow hint —
+// without the hint a clipped body is indistinguishable from a complete one, so
+// the rest of the memory would look unreachable.
 func TestBrowserPreviewHeightBounded(t *testing.T) {
 	t.Parallel()
 	browser := longBodyBrowser(t)
@@ -1777,12 +1779,18 @@ func TestBrowserPreviewHeightBounded(t *testing.T) {
 	if !strings.Contains(got, "row 001") {
 		t.Errorf("View did not show the head of the previewed body; got:\n%s", got)
 	}
+	if !strings.Contains(got, "ctrl+d/u pgup/pgdn scroll") {
+		t.Errorf("overflowing preview carries no scroll hint; got:\n%s", got)
+	}
 }
 
 // TestBrowserPreviewScrolls pins that the preview-pane scroll keys move the
-// visible window: ctrl+d (half page) and pgdown (full page) each scroll the top
-// of the body out of view. The list keeps focus — j/k stay the list cursor — so
-// these keys are the only way to reach the rest of a long memory.
+// visible window in BOTH directions: ctrl+d (half page) and pgdown (full page)
+// each scroll the top of the body out of view, and their counterparts ctrl+u
+// and pgup bring it back — the footer advertises the pairs together, so a dead
+// up key would leave the user stranded below the fold with no advertised way
+// back. The list keeps focus — j/k stay the list cursor — so these keys are
+// the only way to reach the rest of a long memory.
 func TestBrowserPreviewScrolls(t *testing.T) {
 	t.Parallel()
 	const width, height = 120, 30
@@ -1808,6 +1816,32 @@ func TestBrowserPreviewScrolls(t *testing.T) {
 			}
 			if strings.Contains(after, "row 001") {
 				t.Errorf("%s did not scroll the top of the body out of view; got:\n%s", testCase.name, after)
+			}
+		})
+	}
+	for _, testCase := range []struct {
+		name string
+		down tea.KeyPressMsg
+		up   tea.KeyPressMsg
+	}{
+		{"ctrl+u restores after ctrl+d", ctrlKey('d'), ctrlKey('u')},
+		{"pgup restores after pgdown", tea.KeyPressMsg{Code: tea.KeyPgDown}, tea.KeyPressMsg{Code: tea.KeyPgUp}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			browser := longBodyBrowser(t)
+			if before := plain(browser.View(width, height)); !strings.Contains(before, "row 001") {
+				t.Fatalf("setup: top of body not visible before scrolling; got:\n%s", before)
+			}
+			next, _ := browser.Update(testCase.down)
+			browser = next.(*Browser)
+			if mid := plain(browser.View(width, height)); strings.Contains(mid, "row 001") {
+				t.Fatalf("setup: the down key did not scroll the top out of view; got:\n%s", mid)
+			}
+			next, _ = browser.Update(testCase.up)
+			browser = next.(*Browser)
+			if after := plain(browser.View(width, height)); !strings.Contains(after, "row 001") {
+				t.Errorf("the up key did not bring the top of the body back; got:\n%s", after)
 			}
 		})
 	}
