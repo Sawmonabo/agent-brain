@@ -48,8 +48,9 @@ lefthook install                                # once per clone: git hooks
   (`sync`/`track`/`untrack`/`migrate`/`reencrypt`) are refused while quiesced.
   `key rotate` re-encrypts the whole repo through that same single writer
   (`POST /v0/reencrypt`). The daemon also serves two read-only reads for the
-  hub — `GET /v0/history` and `GET /v0/blob` (spec §6) — dispatched through the
-  engine goroutine so they never race the writer and are not gated by quiesce.
+  hub — `GET /v0/history` and `GET /v0/blob` (`docs/01-dashboard-hub-spec.md`
+  §6) — dispatched through the engine goroutine so they never race the writer
+  and are not gated by quiesce.
 - Product CLI beyond init/track/sync/status/doctor (spec §7): the dashboard
   hub — bare `agent-brain` (aliased `dashboard`) opens a bubbletea v2 TUI over
   the daemon for browsing/reading/editing memories, per-memory history +

@@ -108,9 +108,12 @@ Four tabs sit at the root, refreshed on a 2-second poll and switched with
 
 - **Projects** — the per-unit table (provider · folder · health · watch state ·
   last-cycle result; a `LOCAL DIR` column appears on terminals ≥120 columns wide).
-  `s` syncs the selected unit, `u` untracks it behind a `y/N` confirm, `a` runs the
-  init-style enrollment picker over newly discovered memory roots, `m` runs the
-  bash-era migrate flow, and `enter` opens that project's memory browser.
+  `WATCH` shows `watching`, `failed`, or `—` before the daemon's first watcher
+  build; `LAST CYCLE` shows `ok`, `degraded`, `error`, or `—` until that folder's
+  first cycle. `s` syncs the selected unit, `u` untracks it behind a `y/N`
+  confirm, `a` runs the init-style enrollment picker over newly discovered
+  memory roots, `m` runs the bash-era migrate flow, and `enter` opens that
+  project's memory browser.
 - **Conflicts** — retained retain-both records; `enter` opens a detail view where
   `enter` jumps to the memory, `e` edits the merged file, and `h` opens its history.
 - **Activity** — the sync/capture feed: daemon uptime, any quiesce deadline, the
@@ -138,18 +141,19 @@ matched memory.
 
 **Editing never embeds an editor.** `e` suspends the hub and hands your configured
 editor (`editor.command` if set, else `$VISUAL`, else `$EDITOR`) a disposable scratch
-copy — never the live file. A byte-identical save makes zero commits and toasts that the edit was
-cancelled; a real change is written back with one atomic rename, then captured and
-pushed by the normal engine cycle (exactly one capture per changed save). If no
-editor is configured the binding is visibly disabled rather than falling back to a
-default.
+copy — never the live file. A byte-identical save makes zero commits and toasts
+that the edit was cancelled; a real change is written back with one atomic
+rename, then captured and pushed by the normal engine cycle (exactly one capture
+per changed save). If no editor is configured the binding is visibly disabled
+rather than falling back to a default.
 
 When a newer release is available the status bar shows `vX.Y.Z available — U to
 update`; `U` confirms and runs the checksum-verified self-update (ADR 18), and on
-success the hub offers `R` to re-exec onto the new binary. A `ctrl+k` command palette
-and `?` help overlay reach every action — both, with each view's footer, render from
-one action registry, so a key can never mean two things — and while the daemon is
-quiesced (during `init` or `doctor --fix`) every mutating action greys out.
+success the hub offers `R` to re-exec onto the new binary. A `ctrl+k` command
+palette and `?` help overlay reach every action (including a fleet-wide sync) —
+both, with each view's footer, render from one action registry, so a key can
+never mean two things — and while the daemon is quiesced (during `init` or
+`doctor --fix`) every mutating action greys out.
 
 ## Security model
 
