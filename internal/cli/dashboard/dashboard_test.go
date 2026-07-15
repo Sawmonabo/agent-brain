@@ -3486,7 +3486,10 @@ func TestForeignKeysInertWhileUpdateConfirmOpen(t *testing.T) {
 // TestFlowStartRefusedDuringUpdateFlow pins that a queued flow-request message
 // (the bubbletea no-ordering-guarantee race the chrome gates already close) is
 // refused while an update confirm or apply owns the interaction — no flow modal
-// opens underneath it, and the update phase is untouched.
+// opens underneath it, and the update phase is untouched. A rename request is
+// the probe: it opens its modal from in-memory state alone — no body read to
+// mask the gate — so the refusal is directly observable as no modal, no Cmd, a
+// toast, and the phase intact.
 func TestFlowStartRefusedDuringUpdateFlow(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []updatePhase{updateConfirm, updateApplying} {
@@ -3494,7 +3497,7 @@ func TestFlowStartRefusedDuringUpdateFlow(t *testing.T) {
 		m.updateTag = "v2.1.0"
 		m.updatePhase = phase
 
-		m2, cmd := step(m, views.EditRequestMsg{Memory: memoryfs.Memory{}})
+		m2, cmd := step(m, views.RenameRequestMsg{Memory: memoryfs.Memory{}})
 		if m2.flowModal != nil {
 			t.Errorf("phase %v: a flow modal opened under the update flow", phase)
 		}
