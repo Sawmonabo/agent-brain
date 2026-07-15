@@ -10,12 +10,35 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
 )
+
+// adversarialName is a real-length snake_case memory name (48 display cols) of
+// the kind live-hub testing turned up — long enough to overflow the browser's
+// 46-col list pane on its own, before any description or age is composed on.
+const adversarialName = "feedback_security_invariant_scope_counterexample"
+
+// lineEndingWithAge returns the sole rendered list row — the one ending in a
+// relative-age suffix like "(4d ago)". Fails the test if zero or many match, so
+// the age-visibility assertions target an unambiguous line.
+func lineEndingWithAge(t *testing.T, view string) string {
+	t.Helper()
+	var found []string
+	for line := range strings.SplitSeq(view, "\n") {
+		if strings.HasSuffix(line, "ago)") {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one age-suffixed row, found %d in:\n%s", len(found), view)
+	}
+	return found[0]
+}
 
 // browserFixtureRegistry builds a two-provider registry (a per-project
 // "claude" and a global "codex", both with an empty pattern table — every
@@ -852,6 +875,176 @@ func TestBrowserViewClampsToOneRowBelowTheClampFloor(t *testing.T) {
 	}
 	if lineCount := strings.Count(got, "\n") + 1; lineCount != 4 {
 		t.Errorf("clamped view has %d lines, want exactly 4 (title, blank, one provider header, one row); got:\n%s", lineCount, got)
+	}
+}
+
+// TestBrowserListRowFitsNarrowWidth pins the width invariant on the no-preview
+// (narrow) layout: with an adversarially long memory name, every
+// rendered list line must fit the content width, or a real terminal soft-wraps
+// it into the cramped multi-line soup the fix removes. Unfixed the row runs
+// ~100 cols regardless of the 80-col frame.
+func TestBrowserListRowFitsNarrowWidth(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", Name: adversarialName, Description: "a long frontmatter description line that itself would overflow the pane budget several times over", RepoPath: "claude/a.md", ModTime: now.Add(-96 * time.Hour)},
+		{Provider: "claude", Name: "short-name", Description: "brief", RepoPath: "claude/b.md", ModTime: now.Add(-time.Hour)},
+	}
+	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: now, ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
+
+	const width = 80 // < previewMinWidth: the list gets the full width, no preview pane
+	for line := range strings.SplitSeq(plain(browser.View(width, 40)), "\n") {
+		if w := ansi.StringWidth(line); w > width {
+			t.Errorf("list line width %d exceeds pane width %d (a real terminal wraps it):\n%q", w, width, line)
+		}
+	}
+}
+
+// TestBrowserHeightContractWithLongNames extends the height invariant of
+// TestBrowserViewHeightBudgetHoldsAboveTheClampFloor with adversarial names
+// at a preview-split width, where the 46-col list pane is the surface that
+// wrapped: each long row folded into 2-3 physical lines and blew the row-budget
+// math, which counts rows, not physical lines. lineCount(View) must stay within
+// height. The empty preview body keeps the preview pane one line tall, so the
+// list block alone drives the joined height.
+func TestBrowserHeightContractWithLongNames(t *testing.T) {
+	t.Parallel()
+	const rowCount, groupSize, height, width = 30, 10, 10, 120
+	providerNames := []string{"claude", "codex", "gemini"}
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	memories := make([]memoryfs.Memory, rowCount)
+	for i := range memories {
+		p := providerNames[i/groupSize]
+		memories[i] = memoryfs.Memory{
+			Provider:    p,
+			Name:        fmt.Sprintf("%s_%02d", adversarialName, i), // 48+ cols each
+			Description: "and a long description that compounds the overflow well past the list pane",
+			RepoPath:    fmt.Sprintf("%s/memory-%02d.md", p, i),
+			ModTime:     base.Add(time.Duration(rowCount-i) * time.Hour),
+		}
+	}
+	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: time.Now(), ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
+
+	got := plain(browser.View(width, height))
+	if lineCount := strings.Count(got, "\n") + 1; lineCount > height {
+		t.Errorf("View rendered %d lines at height %d — long names wrapped the %d-col list pane; got:\n%s", lineCount, height, listPaneWidth, got)
+	}
+}
+
+// TestBrowserLongRowKeepsAgeAndTruncatesName pins the row-budget priority: when
+// a name cannot fit, the age suffix survives (never truncated) and the NAME is
+// what gets the ellipsis, not the age. Unfixed the name renders in full (the old
+// rune-truncate only ever touched the description), overflowing the row.
+func TestBrowserLongRowKeepsAgeAndTruncatesName(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	longName := adversarialName + "_with_even_more_suffix_to_force_the_truncation" // ~94 cols
+	memories := []memoryfs.Memory{
+		{Provider: "claude", Name: longName, Description: "desc", RepoPath: "claude/a.md", ModTime: now.Add(-96 * time.Hour)},
+	}
+	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: now, ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
+
+	const width = 60
+	row := lineEndingWithAge(t, plain(browser.View(width, 40)))
+	if w := ansi.StringWidth(row); w > width {
+		t.Errorf("row width %d exceeds %d: %q", w, width, row)
+	}
+	if !strings.HasSuffix(row, "ago)") {
+		t.Errorf("age suffix dropped from an over-budget row: %q", row)
+	}
+	if !strings.Contains(row, "…") {
+		t.Errorf("over-budget name not truncated with an ellipsis: %q", row)
+	}
+	if strings.Contains(row, longName) {
+		t.Errorf("full name rendered despite exceeding the row budget: %q", row)
+	}
+}
+
+// TestBrowserSelectedLongRowIsSingleLine pins that the highlighted row of an
+// adversarial name renders as exactly one physical line at a preview-split
+// width, rather than wrapping into fragments the reverse-video highlight bleeds
+// across. A single-memory fixture makes the count exact: title, its blank, the
+// provider header, and the one selected row — four lines. Unfixed the row wraps
+// and the count climbs.
+func TestBrowserSelectedLongRowIsSingleLine(t *testing.T) {
+	t.Parallel()
+	memories := []memoryfs.Memory{
+		{Provider: "claude", Name: adversarialName, Description: "a description long enough to compound the row overflow past the list pane", RepoPath: "claude/a.md", ModTime: time.Now()},
+	}
+	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: time.Now(), ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
+
+	// cursor defaults to row 0 — the sole, selected memory.
+	got := plain(browser.View(120, 40))
+	const wantLines = 4 // section title + blank + "claude" header + the one row
+	if lineCount := strings.Count(got, "\n") + 1; lineCount > wantLines {
+		t.Errorf("selected long row spans the view across %d lines, want <= %d (one physical row, not wrapped fragments); got:\n%s", lineCount, wantLines, got)
+	}
+}
+
+// TestBrowserDeletedViewFitsWidth pins the width invariant on the deleted-
+// recovery list: a long deleted repo path must be fit to the content width the
+// same way live rows are, so the deleted list never soft-wraps past its own
+// height budget. Unfixed deletedView ignores width entirely.
+func TestBrowserDeletedViewFitsWidth(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "alive.md", "---\nname: Alive\n---\n", time.Now())
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	when := time.Now()
+	longPath := "claude/deeply/nested/" + adversarialName + "/" + adversarialName + ".md" // > 80 cols
+	fake := &fakeHistoryData{historyResp: api.HistoryResponse{Versions: []api.HistoryVersion{
+		{Rev: "v1", Timestamp: &when, Paths: []string{longPath}},
+	}}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry, Units: units, Folder: "acme", Now: time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Data:     fake,
+	})
+
+	next, cmd := browser.Update(key("x"))
+	browser = next.(*Browser)
+	for _, msg := range drain(cmd) {
+		next, _ := browser.Update(msg)
+		browser = next.(*Browser)
+	}
+
+	const width = 80
+	got := plain(browser.View(width, 30))
+	if !strings.Contains(got, "claude/deeply") {
+		t.Fatalf("deleted view did not render the recoverable long path at all; got:\n%s", got)
+	}
+	for line := range strings.SplitSeq(got, "\n") {
+		if w := ansi.StringWidth(line); w > width {
+			t.Errorf("deleted-list line width %d exceeds %d (wraps): %q", w, width, line)
+		}
+	}
+}
+
+// TestBrowserRenderListFitsPaneWidthDirectly pins the row-fit Result invariant
+// at the exact 46-col list-pane width the preview split confines rows to — the
+// width a public View masks, because the MaxWidth pane pads every line to 46
+// regardless of whether the row was already that wide or got there by wrapping.
+// Every line renderList returns, provider headers included, must ALREADY be
+// <= the pane width so the pane never wraps. Exercised white-box because the
+// pre-pane line width is observable at no other seam.
+func TestBrowserRenderListFitsPaneWidthDirectly(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", Name: adversarialName, Description: "a description long enough to be truncated hard against the pane budget", RepoPath: "claude/a.md", ModTime: base.Add(-96 * time.Hour)},
+		{Provider: "claude", Name: "brief", Description: "short", RepoPath: "claude/b.md", ModTime: base.Add(-time.Hour)},
+		{Provider: "codex", Name: adversarialName + "_two", Description: "another overflowing description that must be cut to fit the list pane", RepoPath: "codex/c.md", ModTime: base.Add(-2 * time.Hour)},
+	}
+	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: base, ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
+
+	rows := browser.visibleRows()
+	list := browser.renderList(rows, browser.listRowBudget(rows, 40), listPaneWidth)
+	for line := range strings.SplitSeq(list, "\n") {
+		if w := ansi.StringWidth(line); w > listPaneWidth {
+			t.Errorf("renderList line width %d exceeds the pane width %d: %q", w, listPaneWidth, line)
+		}
 	}
 }
 

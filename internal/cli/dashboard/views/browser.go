@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/links"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/lint"
@@ -31,8 +32,15 @@ const previewMinWidth = 100
 const listPaneWidth = 46
 
 // descriptionTruncateAt bounds a row's rendered description so one
-// unusually long frontmatter line cannot blow out the list pane's width.
+// unusually long frontmatter line cannot blow out the list pane's width. It is
+// the coarse upper bound fitListRow applies ON TOP of the per-row budget, so a
+// very wide pane shows a readable preview rather than an endless one.
 const descriptionTruncateAt = 40
+
+// descriptionMinWidth is the fewest columns a row's description is worth
+// showing: any narrower and the ellipsised sliver reads as noise, so the row
+// drops the description and lets the name and age keep the space (spec §3).
+const descriptionMinWidth = 8
 
 // BrowserDeps is everything the browser screen needs, injected once (the
 // consumer-side-seam idiom): no globals, fakeable in tests.
@@ -725,7 +733,7 @@ func isSubsequence(query, haystack string) bool {
 // dimension going stale.
 func (b *Browser) View(width, height int) string {
 	if b.showDeleted {
-		return b.deletedView(height)
+		return b.deletedView(width, height)
 	}
 	var body strings.Builder
 	body.WriteString(sectionTitle(b.deps.Styles, "Memory browser: "+b.deps.Folder))
@@ -753,15 +761,19 @@ func (b *Browser) View(width, height int) string {
 		return strings.TrimRight(body.String(), "\n")
 	}
 
-	listContent := b.renderList(rows, b.listRowBudget(rows, height))
+	rowBudget := b.listRowBudget(rows, height)
 	if width < previewMinWidth {
-		body.WriteString(listContent)
+		// No preview pane: the list owns the full content width, so fit rows to
+		// it directly.
+		body.WriteString(b.renderList(rows, rowBudget, width))
 		return strings.TrimRight(body.String(), "\n")
 	}
 
+	// Preview split: the list is confined to listPaneWidth, so rows are fit to
+	// that — the MaxWidth pane then has nothing to wrap.
 	previewWidth := width - listPaneWidth - 2
 	preview := b.renderPreview(rows[b.cursor], previewWidth)
-	listBlock := lipgloss.NewStyle().Width(listPaneWidth).MaxWidth(listPaneWidth).Render(listContent)
+	listBlock := lipgloss.NewStyle().Width(listPaneWidth).MaxWidth(listPaneWidth).Render(b.renderList(rows, rowBudget, listPaneWidth))
 	previewBlock := lipgloss.NewStyle().Width(previewWidth).MaxWidth(previewWidth).Render(preview)
 	body.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, listBlock, "  ", previewBlock))
 	return strings.TrimRight(body.String(), "\n")
@@ -771,7 +783,7 @@ func (b *Browser) View(width, height int) string {
 // scanning notice, an empty notice, or the cursor-windowed deleted paths. Rows
 // are windowed to the height budget the same way the memory list is, so a long
 // deletion history never overflows the pane.
-func (b *Browser) deletedView(height int) string {
+func (b *Browser) deletedView(width, height int) string {
 	var body strings.Builder
 	body.WriteString(sectionTitle(b.deps.Styles, "Deleted memories: "+b.deps.Folder))
 	body.WriteString("\n\n")
@@ -809,14 +821,17 @@ func (b *Browser) deletedView(height int) string {
 		if row == b.deletedCursor {
 			marker = "> "
 		}
-		line := marker + b.deletedPaths[row]
+		// A deleted path is a plain name with no badge/description/age, fit to
+		// width through the same shared row helper the live list uses so a long
+		// nested path never soft-wraps past this pane's own height budget.
+		line := fitListRow(b.deps.Styles, width, marker, b.deletedPaths[row], "", "", "")
 		if row == b.deletedCursor {
 			line = b.deps.Styles.Selected.Render(line)
 		}
 		lines = append(lines, line)
 	}
 	if truncated {
-		lines = append(lines, b.deps.Styles.Dim.Render(historyTruncationNotice(historyVersionLimit)))
+		lines = append(lines, b.deps.Styles.Dim.Render(fitWidth(historyTruncationNotice(historyVersionLimit), width)))
 	}
 	body.WriteString(strings.Join(lines, "\n"))
 	return strings.TrimRight(body.String(), "\n")
@@ -875,7 +890,7 @@ func countDistinctProviders(rows []memoryfs.Memory) int {
 // lies entirely outside the window (both its rows and its header) simply
 // is not shown; nothing tracks that separately, so a header can scroll off
 // exactly like any other row.
-func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget int) string {
+func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget, width int) string {
 	start, end := visibleWindow(b.cursor, len(rows), rowBudget)
 	rows = rows[start:end]
 
@@ -884,7 +899,7 @@ func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget int) string {
 	for i, m := range rows {
 		row := start + i
 		if m.Provider != lastProvider {
-			lines = append(lines, b.deps.Styles.Header.Render(m.Provider))
+			lines = append(lines, b.deps.Styles.Header.Render(fitWidth(m.Provider, width)))
 			lastProvider = m.Provider
 		}
 		marker := "  "
@@ -893,11 +908,9 @@ func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget int) string {
 		}
 		badge := ""
 		if b.lintFlags[m.RepoPath] {
-			badge = " " + b.deps.Styles.Warn.Render("⚠")
+			badge = "⚠"
 		}
-		line := fmt.Sprintf("%s%s%s — %s (%s)", marker, m.Name, badge,
-			b.deps.Styles.Dim.Render(truncate(m.Description, descriptionTruncateAt)),
-			relativeTime(m.ModTime, b.now))
+		line := fitListRow(b.deps.Styles, width, marker, m.Name, badge, m.Description, relativeTime(m.ModTime, b.now))
 		if row == b.cursor {
 			line = b.deps.Styles.Selected.Render(line)
 		}
@@ -958,14 +971,69 @@ func (b *Browser) renderPreview(selected memoryfs.Memory, width int) string {
 	return rendered
 }
 
-// truncate shortens s to at most maxRunes runes, marking the cut with an
-// ellipsis — rune-aware so a multi-byte character is never split.
-func truncate(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
+// fitWidth truncates s to at most width display cells, marking any cut with an
+// ellipsis. Display-width-aware (ansi): wide runes and the ellipsis are counted
+// as the cells they occupy, unlike the rune-counting truncate this subsumed
+// (which split wide runes and mismeasured them against a column budget). It is
+// the shared width primitive fitListRow and the provider-header/notice lines
+// all fit through, so every line the browser emits obeys one truncation regime.
+// width <= 0 yields "".
+func fitWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) <= width {
 		return s
 	}
-	return string(runes[:maxRunes]) + "…"
+	return ansi.Truncate(s, width, "…")
+}
+
+// fitListRow composes one list row — a marker, a name, an optional lint badge,
+// an optional description, and an always-visible trailing relative-age suffix —
+// into a single line whose visible (display-cell) width never exceeds width, so
+// a fixed-width list pane has nothing to wrap. That is what keeps one logical
+// row rendering as exactly one physical line, and with it the height budget's
+// rows-equal-lines arithmetic honest (spec §3): the defect this fixes was long
+// real memory names folding the fixed-width list pane into a multi-line soup.
+//
+// The marker and the "(age)" suffix always render in full; the badge renders in
+// full when present (a lint ⚠ the user must not miss). The name takes the
+// remaining budget first and is ellipsis-truncated if it still overflows, which
+// drops the description for that row. Otherwise the description fills what is
+// left, prefixed " — " and ellipsis-truncated, and is dropped rather than shown
+// as a useless sliver when fewer than descriptionMinWidth columns remain. Every
+// segment is measured and cut as PLAIN text, then styled — styled (ANSI-wrapped)
+// text is never width-sliced. Callers with no badge/description/age pass "".
+func fitListRow(styles theme.Styles, width int, marker, name, badge, description, age string) string {
+	ageSuffix := ""
+	if age != "" {
+		ageSuffix = " (" + age + ")"
+	}
+	badgeSuffix, badgeRendered := "", ""
+	if badge != "" {
+		badgeSuffix = " " + badge
+		badgeRendered = " " + styles.Warn.Render(badge)
+	}
+	// The age and badge are reserved off the top: name and description only ever
+	// compete for what is left, so the age can never be pushed off the row.
+	nameBudget := width - ansi.StringWidth(marker) - ansi.StringWidth(badgeSuffix) - ansi.StringWidth(ageSuffix)
+
+	var out strings.Builder
+	out.WriteString(marker)
+	if ansi.StringWidth(name) > nameBudget {
+		out.WriteString(fitWidth(name, nameBudget)) // name alone overflows: truncate it, drop the description
+		out.WriteString(badgeRendered)
+	} else {
+		out.WriteString(name)
+		out.WriteString(badgeRendered)
+		descBudget := min(nameBudget-ansi.StringWidth(name)-ansi.StringWidth(" — "), descriptionTruncateAt)
+		if description != "" && descBudget >= descriptionMinWidth {
+			out.WriteString(" — ")
+			out.WriteString(styles.Dim.Render(fitWidth(description, descBudget)))
+		}
+	}
+	out.WriteString(ageSuffix)
+	return out.String()
 }
 
 // relativeTime renders t relative to now in the coarsest unit that keeps it
