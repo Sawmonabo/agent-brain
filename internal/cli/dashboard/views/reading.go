@@ -314,6 +314,19 @@ func (r *Reading) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		return r, func() tea.Msg { return EditRequestMsg{Memory: memory} }
 	case keybinding.Matches(msg, DashboardKeys.ReadingHistory):
 		return r, r.openHistory()
+	case r.backlinksOpen && (msg.String() == "down" || msg.String() == "j"):
+		// While the backlinks panel is open the vertical nav keys move the
+		// referrer selection — the same rows tab/shift+tab cycle — instead of
+		// falling through to the viewport below, which would scroll the body
+		// behind the panel and leave a just-opened list unresponsive to the
+		// arrow keys. down/j advance, up/k retreat, mirroring the viewport
+		// keymap's own up=↑/k, down=↓/j split so a key means one direction in
+		// both modes.
+		r.moveCursor(1)
+		return r, nil
+	case r.backlinksOpen && (msg.String() == "up" || msg.String() == "k"):
+		r.moveCursor(-1)
+		return r, nil
 	case msg.String() == "g":
 		r.viewport.GotoTop()
 		return r, nil
@@ -339,19 +352,32 @@ func (r *Reading) cursorRowCount() int {
 // wrapping at both ends. From the -1 "nothing selected" state, tab lands on
 // the first row and shift+tab on the last.
 func (r *Reading) cycleCursor(key string) {
+	switch key {
+	case "tab":
+		r.moveCursor(1)
+	case "shift+tab":
+		r.moveCursor(-1)
+	}
+}
+
+// moveCursor steps the shared cursor by delta (±1), wrapping at both ends.
+// From the -1 "nothing selected" state a forward step (+1) lands on the first
+// row and a backward step (-1) on the last — the semantics tab/shift+tab have
+// always had, now shared with the backlinks panel's ↑/↓/k/j navigation. delta
+// is always ±1, so linkCursor+delta+count stays in [0, 2*count) and the
+// modulo wraps correctly without Go's negative-remainder pitfall.
+func (r *Reading) moveCursor(delta int) {
 	count := r.cursorRowCount()
 	if count == 0 {
 		return
 	}
-	switch key {
-	case "tab":
-		r.linkCursor = (r.linkCursor + 1) % count
-	case "shift+tab":
-		if r.linkCursor <= 0 {
-			r.linkCursor = count - 1
-		} else {
-			r.linkCursor--
-		}
+	switch {
+	case r.linkCursor < 0 && delta > 0:
+		r.linkCursor = 0
+	case r.linkCursor < 0:
+		r.linkCursor = count - 1
+	default:
+		r.linkCursor = (r.linkCursor + delta + count) % count
 	}
 }
 

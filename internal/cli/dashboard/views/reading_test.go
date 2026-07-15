@@ -316,6 +316,45 @@ func TestReadingBacklinksPanel(t *testing.T) {
 	}
 }
 
+// TestReadingBacklinksArrowNavigation pins that while the backlinks panel is
+// open the vertical nav keys (↑/↓ and k/j) move the panel's selection — the
+// same referrer rows tab/shift+tab cycle — instead of falling through to
+// scroll the body viewport behind the panel. A just-opened list that ignored
+// the arrow keys read as broken (the reported bug).
+func TestReadingBacklinksArrowNavigation(t *testing.T) {
+	t.Parallel()
+	reading := newReadingFixture(t, nil)
+
+	next, _ := reading.Update(key("b"))
+	reading = next.(*Reading)
+	if got := plain(reading.View(120, 30)); !strings.Contains(got, "> Beta") {
+		t.Fatalf("panel cursor not on the first referrer after open; got:\n%s", got)
+	}
+
+	// alpha's referrers are [Beta, Gamma] (index-sorted); the cursor wraps at
+	// both ends. down/j advance the selection, up/k retreat it — matching the
+	// viewport keymap's own up=↑/k, down=↓/j split so a key means the same
+	// direction whether the panel is open or closed.
+	steps := []struct {
+		press      tea.KeyPressMsg
+		wantCursor string
+	}{
+		{key("down"), "> Gamma"},
+		{key("down"), "> Beta"}, // wraps past the last referrer
+		{key("up"), "> Gamma"},  // wraps back from the first
+		{key("j"), "> Beta"},    // j is down
+		{key("k"), "> Gamma"},   // k is up
+	}
+	for i, step := range steps {
+		next, _ := reading.Update(step.press)
+		reading = next.(*Reading)
+		got := plain(reading.View(120, 30))
+		if !strings.Contains(got, step.wantCursor) {
+			t.Fatalf("step %d (%s): panel cursor not at %q; got:\n%s", i, step.press.String(), step.wantCursor, got)
+		}
+	}
+}
+
 // TestReadingBacklinksPanelEmpty covers a memory nothing links to: the open
 // panel must say so rather than render an empty hole. Needs its own body
 // set — in the canonical fixture every memory has at least one referrer
