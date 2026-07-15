@@ -44,6 +44,14 @@ dropped.
 - We own a small watch-manager component (dynamic subdir adds, debounce, backstop) —
   it must be unit-tested against the created-with-contents race.
 - Debounce interval is a tunable; too short spams commits, too long batches conflicts.
+- The manager's `Run` loop treats a closed fsnotify event/error stream as orderly
+  teardown, not a watcher death, once cancellation has been requested: fsnotify
+  signals a deliberate `Close` and a genuine death identically (both close the
+  channel), so the two are indistinguishable at `Run`'s level and only the
+  cancellation state disambiguates them — post-cancel it returns nil rather than a
+  spurious `event stream closed` error during shutdown. That error contract lives on
+  `Run`'s own doc comment (`internal/watch/watch.go`); this ADR does not otherwise
+  constrain it.
 
 ## Buy vs build
 

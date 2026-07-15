@@ -47,10 +47,17 @@ lefthook install                                # once per clone: git hooks
   (`POST /v0/quiesce`) while they touch the checkout; the mutating endpoints
   (`sync`/`track`/`untrack`/`migrate`/`reencrypt`) are refused while quiesced.
   `key rotate` re-encrypts the whole repo through that same single writer
-  (`POST /v0/reencrypt`).
-- Product CLI beyond init/track/sync/status/doctor (spec §7): `dashboard`
-  (bubbletea v2 TUI over the daemon — in-TUI track/untrack/sync — `internal/cli/dashboard` is the only
-  package outside `cli` root allowed direct bubbletea/lipgloss imports), `scan`
+  (`POST /v0/reencrypt`). The daemon also serves two read-only reads for the
+  hub — `GET /v0/history` and `GET /v0/blob` (spec §6) — dispatched through the
+  engine goroutine so they never race the writer and are not gated by quiesce.
+- Product CLI beyond init/track/sync/status/doctor (spec §7): the dashboard
+  hub — bare `agent-brain` (aliased `dashboard`) opens a bubbletea v2 TUI over
+  the daemon for browsing/reading/editing memories, per-memory history +
+  restore, search, insights, and in-TUI enroll/sync/update/doctor (ADR 20; full
+  surface in `docs/01-dashboard-hub-spec.md`). `internal/cli/dashboard` is the
+  only package outside `cli` root allowed direct bubbletea/lipgloss imports and
+  splits into subpackages (`views`, `memoryfs`, `search`, `lint`, `links`,
+  `editorx`, `actions`, `theme`). Then `scan`
   (gitleaks plaintext-leak scan — advisory, never joins `SafetyGate`),
   `key rotate` (fail-closed fleet re-encrypt), and `update [version]`
   (gh-native self-update, ADR 18 — checksum-verified atomic swap + service

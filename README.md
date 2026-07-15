@@ -17,7 +17,7 @@ sync engine is the only writer, git filters encrypt content transparently on the
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [Commands](#commands)
-  - [`agent-brain dashboard`](#agent-brain-dashboard)
+  - [The dashboard hub](#the-dashboard-hub)
 - [Security model](#security-model)
 - [Uninstall](#uninstall)
 - [Documentation](#documentation)
@@ -66,8 +66,9 @@ onboarding runbook.
 
 ## Commands
 
-Bare `agent-brain` prints help. The full tree (`agent-brain <command> --help` for
-flags):
+Bare `agent-brain` opens the [dashboard hub](#the-dashboard-hub) on an interactive
+terminal; `agent-brain --help` prints the full tree (`agent-brain <command> --help`
+for per-command flags):
 
 | Command | What it does |
 |---|---|
@@ -78,9 +79,9 @@ flags):
 | `status` | Show daemon state and the last sync cycle (`--json` for the raw payload) |
 | `projects` | List enrolled projects and their health (`--json`) |
 | `conflicts` | Inspect retain-both conflict blocks (`list`, `show <path>`) |
-| `doctor` | Check (and with `--fix`, repair) this machine's wiring — filters, attributes, credential helper, maintenance posture (`--json`, `--offline`) |
+| `doctor` | Check (and with `--fix`, repair, then re-check) this machine's wiring — filters, attributes, credential helper, maintenance posture (`--json`; `--offline` skips the network probe and is honored under `--fix`) |
 | `scan` | Scan enrolled memory for pasted secrets via gitleaks — advisory (`--project`, `--json`, `--reveal-secrets`) |
-| `dashboard` | Live TUI over the running daemon (projects, conflicts, activity, doctor) |
+| `dashboard` | Alias for the bare command — opens the [dashboard hub](#the-dashboard-hub) (the interactive default when `agent-brain` runs with no arguments) |
 | `key export` / `key import [--force]` / `key rotate` | Manage the shared Tink keyset (back up, restore, fleet-rotate) |
 | `service install\|uninstall\|start\|stop\|status\|logs` | Install or control the login-started daemon service |
 | `update [version]` | Self-update to the newest release — or the named one, incl. deliberate rollback — and restart the service (`--check`, `--list [--json]`, `--select`, `--no-restart`) |
@@ -90,39 +91,65 @@ flags):
 
 Read commands offer `--json`; `NO_COLOR` and non-TTY output degrade to plain text.
 
-### `agent-brain dashboard`
+### The dashboard hub
 
-A live [bubbletea](https://charm.land) TUI over the running daemon, four tabs
-refreshed on a 2-second poll (`s` syncs the selected unit, `t` untracks it behind a
-`y/N` confirm, `a` adds (tracks) a discovered memory root, `tab`/`1`–`4` switch tabs, `q` quits). It needs an interactive
-terminal — `status --json` and `projects --json` are the scriptable equivalents. The
-Projects tab, rendered from the daemon's live telemetry:
+Bare `agent-brain` — or the `agent-brain dashboard` alias — opens the hub: a live
+[bubbletea](https://charm.land) TUI over the running daemon that browses, reads,
+edits, and time-travels every enrolled project's memories without leaving the
+terminal. It needs an interactive terminal — for scripting, `status --json` and
+`projects --json` are the equivalents. On a machine that is not set up yet, a human
+terminal is walked through guided `init` first and then lands in the hub; a detected
+coding-agent environment or a non-interactive shell gets an `agent-brain init`
+pointer instead. If the daemon is down the hub still opens, with a degraded banner
+and a full-screen notice offering `s` to start the login service.
 
-```text
-daemon: watching · last cycle: ok
+Four tabs sit at the root, refreshed on a 2-second poll and switched with
+`tab`/`shift+tab` or `1`–`4`:
 
-[1 Projects]  2 Conflicts   3 Activity   4 Doctor
+- **Projects** — the per-unit table (provider · folder · health · watch state ·
+  last-cycle result; a `LOCAL DIR` column appears on terminals ≥120 columns wide).
+  `s` syncs the selected unit, `u` untracks it behind a `y/N` confirm, `a` runs the
+  init-style enrollment picker over newly discovered memory roots, `m` runs the
+  bash-era migrate flow, and `enter` opens that project's memory browser.
+- **Conflicts** — retained retain-both records; `enter` opens a detail view where
+  `enter` jumps to the memory, `e` edits the merged file, and `h` opens its history.
+- **Activity** — the sync/capture feed: daemon uptime, any quiesce deadline, the
+  fleet watch-trigger count, and the last cycle's mirror/push summary.
+- **Doctor** — the read-only `--offline` check battery with per-check
+  `✓`/`⚠`/`✗`/`i` glyphs; `r` re-runs it, `f` runs the quiesce-aware `doctor --fix`
+  (always re-checking offline) on a fixable failure, and `s` runs the advisory
+  gitleaks scan.
 
-Projects
+Inside a project's **memory browser**, memories are grouped by provider with lint
+badges: `enter` reads one, `e` edits, `n` creates, `r` renames, `d` deletes, `h`
+opens version history, `x` toggles the deleted-memory recovery view, `i` opens
+project insights, `o` reorders, and `/` filters the list. The **reading view**
+renders with theme-aware glamour and follows `[[wiki-links]]` (`tab` cycles link
+targets, `enter` jumps, `b` toggles backlinks, dangling targets are marked); `y`
+copies the memory's provider-file path, `e` edits, and `h` opens history.
+**History** lists each version (short rev, time, machine, and which one is live):
+`enter` renders a version, `d`/`D` diffs it against the live content or the adjacent
+version, and `R` restores it — restore writes the chosen content back as a new
+capture, so history only ever grows, and it works for deleted memories too.
 
-PROVIDER   FOLDER                HEALTH     WATCH      LAST CYCLE
-claude     agent-brain           ok         watching   ok
-codex      _global               degraded   failed     degraded
+`/` from any root view opens a **global search** overlay across every tracked
+project (matched by name, then description, then body text); `enter` opens the
+matched memory.
 
-tab/1–4 switch · ↑/↓ select · s sync · t untrack · a add · q quit
-```
+**Editing never embeds an editor.** `e` suspends the hub and hands your configured
+editor (`editor.command` if set, else `$VISUAL`, else `$EDITOR`) a disposable scratch
+copy — never the live file. A byte-identical save makes zero commits and toasts that the edit was
+cancelled; a real change is written back with one atomic rename, then captured and
+pushed by the normal engine cycle (exactly one capture per changed save). If no
+editor is configured the binding is visibly disabled rather than falling back to a
+default.
 
-`WATCH` reads `watching`/`failed`/`—`; `LAST CYCLE` reads `ok`/`degraded`/`error`/`—`
-(the whole-cycle `error` a degraded flag alone cannot show). A `LOCAL DIR` column
-appears on terminals ≥120 columns wide. While a modal owns the keyboard (the untrack
-confirm or the add flow), the footer and the modal's inline hints advertise exactly
-that modal's keys — both render from the same key bindings, so they cannot disagree.
-**Activity** adds daemon uptime, any quiesce
-deadline, the fleet watch-trigger count (the max over units, since triggers are
-fleet-global), and the last cycle's mirror/push summary. **Doctor** renders the
-read-only `--offline` battery with per-check `✓`/`⚠`/`✗`/`i` glyphs. When the daemon
-is down the dashboard shows a full-screen notice offering `s` to start the login
-service.
+When a newer release is available the status bar shows `vX.Y.Z available — U to
+update`; `U` confirms and runs the checksum-verified self-update (ADR 18), and on
+success the hub offers `R` to re-exec onto the new binary. A `ctrl+k` command palette
+and `?` help overlay reach every action — both, with each view's footer, render from
+one action registry, so a key can never mean two things — and while the daemon is
+quiesced (during `init` or `doctor --fix`) every mutating action greys out.
 
 ## Security model
 

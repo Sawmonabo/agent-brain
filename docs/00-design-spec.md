@@ -313,7 +313,9 @@ propagates as normal deletions via the manifest.
 
 ## 7. CLI & UX
 
-Bare `agent-brain` prints help. Command tree:
+Bare `agent-brain` opens the dashboard hub on an interactive terminal (hub-era
+entry per ADR 20 decision 1; see [docs/01-dashboard-hub-spec.md](01-dashboard-hub-spec.md)
+§1); `agent-brain --help` prints help. Command tree:
 
 - **`init`** — first-run wizard (huh forms): gh detect/auth → create-or-clone
   `agent-brain-memories` → keyset generate (first machine) or import (joining) with
@@ -333,7 +335,11 @@ Bare `agent-brain` prints help. Command tree:
   **Doctor** (the read-only `--offline` battery with per-check glyphs). A
   full-screen notice offers `s` to start the login service when the daemon is
   down. Requires an interactive terminal — `status --json` / `projects --json`
-  are the scriptable equivalents.
+  are the scriptable equivalents. This clause describes the pre-hub monitor; the
+  hub era — bare-command entry, memory browsing/reading/editing, per-memory
+  history with restore, and the read-only history API — is specified in
+  [docs/01-dashboard-hub-spec.md](01-dashboard-hub-spec.md), which supersedes it
+  (ADR 20).
 - **`track [path] | track --all`**, **`untrack <path|folder> [--purge | --yes]`** —
   enrollment; `--purge` also removes the project folder from the repo (history
   retains it).

@@ -83,8 +83,8 @@ Flow on `e` (browser or reading view):
 1. Copy the provider file to a scratch path outside any watched tree
    (`os.MkdirTemp` under the user cache dir).
 2. Resolve the editor: config `editor.command` if set, else `$VISUAL`, else
-   `$EDITOR` (resolution + line-jump args via `charm.land/x/editor`; command
-   string parsed with `mvdan.cc/sh/v3/shell.Fields`). None set → footer
+   `$EDITOR` (resolution built in the owned `editorx` package; command string
+   POSIX-split with `mvdan.cc/sh/v3/shell.Fields`). None set → footer
    notice: `no editor configured — set $EDITOR or editor.command in config`
    (binding visibly disabled, crush-style).
 3. Suspend via `tea.ExecProcess` with the one-frame empty-View workaround

@@ -64,9 +64,9 @@ win only where the framework ships a serious widget (Python Textual's
 TextArea); Go has none of that caliber. So:
 
 - `e` suspends the TUI and opens the user's editor via `tea.ExecProcess`,
-  resolving `$VISUAL` then `$EDITOR` (`charm.land/x/editor` provides
-  resolution plus the per-editor line-jump dialect table), parsing the
-  command with a POSIX-aware word splitter, never `strings.Fields`.
+  resolving config `editor.command` then `$VISUAL` then `$EDITOR` in the owned
+  `editorx` package, parsing the command with a POSIX-aware word splitter
+  (`mvdan.cc/sh/v3/shell.Fields`), never `strings.Fields`.
 - The editor gets a **disposable scratch copy** outside the watched tree —
   never the live provider file. Editors' atomic-save rename semantics are a
   documented hazard class for fsnotify watchers (vim `backupcopy`, swap
@@ -118,9 +118,11 @@ with backlinks and dangling-link detection; memory lint; per-project and
 fleet insights; conflict center; update banner + one-key self-update; one-key
 quiesce-aware doctor --fix; full enrollment parity (init-style picker +
 migrate) in-hub; gitleaks scan integration; command palette, help overlay,
-and Catppuccin-consistent theming. `charm.land/glamour/v2` and
-`charm.land/x/editor` join the dashboard package's allowed imports (extending
-ADR 05's bubbletea/lipgloss carve-out).
+and Catppuccin-consistent theming. `charm.land/glamour/v2` (markdown render)
+and `mvdan.cc/sh/v3/shell` (POSIX word-split for the editor handoff) join the
+dashboard package's allowed imports (extending ADR 05's bubbletea/lipgloss
+carve-out); editor resolution itself is the owned `editorx` package, not a
+third-party dependency (see Buy vs build).
 
 ## Consequences
 
@@ -136,11 +138,20 @@ ADR 05's bubbletea/lipgloss carve-out).
 
 ## Buy vs build
 
-Buy: `charm.land/glamour/v2` (markdown render), `charm.land/x/editor`
-(editor resolution + line-jump dialects), `mvdan.cc/sh/v3/shell` (POSIX word
-split), existing gitleaks integration (scan). Build: history endpoints,
-search/lint/links over provider dirs, and the views — nothing else exists
-that speaks our daemon API.
+Buy: `charm.land/glamour/v2` (markdown render), `mvdan.cc/sh/v3/shell` (POSIX
+word split), existing gitleaks integration (scan). Build: editor resolution
+(the owned `editorx` package), history endpoints, search/lint/links over
+provider dirs, and the views — nothing else exists that speaks our daemon API.
+
+`charm.land/x/editor` was in the buy list above at decision time but was
+dropped during implementation (verified 2026-07-12): its newest release
+(v0.2.0) declares the module path `github.com/charmbracelet/x/editor` — the
+`x/` repos never adopted the `charm.land` vanity prefix this ADR first wrote —
+and its resolution contradicts decision 2's own hardening, consulting `$EDITOR`
+only (never `$VISUAL`), splitting the command with `strings.Fields` (not
+POSIX-aware), and silently falling back to `nano` when nothing is set. `editorx`
+implements the resolution to decision 2's rules in ~40 lines of owned, tested
+code instead.
 
 ## Sources
 
