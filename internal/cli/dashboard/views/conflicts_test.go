@@ -2,6 +2,7 @@ package views
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -22,7 +23,9 @@ func threeConflicts() []config.ConflictRecord {
 // plain-rendered view, or "" if none does.
 func markedRow(t *testing.T, view ConflictsView, records []config.ConflictRecord) string {
 	t.Helper()
-	body := plain(view.View())
+	// A height comfortably larger than these fixtures so every row is in the
+	// window — the cursor/marker assertions are about selection, not paging.
+	body := plain(view.View(40))
 	marked := ""
 	for _, record := range records {
 		switch {
@@ -133,6 +136,44 @@ func TestConflictsViewSetReclampsCursor(t *testing.T) {
 	}
 }
 
+// TestConflictsViewWindowsAroundCursor pins the height window (the same defect
+// AT-6 fixed in the browser preview, here in the Conflicts tab): a log longer
+// than the tab is tall must keep the selected row on screen AND never render
+// more lines than the height budget. Unwindowed the view emits every capped
+// record from the top, so at height 12 a 50-row log overflows to ~53 lines and
+// the cursor's row — walked near the bottom — sits far below the fold (where
+// only the root's fitHeight backstop clips it, hiding the very row the user
+// selected). 50 rows at height 12 with the cursor at 40: the cursor's row is
+// visible, the top row is not, and the frame fits the budget.
+func TestConflictsViewWindowsAroundCursor(t *testing.T) {
+	t.Parallel()
+	const rowCount, height, cursor = 50, 12, 40
+	records := make([]config.ConflictRecord, rowCount)
+	for i := range records {
+		records[i] = config.ConflictRecord{
+			Time: fmt.Sprintf("2026-07-09T11:%02d:00Z", i),
+			Path: fmt.Sprintf("acme/claude/conflict-%03d.md", i),
+			Mode: "fact",
+		}
+	}
+	var view ConflictsView
+	view.Set(records, nil)
+	for range cursor {
+		view.Update(key("j"))
+	}
+
+	got := plain(view.View(height))
+	if lineCount := strings.Count(got, "\n") + 1; lineCount > height {
+		t.Errorf("conflicts view rendered %d lines at height %d — the log was not windowed to the budget; got:\n%s", lineCount, height, got)
+	}
+	if !strings.Contains(got, records[cursor].Path) {
+		t.Errorf("cursor row %q not visible — the window did not follow the selection; got:\n%s", records[cursor].Path, got)
+	}
+	if strings.Contains(got, records[0].Path) {
+		t.Errorf("top row %q still visible at cursor %d — the view rendered unwindowed from the top; got:\n%s", records[0].Path, cursor, got)
+	}
+}
+
 func TestConflictsView(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -174,7 +215,7 @@ func TestConflictsView(t *testing.T) {
 			if testCase.loaded {
 				view.Set(testCase.records, testCase.err)
 			}
-			body := plain(view.View())
+			body := plain(view.View(40))
 			for _, want := range testCase.wantSubstr {
 				if !strings.Contains(body, want) {
 					t.Errorf("conflicts view missing %q; got:\n%s", want, body)

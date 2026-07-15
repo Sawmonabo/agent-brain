@@ -112,8 +112,17 @@ func (v ConflictsView) open() tea.Cmd {
 	return func() tea.Msg { return OpenConflictMsg{Record: record} }
 }
 
-// View renders the Conflicts tab from the last Set snapshot.
-func (v ConflictsView) View() string {
+// conflictsChrome is the fixed vertical overhead View renders above the record
+// rows: the title line, its trailing blank, and the TIME/PATH/MODE column
+// header. The height window subtracts it (and the truncation notice's own line
+// when shown) so the rows plus their chrome never exceed the tab budget.
+const conflictsChrome = 3
+
+// View renders the Conflicts tab from the last Set snapshot, windowed to the
+// height the root's tab budget hands it (tabBodyHeight). height comes fresh on
+// every call, so a resize is handled by construction — no cached dimension to
+// invalidate — exactly as the pushed screens size themselves.
+func (v ConflictsView) View(height int) string {
 	var b strings.Builder
 	b.WriteString(sectionTitle(v.styles, "Conflicts"))
 	b.WriteString("\n\n")
@@ -139,7 +148,19 @@ func (v ConflictsView) View() string {
 
 	b.WriteString(v.styles.Header.Render(fmt.Sprintf("  %-25s %-44s %s", "TIME", "PATH", "MODE")))
 	b.WriteString("\n")
-	for i, record := range records {
+
+	// Window the (already 200-capped) records to the height budget around the
+	// cursor, the same visibleWindow the browser list uses: a log longer than
+	// the tab is tall must keep the selected row on screen and never overflow
+	// the budget, rather than render every row from the top and let the cursor
+	// walk off the bottom (where the root's fitHeight backstop would clip it).
+	budget := max(height-conflictsChrome, 1)
+	if truncated > 0 {
+		budget = max(budget-1, 1) // the "… and N older" disclosure row
+	}
+	start, end := visibleWindow(v.cursor, len(records), budget)
+	for i := start; i < end; i++ {
+		record := records[i]
 		marker := "  "
 		row := fmt.Sprintf("%-25s %-44s %s", record.Time, record.Path, record.Mode)
 		if i == v.cursor {

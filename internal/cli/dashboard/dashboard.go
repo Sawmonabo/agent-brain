@@ -2077,7 +2077,7 @@ func (m Model) activeBody() string {
 	case tabProjects:
 		return m.projects.View(m.fleetHeaderLine())
 	case tabConflicts:
-		return m.conflicts.View()
+		return m.conflicts.View(m.tabBodyHeight())
 	case tabActivity:
 		return m.activity.View(m.status, m.statusErr, m.projects.Units, m.now)
 	case tabDoctor:
