@@ -63,6 +63,10 @@ type DashboardKeymap struct {
 	// BrowserInsights (i) opens the project insights screen (Task 16), matched
 	// directly by Browser.updateKey like the other browser read surfaces.
 	BrowserInsights keybinding.Binding
+	// BrowserCopy (y) copies the selected memory's raw body to the system
+	// clipboard via OSC52 (browser.go's copyRequest), matched directly by
+	// Browser.updateKey like the other browser read surfaces.
+	BrowserCopy keybinding.Binding
 	// BrowserFocusPreview (tab) hands the preview pane keyboard focus so the
 	// reading view's full scroll keymap drives it (browser.go's preview-focus
 	// mode), matched directly by Browser.updateKey. The unfocused ctrl+d/u
@@ -81,9 +85,13 @@ type DashboardKeymap struct {
 	ReadingFollow     keybinding.Binding
 	ReadingBacklinks  keybinding.Binding
 	ReadingCopyPath   keybinding.Binding
-	ReadingEdit       keybinding.Binding
-	ReadingHistory    keybinding.Binding
-	ReadingBack       keybinding.Binding
+	// ReadingCopyBody (Y) copies the open memory's raw markdown source to the
+	// clipboard via OSC52, matched directly by Reading.updateKey — the reading
+	// twin of BrowserCopy.
+	ReadingCopyBody keybinding.Binding
+	ReadingEdit     keybinding.Binding
+	ReadingHistory  keybinding.Binding
+	ReadingBack     keybinding.Binding
 	// History* bindings own the keyboard while a version-history Screen is on
 	// the stack (Task 14). View/Diff/DiffOlder/Restore/Back are matched
 	// directly by History.updateKey; the list cursor reuses Select verbatim
@@ -152,12 +160,14 @@ var DashboardKeys = DashboardKeymap{
 	BrowserHistory:        bindingFor("browser-history"),
 	BrowserShowDeleted:    bindingFor("browser-show-deleted"),
 	BrowserInsights:       bindingFor("browser-insights"),
+	BrowserCopy:           bindingFor("browser-copy"),
 	BrowserFocusPreview:   bindingFor("browser-focus-preview"),
 	BrowserBack:           bindingFor("browser-back"),
 	ReadingCycleLinks:     bindingFor("reading-links"),
 	ReadingFollow:         bindingFor("reading-follow"),
 	ReadingBacklinks:      bindingFor("reading-backlinks"),
 	ReadingCopyPath:       bindingFor("reading-copy-path"),
+	ReadingCopyBody:       bindingFor("reading-copy-body"),
 	ReadingEdit:           bindingFor("reading-edit"),
 	ReadingHistory:        bindingFor("reading-history"),
 	ReadingBack:           bindingFor("reading-back"),

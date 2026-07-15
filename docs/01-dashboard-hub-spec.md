@@ -59,10 +59,18 @@ in each view's footer.
   modified time, lint badge (`⚠` when §8 flags the file).
 - Preview pane renders the selection with `charm.land/glamour/v2`
   (theme-aware light/dark).
+- While the preview pane is shown the mouse wheel scrolls it and a click
+  focuses it. That turns on terminal mouse reporting, which suppresses the
+  terminal's own drag-select in the browser. To copy text: press `y` to copy
+  the selected memory to the system clipboard (OSC 52 — carries over SSH, tmux
+  with `allow-passthrough`, and WSL2), or bypass mouse reporting with
+  Option-drag (macOS Terminal/iTerm2) or Shift-drag (Linux terminals, Windows
+  Terminal), or press `enter` into the reading view — which captures no mouse —
+  and select normally.
 - In-project filter: `/` inside the browser filters the list (fuzzy on
   name + description).
 - Keys: `enter` read · `e` edit · `n` new · `r` rename · `d` delete ·
-  `h` history · `i` insights · `esc` back.
+  `h` history · `i` insights · `y` copy to clipboard · `esc` back.
 
 ## 4. Reading view
 
@@ -74,7 +82,8 @@ in each view's footer.
   (navigation stack; `esc` returns). Dangling targets render struck-through
   with a `dangling` marker.
 - `b` toggles a backlinks panel listing memories that reference this one.
-- `e` edit · `h` history · `y` copy provider-file path · `esc` back.
+- `e` edit · `h` history · `y` copy provider-file path · `Y` copy memory to
+  clipboard (OSC 52) · `esc` back.
 
 ## 5. Editing ($EDITOR handoff — ADR 20 decision 2)
 

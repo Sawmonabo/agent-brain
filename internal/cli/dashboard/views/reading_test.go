@@ -390,6 +390,38 @@ func TestReadingCopyPathEmitsAbsolutePath(t *testing.T) {
 	}
 }
 
+// TestReadingCopyBodyEmitsRawSource pins Y: a CopyMemoryMsg carrying the open
+// memory's RAW markdown source (r.body — the [[wiki-link]] source the view
+// renders FROM) and its name for the toast, never the glamour-styled display
+// string. The Render seam is wired to a sentinel that prefixes every rendered
+// body, and the viewport is rendered once so a styled string actually exists to
+// (wrongly) copy — so the raw-source assertion is a real guard, not a tautology
+// over an empty viewport. Synchronous, unlike the browser's copy: r.body is
+// already in memory, so there is no ReadBody call and no error arm.
+func TestReadingCopyBodyEmitsRawSource(t *testing.T) {
+	t.Parallel()
+	reading := newReadingFixture(t, func(deps *ReadingDeps) {
+		deps.Render = func(md string, _ int) string { return "RENDERED:" + md }
+	})
+	_ = reading.View(120, 30) // populate the viewport with the styled string a bug might copy
+
+	_, cmd := reading.Update(key("Y"))
+	if cmd == nil {
+		t.Fatal("Y produced no Cmd")
+	}
+	copyMemory, ok := cmd().(CopyMemoryMsg)
+	if !ok {
+		t.Fatalf("Y produced %#v, want CopyMemoryMsg", cmd())
+	}
+	wantBody := readingFixtureBodies()["claude/alpha.md"]
+	if copyMemory.Body != wantBody {
+		t.Errorf("CopyMemoryMsg.Body = %q, want the raw source %q (never the RENDERED: display string)", copyMemory.Body, wantBody)
+	}
+	if copyMemory.Label != "Alpha" {
+		t.Errorf("CopyMemoryMsg.Label = %q, want %q", copyMemory.Label, "Alpha")
+	}
+}
+
 // hundredLineBody builds a body of uniquely named rows ("row 001" …
 // "row 100") so scroll assertions can pick individual lines without prefix
 // collisions.

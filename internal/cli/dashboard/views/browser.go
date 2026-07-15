@@ -496,6 +496,12 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		return b, b.enterDeleted()
 	case keybinding.Matches(msg, DashboardKeys.BrowserInsights):
 		return b, b.openInsights()
+	case keybinding.Matches(msg, DashboardKeys.BrowserCopy):
+		// y copies the selected memory's raw body to the system clipboard via
+		// OSC52 (the root's CopyMemoryMsg handler) — the feature-full remedy for
+		// native drag-select being suppressed while the preview holds mouse mode,
+		// and a copy that also carries over SSH/tmux/WSL2.
+		return b, b.copyRequest()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
 		// A dangling preview focus (previewFocused set while previewShown was
 		// false — a narrow resize) must not survive into filter mode, where the
@@ -578,6 +584,29 @@ func (b *Browser) selectedRequest(wrap func(memoryfs.Memory) tea.Msg) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg { return wrap(selected) }
+}
+
+// copyRequest builds the Cmd that reads the selected memory's body and emits
+// CopyMemoryMsg for the root to write to the clipboard (spec §3's y) — or nil
+// with no row selected. Unlike selectedRequest (e/r/d, which carry only the
+// already-listed memory), copy needs the full body, and ReadBody is fallible
+// I/O — a file deleted or made unreadable since the listing — so the read runs
+// INSIDE the Cmd and a failure surfaces as a toast rather than silently copying
+// an empty body. The raw source is copied, never the glamour-styled preview:
+// raw markdown is what a user expects to paste elsewhere. This is the async
+// twin of the reading view's Y, whose body is already resident (reading.go).
+func (b *Browser) copyRequest() tea.Cmd {
+	selected, ok := b.Selected()
+	if !ok {
+		return nil
+	}
+	return func() tea.Msg {
+		body, err := b.deps.ReadBody(selected)
+		if err != nil {
+			return ToastMsg{Text: fmt.Sprintf("copy failed: %v", err)}
+		}
+		return CopyMemoryMsg{Body: body, Label: selected.Name}
+	}
 }
 
 // newRequest builds the Cmd that emits NewRequestMsg. Unlike e/r/d it needs

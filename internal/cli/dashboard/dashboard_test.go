@@ -2366,7 +2366,7 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 	// or the rest of a long memory looks unreachable. It rides the same
 	// registry→footer wiring as the other browser rows, so its absence would
 	// mean the registry row or its available() case regressed.
-	for _, want := range []string{"o order", "/ filter", "ctrl+d/u scroll", "esc back"} {
+	for _, want := range []string{"o order", "/ filter", "ctrl+d/u scroll", "y copy", "esc back"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stack footer %q missing %q", got, want)
 		}
@@ -2412,6 +2412,66 @@ func TestStackFooterRendersFocusPreviewLit(t *testing.T) {
 	}
 	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
 		t.Errorf("%q does not render lit in the browser footer; got:\n%q", segment, raw)
+	}
+}
+
+// TestStackFooterRendersBrowserCopyLit pins that browser-copy renders LIT, not
+// struck, in the browser stack footer — the same honesty guard
+// TestStackFooterRendersFocusPreviewLit applies to focus-preview. A runner-less
+// action missing from available()'s unconditional whitelist renders struck (its
+// segment splits into per-character struck runs, so the contiguous lit render is
+// absent) though its key works; this catches that regression at the raw-SGR level.
+func TestStackFooterRendersBrowserCopyLit(t *testing.T) {
+	t.Parallel()
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	if !m.available("browser-copy") {
+		t.Fatal("available(browser-copy) = false; the footer would render it struck (spec §14 honesty)")
+	}
+
+	raw := m.footer()
+	const segment = "y copy" // KeyHint + Title, exactly as stackFooterLine composes it
+	if !strings.Contains(plain(raw), segment) {
+		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
+	}
+	if struck := m.styles.Dim.Strikethrough(true).Render(segment); strings.Contains(raw, struck) {
+		t.Errorf("%q renders struck in the browser footer — its available() whitelist entry regressed", segment)
+	}
+	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
+		t.Errorf("%q does not render lit in the browser footer; got:\n%q", segment, raw)
+	}
+}
+
+// TestStackFooterRendersReadingCopyBodyLit is the reading-view twin of the
+// browser-copy footer pin above: reading-copy-body (Y) must render lit in the
+// reading stack footer, never struck, so a runner-less row dropped from
+// available()'s whitelist is caught.
+func TestStackFooterRendersReadingCopyBodyLit(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
+
+	if !m.available("reading-copy-body") {
+		t.Fatal("available(reading-copy-body) = false; the footer would render it struck (spec §14 honesty)")
+	}
+
+	raw := m.footer()
+	const segment = "Y copy body" // KeyHint + Title, exactly as stackFooterLine composes it
+	if !strings.Contains(plain(raw), segment) {
+		t.Fatalf("reading stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
+	}
+	if struck := m.styles.Dim.Strikethrough(true).Render(segment); strings.Contains(raw, struck) {
+		t.Errorf("%q renders struck in the reading footer — its available() whitelist entry regressed", segment)
+	}
+	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
+		t.Errorf("%q does not render lit in the reading footer; got:\n%q", segment, raw)
 	}
 }
 
@@ -2549,6 +2609,31 @@ func TestCopyPathMsgToastsAndWritesClipboard(t *testing.T) {
 	}
 }
 
+// TestCopyMemoryMsgToastsAndWritesClipboard pins the root's half of the OSC52
+// copy-memory (the feature-full answer to the browser's mouse-mode selection
+// loss): the toast names the copied memory verbatim (the guaranteed affordance,
+// visible in every terminal) and the same update issues bubbletea's OSC52
+// clipboard write over the RAW body as the best-effort half — not every terminal
+// honors OSC52 and there is no delivery ack, exactly why copy-path toasts
+// unconditionally too.
+func TestCopyMemoryMsgToastsAndWritesClipboard(t *testing.T) {
+	t.Parallel()
+	const wantBody = "# Heading\n\nthe raw markdown body a user pastes elsewhere\n"
+	m := newTestModel(&fakeData{})
+
+	m, cmd := step(m, views.CopyMemoryMsg{Body: wantBody, Label: "Note"})
+
+	if got := plain(m.toastLine()); !strings.Contains(got, `copied "Note" to clipboard`) {
+		t.Errorf("toast = %q, want it to name the copied memory", got)
+	}
+	if cmd == nil {
+		t.Fatal("CopyMemoryMsg produced no Cmd; want the OSC52 clipboard write")
+	}
+	if !slices.Contains(drain(cmd), tea.SetClipboard(wantBody)()) {
+		t.Errorf("CopyMemoryMsg's Cmd did not carry tea.SetClipboard(%q) over the raw body", wantBody)
+	}
+}
+
 // TestToastMsgSurfacesInStatusArea pins the generic screen→root toast
 // channel a pushed screen's local refusal rides (the reading view's
 // enter-on-a-dangling-link, and any later screen's equivalent).
@@ -2603,7 +2688,7 @@ func TestStackFooterAdvertisesReadingScopedKeys(t *testing.T) {
 	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
 
 	got := plain(m.footer())
-	for _, want := range []string{"tab links", "enter follow", "b backlinks", "y copy path", "esc back"} {
+	for _, want := range []string{"tab links", "enter follow", "b backlinks", "y copy path", "Y copy body", "esc back"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stack footer %q missing %q", got, want)
 		}

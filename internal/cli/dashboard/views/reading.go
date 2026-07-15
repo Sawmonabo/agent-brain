@@ -34,6 +34,22 @@ const readingModifiedLayout = "2006-01-02 15:04"
 // promises.
 type CopyPathMsg struct{ Path string }
 
+// CopyMemoryMsg asks the root to copy Body — a memory's RAW markdown source —
+// to the system clipboard. It is the feature-full answer to native drag-select
+// being suppressed while the browser holds mouse mode (an xterm-protocol
+// constraint, not ours): an app-level copy, the same thing Claude Code's CLI
+// does, that additionally carries over SSH/tmux/WSL2 where a pointer selection
+// cannot. Label is the memory's display name, printed verbatim in the
+// confirmation toast. Like CopyPathMsg the clipboard write is bubbletea's OSC52
+// escape — best effort, terminal support varies, and there is no delivery ack —
+// so the visible toast, not the silent escape, is what the binding promises.
+// The body is copied raw, never the glamour-styled preview string: raw markdown
+// is what a user expects to paste elsewhere.
+type CopyMemoryMsg struct {
+	Body  string
+	Label string
+}
+
 // ReadingDeps is everything the reading screen needs, injected once — the
 // same consumer-side-seam idiom as BrowserDeps. The pushing browser fills
 // it from its own deps, so a reading view and the browser under it always
@@ -272,6 +288,14 @@ func (r *Reading) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	case keybinding.Matches(msg, DashboardKeys.ReadingCopyPath):
 		path := r.deps.Memory.Path()
 		return r, func() tea.Msg { return CopyPathMsg{Path: path} }
+	case keybinding.Matches(msg, DashboardKeys.ReadingCopyBody):
+		// Y copies the RAW markdown source the view renders from — r.body, not
+		// the glamour-styled viewport string — so what lands in the clipboard is
+		// what a user expects to paste elsewhere. Synchronous, unlike the
+		// browser's copy: the body is already in memory (adoptBody), so there is
+		// no ReadBody call and no error arm to fold in.
+		body, label := r.body, r.deps.Memory.Name
+		return r, func() tea.Msg { return CopyMemoryMsg{Body: body, Label: label} }
 	case keybinding.Matches(msg, DashboardKeys.ReadingEdit):
 		// Emit-only, like the browser's e: the root owns the class/editor/
 		// session gates and the handoff (screen.go's EditRequestMsg doc).

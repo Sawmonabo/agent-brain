@@ -159,6 +159,13 @@ var registry = []Action{
 	// matched directly by Browser.updateKey like read/history/show-deleted: no
 	// root runner, never Mutates.
 	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
+	// copy (y) writes the selected memory's raw body to the system clipboard via
+	// OSC52 — the feature-full remedy for native drag-select being suppressed
+	// while the preview pane holds mouse mode (browser.go's WantsMouse), and the
+	// only copy that also reaches over SSH/tmux/WSL2. Matched directly by
+	// Browser.updateKey like the other read surfaces, no root runner and never
+	// Mutates (a clipboard write touches no provider file).
+	{ID: "browser-copy", Title: "copy", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeBrowser},
 	// scroll-preview reaches the preview pane's own viewport straight from the
 	// list: ctrl+d/u half-page and pgup/pgdown full-page, the quick scroll of a
 	// long memory's preview without leaving the list — j/k stay the LIST cursor
@@ -190,6 +197,11 @@ var registry = []Action{
 	{ID: "reading-follow", Title: "follow", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeReading},
 	{ID: "reading-backlinks", Title: "backlinks", Keys: []string{"b"}, KeyHint: "b", Scope: ScopeReading},
 	{ID: "reading-copy-path", Title: "copy path", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeReading},
+	// copy-body (Y) writes the open memory's raw markdown source to the clipboard
+	// via OSC52 — the reading-view twin of browser-copy, y's capital so it sits
+	// beside copy-path without shadowing it. Matched directly by Reading.updateKey,
+	// no root runner and never Mutates.
+	{ID: "reading-copy-body", Title: "copy body", Keys: []string{"Y"}, KeyHint: "Y", Scope: ScopeReading},
 	{ID: "reading-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeReading, Mutates: true},
 	// h drills into the open memory's version history (Task 14), matched
 	// directly by Reading.updateKey — the same key the reading viewport's own

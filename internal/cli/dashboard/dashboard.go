@@ -889,6 +889,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushToast("path: " + msg.Path)
 		return m, tea.SetClipboard(msg.Path)
 
+	case views.CopyMemoryMsg:
+		// The feature-full companion to copy-path's y: the browser's y (or the
+		// reading view's Y) copies the memory's RAW markdown body to the system
+		// clipboard via OSC52 — an app-level copy that carries over SSH/tmux/WSL2,
+		// the remedy for the browser's mouse mode suppressing native drag-select.
+		// Same best-effort split as CopyPathMsg: the toast names the memory (the
+		// affordance every terminal shows), tea.SetClipboard issues the OSC52 write
+		// alongside it (support varies, no delivery ack), so the toast — not the
+		// silent escape — is what the binding promises.
+		m.pushToast(fmt.Sprintf("copied %q to clipboard", msg.Label))
+		return m, tea.SetClipboard(msg.Body)
+
 	case views.EditRequestMsg:
 		// The four flow-request messages follow the CopyPathMsg pattern:
 		// views emit, the root — the only holder of editor settings, the
@@ -1865,9 +1877,9 @@ func (m *Model) available(id string) bool {
 	switch id {
 	case "switch-tabs", "select", "help", "search",
 		"open-browser", "browser-read", "browser-order", "browser-filter",
-		"browser-history", "browser-show-deleted", "browser-insights",
+		"browser-history", "browser-show-deleted", "browser-insights", "browser-copy",
 		"browser-scroll-preview", "browser-focus-preview", "browser-back",
-		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path",
+		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
 		"insights-back",

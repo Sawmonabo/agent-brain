@@ -102,7 +102,9 @@ func TestFuzzyRanksPrefixOverSubsequence(t *testing.T) {
 		got := idsOf(Fuzzy("sy"))
 		want := []string{
 			"sync-project", "sync-fleet", // prefix tier
-			"browser-history", "reading-history", // subsequence tier, registry order
+			// subsequence tier, registry order — browser-copy carries "sy" too
+			// (brow·s·er…cop·y), between the two history rows it sits amongst.
+			"browser-history", "browser-copy", "reading-history",
 			"history-view", "history-diff", "history-diff-older", "history-restore", "history-back",
 			"conflictdetail-history",
 		}
@@ -277,6 +279,7 @@ func TestBrowserRegistryRowsShape(t *testing.T) {
 		{id: "open-browser", keys: []string{"enter"}, scope: ScopeProjects},
 		{id: "browser-order", keys: []string{"o"}, scope: ScopeBrowser},
 		{id: "browser-filter", keys: []string{"/"}, scope: ScopeBrowser},
+		{id: "browser-copy", keys: []string{"y"}, scope: ScopeBrowser},
 		{id: "browser-back", keys: []string{"esc"}, scope: ScopeBrowser},
 	}
 
@@ -328,6 +331,7 @@ func TestReadingRegistryRowsShape(t *testing.T) {
 		{id: "reading-follow", keys: []string{"enter"}, scope: ScopeReading},
 		{id: "reading-backlinks", keys: []string{"b"}, scope: ScopeReading},
 		{id: "reading-copy-path", keys: []string{"y"}, scope: ScopeReading},
+		{id: "reading-copy-body", keys: []string{"Y"}, scope: ScopeReading},
 		{id: "reading-back", keys: []string{"esc"}, scope: ScopeReading},
 	}
 

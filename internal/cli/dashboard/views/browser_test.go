@@ -1301,6 +1301,87 @@ func TestBrowserFlowKeysEmitRequests(t *testing.T) {
 	})
 }
 
+// TestBrowserCopyEmitsSelectedBody pins y: the browser reads the selected
+// memory's body through ReadBody and emits CopyMemoryMsg carrying that raw body
+// and the memory's name — proved on the SECOND row so the emission tracks the
+// cursor, not just the top. The root turns the message into the OSC52 clipboard
+// write (dashboard_test.go's TestCopyMemoryMsgToastsAndWritesClipboard).
+func TestBrowserCopyEmitsSelectedBody(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base.Add(time.Hour))
+	writeBrowserFile(t, dir, "zulu.md", "---\nname: Zulu\n---\n", base)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	const zuluBody = "# Zulu\n\nthe selected memory's raw [[body]]\n"
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(map[string]string{"claude/zulu.md": zuluBody}),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+	// Newest-first puts Alpha on top; move to Zulu so the emitted body proves
+	// cursor tracking rather than a hardcoded top row.
+	next, _ := browser.Update(key("down"))
+	browser = next.(*Browser)
+
+	_, cmd := browser.Update(key("y"))
+	if cmd == nil {
+		t.Fatal("y on a selected row produced no Cmd")
+	}
+	copyMemory, ok := cmd().(CopyMemoryMsg)
+	if !ok {
+		t.Fatalf("y produced %#v, want CopyMemoryMsg", cmd())
+	}
+	if copyMemory.Body != zuluBody {
+		t.Errorf("CopyMemoryMsg.Body = %q, want the selected memory's raw body %q", copyMemory.Body, zuluBody)
+	}
+	if copyMemory.Label != "Zulu" {
+		t.Errorf("CopyMemoryMsg.Label = %q, want the selected %q", copyMemory.Label, "Zulu")
+	}
+}
+
+// TestBrowserCopyReadErrorToasts pins the copy path's failure arm — the
+// asymmetry with the reading view's in-memory copy. The browser's body is not
+// resident, so y reads it through fallible I/O (a file deleted or made
+// unreadable since the listing); a read error must surface an error toast, never
+// emit a CopyMemoryMsg that would copy an empty body to the clipboard silently.
+func TestBrowserCopyReadErrorToasts(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	writeBrowserFile(t, dir, "alpha.md", "---\nname: Alpha\n---\n", base)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	readErr := errors.New("permission denied")
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", readErr },
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	_, cmd := browser.Update(key("y"))
+	if cmd == nil {
+		t.Fatal("y produced no Cmd on a read error")
+	}
+	switch msg := cmd().(type) {
+	case ToastMsg:
+		if !strings.Contains(msg.Text, "copy failed") {
+			t.Errorf("error toast = %q, want it to name the copy failure", msg.Text)
+		}
+	case CopyMemoryMsg:
+		t.Fatalf("y emitted CopyMemoryMsg %#v despite the read error — an unreadable memory must not copy silently", msg)
+	default:
+		t.Fatalf("y produced %#v, want a ToastMsg on a read error", msg)
+	}
+}
+
 // TestBrowserSelectedTracksCursor pins the root-facing selection accessor
 // the availability gates read.
 func TestBrowserSelectedTracksCursor(t *testing.T) {
