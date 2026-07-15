@@ -4202,6 +4202,16 @@ func TestRootViewMouseModeGate(t *testing.T) {
 			},
 			want: tea.MouseModeNone,
 		},
+		{
+			name:  "daemon down over a browser",
+			width: 120,
+			setup: func(t *testing.T, m Model) Model {
+				m = m.pushScreen(mouseBrowser(t))
+				m.daemonDown = true // daemon health flips async, independent of the stack; its full-screen notice takes the frame, so the browser under it must not arm the mouse
+				return m
+			},
+			want: tea.MouseModeNone,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
