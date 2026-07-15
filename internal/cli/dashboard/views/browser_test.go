@@ -1026,9 +1026,9 @@ func TestBrowserDeletedViewFitsWidth(t *testing.T) {
 // at the exact 46-col list-pane width the preview split confines rows to — the
 // width a public View masks, because the MaxWidth pane pads every line to 46
 // regardless of whether the row was already that wide or got there by wrapping.
-// Every line renderList returns, provider headers included, must ALREADY be
-// <= the pane width so the pane never wraps. Exercised white-box because the
-// pre-pane line width is observable at no other seam.
+// Every line renderList returns, provider headers and ⚠-badged rows included,
+// must ALREADY be <= the pane width so the pane never wraps. Exercised
+// white-box because the pre-pane line width is observable at no other seam.
 func TestBrowserRenderListFitsPaneWidthDirectly(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
@@ -1040,6 +1040,10 @@ func TestBrowserRenderListFitsPaneWidthDirectly(t *testing.T) {
 	browser := NewBrowser(BrowserDeps{Folder: "acme", Now: base, ReadBody: fakeReadBody(nil), List: func() ([]memoryfs.Memory, error) { return memories, nil }})
 
 	rows := browser.visibleRows()
+	// Flag the adversarial-name memory: the reserved ⚠ badge must fit inside
+	// the same width budget as the name and age, never push the row past the
+	// pane. Injected after visibleRows so no relint can rebuild the flag set.
+	browser.lintFlags = map[string]bool{"claude/a.md": true}
 	list := browser.renderList(rows, browser.listRowBudget(rows, 40), listPaneWidth)
 	for line := range strings.SplitSeq(list, "\n") {
 		if w := ansi.StringWidth(line); w > listPaneWidth {
