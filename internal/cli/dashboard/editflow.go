@@ -220,10 +220,10 @@ func pickUnit(units []api.UnitInfo, providerHint string) (api.UnitInfo, bool) {
 // earlier Cmd's message, so a queued request CAN arrive after another
 // request's modal opened — admitting it would fork the flow state the
 // modal is about to act on, or silently replace an open delete confirm),
-// while help, the search overlay, or the palette owns the screen (the same
-// no-ordering-guarantee race: a request queued by a screen key can land
-// after that chrome opened, and handleKey checks all three chrome surfaces
-// before the flow modal, so the flow it would start — a modal, or an
+// while help, the search overlay, the palette, or the quit prompt owns the
+// screen (the same no-ordering-guarantee race: a request queued by a screen
+// key can land after that chrome opened, and handleKey checks all four chrome
+// surfaces before the flow modal, so the flow it would start — a modal, or an
 // ExecProcess editor launch — would sit underneath a surface that owns the
 // keyboard and starve invisibly), or while the daemon is quiesced (spec
 // §15's grey-out-with-refusal for mutating actions). Refusing starts under
@@ -255,6 +255,10 @@ func (m *Model) refuseFlowStart() bool {
 	}
 	if m.paletteOpen {
 		m.pushToast("the palette is open — esc it first")
+		return true
+	}
+	if m.quitPrompt {
+		m.pushToast("the quit prompt is open — answer it first")
 		return true
 	}
 	if m.updatePhase == updateConfirm || m.updatePhase == updateApplying {

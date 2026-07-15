@@ -3510,6 +3510,35 @@ func TestFlowStartRefusedDuringUpdateFlow(t *testing.T) {
 	}
 }
 
+// TestFlowStartRefusedDuringQuitPrompt pins that the quit prompt owns the
+// keyboard the same way help/search/palette/the update confirm do: a flow
+// request racing in behind it (the bubbletea no-ordering-guarantee class
+// refuseFlowStart exists for) must be refused, not opened underneath the prompt.
+// handleKey answers the quit prompt before it reaches the flow modal, so an
+// admitted flow would float its modal beneath a surface that already owns the
+// keyboard. A rename request is the probe: it opens its modal from in-memory
+// state alone — no body read to mask the gate — so the refusal is directly
+// observable as no modal, no Cmd, a toast, and the prompt still standing.
+func TestFlowStartRefusedDuringQuitPrompt(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m.quitPrompt = true
+
+	m2, cmd := step(m, views.RenameRequestMsg{Memory: memoryfs.Memory{}})
+	if m2.flowModal != nil {
+		t.Error("a flow modal opened under the quit prompt")
+	}
+	if cmd != nil {
+		t.Error("the refused flow request produced a Cmd")
+	}
+	if m2.toast == nil {
+		t.Error("the refused flow start did not toast")
+	}
+	if !m2.quitPrompt {
+		t.Error("the quit prompt did not survive the refused flow request")
+	}
+}
+
 // TestUpdateAgentBrainAvailability pins the U row's live gate: it is available
 // (footer + palette) exactly in the offered phase — never idle (nothing to
 // update), never installed (already applied; U must not re-open the confirm).
