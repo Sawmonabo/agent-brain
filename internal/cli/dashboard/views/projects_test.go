@@ -410,6 +410,74 @@ func TestProjectsWideTableShowsLocalDir(t *testing.T) {
 	}
 }
 
+// TestProjectsResizeAcrossWideBoundary pins the resize-crash fix: a width
+// change that crosses the LOCAL DIR boundary must swap the table's rows
+// and columns atomically. bubbles renders inside SetColumns (SetColumns ->
+// UpdateViewport -> renderRow indexes m.cols by each ROW's cell count), so
+// installing the narrow five-column set while the table still holds the wide
+// six-cell rows indexes cols[5] out of range and panics. The fixture drives a
+// full narrow-seed -> wide -> narrow -> wide round trip so BOTH boundary
+// directions are exercised (wide -> narrow is the one that panicked; narrow ->
+// wide survived only by accident, the shorter row bounding the loop), and it
+// moves the selection off row 0 so the resize's selection-preservation is
+// observable rather than masked by a default-zero cursor.
+func TestProjectsResizeAcrossWideBoundary(t *testing.T) {
+	t.Parallel()
+	units := []api.UnitInfo{
+		{Provider: "claude", Folder: "agent-brain", LocalDir: "/home/u/.claude/projects/agent-brain/memory"},
+		{Provider: "codex", Folder: "_global", LocalDir: "/home/u/.codex/memories"},
+	}
+	const localDir = "/home/u/.claude/projects/agent-brain/memory"
+
+	view := NewProjectsView() // constructed narrow: five columns, no LOCAL DIR
+	view.SetUnits(units)      // five-cell rows seeded, cursor seated on row 0
+
+	// Fresh narrow -> wide: installs the sixth column over five-cell rows. Safe
+	// even unfixed (the shorter row bounds renderRow's loop), so it must stay
+	// safe and actually surface LOCAL DIR.
+	view.SetSize(130, 40)
+	wide := plain(view.View(""))
+	for _, want := range []string{"LOCAL DIR", localDir} {
+		if !strings.Contains(wide, want) {
+			t.Fatalf("wide table missing %q before the shrink; got:\n%s", want, wide)
+		}
+	}
+
+	// Move the selection to row 1 so preservation across the swap is a real
+	// assertion, not a 0 == 0 tautology.
+	view.Update(key("down"), &fakeData{}, TrackActions{}, MigrateActions{})
+	if sel, ok := view.SelectedUnit(); !ok || sel.Folder != units[1].Folder {
+		t.Fatalf("cursor did not move to row 1: selected %q (ok=%v), want %q", sel.Folder, ok, units[1].Folder)
+	}
+
+	// Wide -> narrow crosses the boundary the other way. Unfixed this panics
+	// inside SetColumns (cols[5] on a six-cell row); fixed it is safe, drops the
+	// LOCAL DIR column, and keeps the selection on the row-1 unit.
+	view.SetSize(118, 40)
+	narrow := plain(view.View(""))
+	if strings.Contains(narrow, "LOCAL DIR") {
+		t.Errorf("LOCAL DIR still shown after shrinking below the wide boundary; got:\n%s", narrow)
+	}
+	if strings.Contains(narrow, localDir) {
+		t.Errorf("narrow table still renders the LOCAL DIR path; got:\n%s", narrow)
+	}
+	if sel, ok := view.SelectedUnit(); !ok || sel.Folder != units[1].Folder {
+		t.Errorf("selection after wide->narrow = %q (ok=%v), want the row-1 unit %q preserved across the resize", sel.Folder, ok, units[1].Folder)
+	}
+
+	// Narrow -> wide brings the column back and re-seeds the paths into it.
+	view.SetSize(130, 40)
+	reWide := plain(view.View(""))
+	for _, want := range []string{"LOCAL DIR", localDir} {
+		if !strings.Contains(reWide, want) {
+			t.Errorf("wide table after the round trip missing %q; got:\n%s", want, reWide)
+		}
+	}
+	if sel, ok := view.SelectedUnit(); !ok || sel.Folder != units[1].Folder {
+		t.Errorf("selection after the round trip = %q (ok=%v), want %q still preserved", sel.Folder, ok, units[1].Folder)
+	}
+}
+
 func TestProjectsEmptyState(t *testing.T) {
 	t.Parallel()
 	data := &fakeData{status: readyStatus(), projects: api.ProjectsResponse{}}

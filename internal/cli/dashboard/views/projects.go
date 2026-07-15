@@ -109,6 +109,15 @@ func (v *ProjectsView) SetStyles(styles theme.Styles) {
 
 // setColumns installs the per-unit column set. wide adds LOCAL DIR, shown only
 // when the terminal can carry the full path without crowding the essentials.
+//
+// Rows and columns must change atomically. bubbles renders inside SetColumns
+// (SetColumns -> UpdateViewport -> renderRow indexes m.cols by each ROW's cell
+// count), so installing a narrower column set while the table still holds the
+// wider rows indexes past the fresh column slice and panics. Clearing the rows
+// first renders the empty table safely under any column set; the closing
+// rebuild then re-seeds rows that match the new width, so no caller can ever
+// leave columns and rows disagreeing — and SetSize installs columns through
+// here without a second rebuild of its own.
 func (v *ProjectsView) setColumns(wide bool) {
 	columns := []table.Column{
 		{Title: "PROVIDER", Width: 9},
@@ -120,8 +129,17 @@ func (v *ProjectsView) setColumns(wide bool) {
 	if wide {
 		columns = append(columns, table.Column{Title: "LOCAL DIR", Width: 48})
 	}
-	v.wide = wide
+	// SetRows(nil) drives the bubbles cursor to -1 and rebuild re-seats it to
+	// row 0, so capture the selection first and restore it afterward: a mere
+	// resize must not move the highlight off the unit the user had selected.
+	cursor := v.table.Cursor()
+	v.table.SetRows(nil)
 	v.table.SetColumns(columns)
+	v.wide = wide
+	v.rebuild()
+	if cursor >= 0 && cursor < len(v.Units) {
+		v.table.SetCursor(cursor)
+	}
 }
 
 // SetUnits installs a freshly-fetched unit list.
@@ -147,8 +165,9 @@ func (v *ProjectsView) SetSize(width, height int) {
 		// terminal where the path renders in full rather than truncating the
 		// essentials it sits beside.
 		if wide := width >= 120; wide != v.wide {
+			// setColumns rebuilds the rows itself (it must, to keep columns and
+			// rows in step) — no separate rebuild here.
 			v.setColumns(wide)
-			v.rebuild()
 		}
 	}
 	// Reserve every non-table line the composed Projects frame carries at full
