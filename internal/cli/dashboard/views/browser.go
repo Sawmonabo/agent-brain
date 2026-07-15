@@ -10,6 +10,7 @@ import (
 
 	keybinding "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -137,12 +138,26 @@ type Browser struct {
 	// than re-scanning. Refreshed on the same fingerprint gate as lintFlags.
 	lintResults []lint.Result
 
-	// preview memoizes the last glamour-rendered preview: View runs on every
-	// keypress and every RefreshMsg (roughly every 2s while idle), and
-	// without this, each of those would re-read the selected memory's full
-	// body (up to memoryfs.ReadBody's size cap) and re-run glamour over it
-	// even when nothing about the selection has changed.
+	// preview gates the glamour render feeding previewViewport: View runs on
+	// every keypress and every RefreshMsg (roughly every 2s while idle), and
+	// without this cache each of those would re-read the selected memory's full
+	// body (up to memoryfs.ReadBody's size cap) and re-run glamour over it even
+	// when nothing about the selection has changed. On a cache hit the viewport
+	// already holds the render, so nothing re-renders.
 	preview previewCache
+	// previewViewport is the scrollable preview pane (AT-6): a long memory's
+	// body scrolls WITHIN this window instead of growing the frame past its
+	// height budget and shoving the root's footer off the terminal. It mirrors
+	// the reading view's viewport (reading.go), with a restricted keymap
+	// (browserPreviewKeyMap) so only ctrl+d/u and pgup/pgdown reach it — j/k
+	// stay the list cursor's.
+	previewViewport viewport.Model
+	// previewShown records whether the last View drew the preview pane (width
+	// cleared previewMinWidth, in the normal non-filter/non-deleted body).
+	// updateKey reads it to route the scroll keys: Update has no width of its
+	// own — View is the only place the pane's visibility is known — so this
+	// bridges them, keeping the scroll keys inert whenever no pane is on screen.
+	previewShown bool
 
 	// Deleted-recovery mode (spec §6's x): a folder-wide history scan surfaces
 	// every path that some past version touched but HEAD no longer has, so a
@@ -163,20 +178,22 @@ type Browser struct {
 	deletedCursor   int
 }
 
-// previewCache is renderPreview's memoized result, valid only for the exact
-// (RepoPath, ModTime, width) it was computed from — any of the three
-// changing (a different row selected, the file rewritten, or the pane
-// resized) is a cache miss. It deliberately does not key on the Render seam
-// itself: a func value has no cheap, correct equality check, so instead
-// SetRender clears validity unconditionally, guaranteeing a theme swap
-// always forces exactly one fresh render rather than risking a silent stale
-// hit keyed on inputs that did not change.
+// previewCache is syncPreview's refresh gate, valid only for the exact
+// (RepoPath, ModTime, width) the viewport's current content was rendered from —
+// any of the three changing (a different row selected, the file rewritten, or
+// the pane resized) is a cache miss that re-renders and re-fills the viewport.
+// It holds the cache KEY only, not the rendered string: the previewViewport owns
+// the content now, so on a hit there is nothing to return, only a re-render to
+// skip. It deliberately does not key on the Render seam itself: a func value has
+// no cheap, correct equality check, so instead SetRender clears validity
+// unconditionally, guaranteeing a theme swap always forces exactly one fresh
+// render rather than risking a silent stale hit keyed on inputs that did not
+// change.
 type previewCache struct {
 	valid    bool
 	repoPath string
 	modTime  time.Time
 	width    int
-	rendered string
 }
 
 // NewBrowser builds a ready Browser and performs its first load. Construction
@@ -189,9 +206,31 @@ type previewCache struct {
 func NewBrowser(deps BrowserDeps) *Browser {
 	filter := textinput.New()
 	filter.Placeholder = "filter by name or description…"
-	b := &Browser{deps: deps, orderByRecency: true, filter: filter, now: deps.Now}
+	previewViewport := viewport.New()
+	previewViewport.KeyMap = browserPreviewKeyMap()
+	b := &Browser{deps: deps, orderByRecency: true, filter: filter, previewViewport: previewViewport, now: deps.Now}
 	b.refresh()
 	return b
+}
+
+// browserPreviewKeyMap binds only the preview pane's own scroll set: ctrl+d/u
+// (half page) and pgup/pgdown (page), the gh-dash convention for a preview
+// beside a focused list and the same keys the reading view's viewport takes.
+// Up/Down/Left/Right are left unbound (a keyless binding never matches) — the
+// deliberate deviation from the reading view's keymap, whose j/k DO scroll its
+// full-screen viewport: here j/k/up/down are the list cursor's (Select), so the
+// preview must never claim them.
+func browserPreviewKeyMap() viewport.KeyMap {
+	return viewport.KeyMap{
+		HalfPageUp:   keybinding.NewBinding(keybinding.WithKeys("ctrl+u")),
+		HalfPageDown: keybinding.NewBinding(keybinding.WithKeys("ctrl+d")),
+		PageUp:       keybinding.NewBinding(keybinding.WithKeys("pgup")),
+		PageDown:     keybinding.NewBinding(keybinding.WithKeys("pgdown")),
+		Up:           keybinding.NewBinding(),
+		Down:         keybinding.NewBinding(),
+		Left:         keybinding.NewBinding(),
+		Right:        keybinding.NewBinding(),
+	}
 }
 
 // Title names the browser's breadcrumb segment: the project folder.
@@ -378,6 +417,17 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	case keybinding.Matches(msg, DashboardKeys.Select):
 		b.moveCursor(msg.String())
 		return b, nil
+	}
+	// Preview-pane scroll: ctrl+d/u and pgup/pgdown reach the preview viewport
+	// (its restricted keymap binds only those; j/k/up/down were consumed by
+	// Select above for the list cursor). Gated on previewShown so the keys stay
+	// inert with no pane on screen — this branch is reached only in the normal
+	// body (filtering and deleted modes returned above), so it never contends
+	// with the filter input or the deleted list.
+	if b.previewShown {
+		var cmd tea.Cmd
+		b.previewViewport, cmd = b.previewViewport.Update(msg)
+		return b, cmd
 	}
 	return b, nil
 }
@@ -752,6 +802,11 @@ func isSubsequence(query, haystack string) bool {
 // a terminal resize is handled by construction rather than any cached
 // dimension going stale.
 func (b *Browser) View(width, height int) string {
+	// Cleared here and set true only in the preview-split branch below, so a
+	// path that draws no preview (deleted list, error/loading/empty/no-match
+	// notices, or narrow no-preview mode) leaves the scroll keys inert
+	// (updateKey reads this).
+	b.previewShown = false
 	if b.showDeleted {
 		return b.deletedView(width, height)
 	}
@@ -790,9 +845,13 @@ func (b *Browser) View(width, height int) string {
 	}
 
 	// Preview split: the list is confined to listPaneWidth, so rows are fit to
-	// that — the MaxWidth pane then has nothing to wrap.
+	// that — the MaxWidth pane then has nothing to wrap. The preview is a
+	// height-bounded scrollable viewport (AT-6), so a long body scrolls within
+	// the pane instead of growing the JoinHorizontal block past the height
+	// budget and shoving the root's footer off the terminal.
+	b.previewShown = true
 	previewWidth := width - listPaneWidth - 2
-	preview := b.renderPreview(rows[b.cursor], previewWidth)
+	preview := b.renderPreviewPane(rows[b.cursor], previewWidth, height)
 	listBlock := lipgloss.NewStyle().Width(listPaneWidth).MaxWidth(listPaneWidth).Render(b.renderList(rows, rowBudget, listPaneWidth))
 	previewBlock := lipgloss.NewStyle().Width(previewWidth).MaxWidth(previewWidth).Render(preview)
 	body.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, listBlock, "  ", previewBlock))
@@ -873,11 +932,7 @@ func (b *Browser) deletedView(width, height int) string {
 // possible fit (a window touching only one or two of several providers
 // could have shown a couple more rows).
 func (b *Browser) listRowBudget(rows []memoryfs.Memory, height int) int {
-	chrome := 2 // title line + its trailing blank
-	if b.filtering || b.filter.Value() != "" {
-		chrome += 2 // filter line + its own trailing blank
-	}
-	budget := height - chrome - countDistinctProviders(rows)
+	budget := height - b.chromeLines() - countDistinctProviders(rows)
 	// Always show at least the cursor's own row: a budget of zero would
 	// otherwise hit visibleWindow's "height <= 0" identity-window branch
 	// and show everything, which is the one outcome guaranteed to
@@ -894,6 +949,23 @@ func countDistinctProviders(rows []memoryfs.Memory) int {
 		seen[m.Provider] = struct{}{}
 	}
 	return len(seen)
+}
+
+// chromeLines is the fixed vertical overhead every non-deleted browser body
+// renders above its list/preview area: the title line and its trailing blank,
+// plus the in-browser filter line and its own trailing blank whenever the
+// filter is open or holds a query. Both the list windowing (listRowBudget) and
+// the preview pane (renderPreviewPane) size their content areas by subtracting
+// it from the height the root passes, so the two panes share one definition of
+// the chrome above them — the split's height contract, chromeLines + max(list,
+// preview) <= height, then holds by construction rather than by two call sites
+// happening to subtract the same number.
+func (b *Browser) chromeLines() int {
+	chrome := 2 // title line + its trailing blank
+	if b.filtering || b.filter.Value() != "" {
+		chrome += 2 // filter line + its own trailing blank
+	}
+	return chrome
 }
 
 // renderList renders rows grouped by provider (a header line whenever the
@@ -957,38 +1029,110 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 	return start, end
 }
 
-// renderPreview markdown-renders the selected memory's body through the
-// injected Render seam, or a plain unavailable notice if reading its body
-// failed (a file removed mid-browse, or over memoryfs's size cap).
+// renderPreviewPane renders the selected memory into the height-bounded,
+// scrollable preview viewport (AT-6) and returns the pane's lines. A body that
+// fits sizes the viewport to its own content, so a short preview lets the list
+// drive the joined height and an empty one adds nothing; a body taller than the
+// pane is bounded to the height budget and scrolls in place, its bottom line
+// spent on an overflow hint. Bounding the pane is the whole fix: without it a
+// long memory grew the JoinHorizontal block past height and shoved the root's
+// footer — the option keys — off the terminal, hiding both the keys and the
+// text past the fold (the exact defect live-hub testing surfaced).
 //
-// Checks the render cache first (see previewCache's doc for the key and why
-// Render itself is not part of it). A read/render failure is deliberately
-// never cached: an error is rare enough that re-attempting on every render
-// costs nothing worth memoizing, and caching it would risk a stale error
-// notice outliving a since-fixed transient failure.
-func (b *Browser) renderPreview(selected memoryfs.Memory, width int) string {
+// width is the preview column's width (the glamour render/wrap width); height
+// is the whole browser-body budget the root passed, from which the chrome above
+// the split (chromeLines) is subtracted for the pane's own height.
+func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int) string {
+	paneHeight := max(height-b.chromeLines(), 1)
+	b.previewViewport.SetWidth(width)
+	b.syncPreview(selected, width)
+
+	total := b.previewViewport.TotalLineCount()
+	if total <= paneHeight {
+		// The body fits: size the viewport to the content itself so the pane is
+		// only as tall as its lines — never space-filled out to the full budget,
+		// which would strand a one-row list beside a wall of blank preview and
+		// let the empty pane, not the list, set the joined height.
+		b.previewViewport.SetHeight(total)
+		return b.previewViewport.View()
+	}
+	// The body overflows: bound the viewport to the budget so it scrolls within
+	// the pane instead of growing the frame past height. Reserve the bottom line
+	// for the scroll hint whenever the pane is at least two lines tall (one for
+	// content, one for the hint); a one-line pane keeps its single line for
+	// content rather than showing only an affordance.
+	if paneHeight < 2 {
+		b.previewViewport.SetHeight(paneHeight)
+		return b.previewViewport.View()
+	}
+	b.previewViewport.SetHeight(paneHeight - 1)
+	return b.previewViewport.View() + "\n" + b.previewScrollHint(width)
+}
+
+// syncPreview brings the preview viewport's content up to date with the
+// selected memory at the given render width, gated by previewCache so the
+// glamour render — and the body read behind it — runs only on an actual change.
+// View runs on every keypress and every ~2s RefreshMsg tick, so without this
+// gate each of those would re-read the selected body (up to ReadBody's size cap)
+// and re-run glamour over it even when nothing changed; on a cache hit the
+// viewport already holds the render and there is nothing to do.
+//
+// When the SELECTION changed (a different RepoPath than the viewport last held)
+// the pane scrolls back to the top — a newly opened memory always starts at its
+// head, never inheriting the previous selection's scroll offset — whereas a
+// same-file re-render (a width change, or a rewrite landing a new ModTime) keeps
+// the reader where they were. A read/render failure is shown in the pane but
+// deliberately never cached (see previewCache's doc): an error is rare enough
+// that re-attempting each render costs nothing, and caching it would risk a
+// stale notice outliving a since-fixed transient failure — the notice is fed
+// through the viewport, not returned bare, so even the error pane obeys the
+// height budget.
+func (b *Browser) syncPreview(selected memoryfs.Memory, width int) {
 	if b.preview.valid && b.preview.repoPath == selected.RepoPath &&
 		b.preview.modTime.Equal(selected.ModTime) && b.preview.width == width {
-		return b.preview.rendered
+		return
 	}
+	selectionChanged := b.preview.repoPath != selected.RepoPath
 
 	content, err := b.deps.ReadBody(selected)
 	if err != nil {
-		return b.deps.Styles.Fail.Render(fmt.Sprintf("preview unavailable: %v", err))
+		b.previewViewport.SetContent(b.deps.Styles.Fail.Render(fmt.Sprintf("preview unavailable: %v", err)))
+		b.preview.valid = false
+		if selectionChanged {
+			b.previewViewport.GotoTop()
+		}
+		return
 	}
 
 	rendered := content
 	if b.deps.Render != nil {
 		rendered = b.deps.Render(content, width)
 	}
+	b.previewViewport.SetContent(rendered)
+	if selectionChanged {
+		b.previewViewport.GotoTop()
+	}
 	b.preview = previewCache{
 		valid:    true,
 		repoPath: selected.RepoPath,
 		modTime:  selected.ModTime,
 		width:    width,
-		rendered: rendered,
 	}
-	return rendered
+}
+
+// previewScrollHint is the one-line overflow affordance rendered at the bottom
+// of the preview pane when the body is taller than the pane (AT-6). The reading
+// view needs none — its viewport owns the whole screen, so its cut edge IS the
+// screen edge — but the browser's preview is one column of a split, with content
+// beside and below it and no other signal that text continues past the fold. It
+// reports how far through the body the window sits (ScrollPercent) and names the
+// scroll keys, fit to the pane width (plain text first, styled after — a styled
+// string is never width-sliced, the same rule fitListRow follows) so the
+// affordance can never itself overflow the pane it labels.
+func (b *Browser) previewScrollHint(width int) string {
+	percent := int(b.previewViewport.ScrollPercent() * 100)
+	label := fmt.Sprintf("── %d%% · ctrl+d/u pgup/pgdn scroll ──", percent)
+	return b.deps.Styles.Dim.Render(fitWidth(label, width))
 }
 
 // fitWidth truncates s to at most width display cells, marking any cut with an

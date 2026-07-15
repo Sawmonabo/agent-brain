@@ -2305,7 +2305,12 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 	m, _ = step(m, views.PushScreenMsg{Screen: browser})
 
 	got := plain(m.footer())
-	for _, want := range []string{"o order", "/ filter", "esc back"} {
+	// "ctrl+d/u scroll" is AT-6's honesty pin: the preview pane's scroll keys
+	// are non-obvious (j/k stay the list cursor), so the footer must name them
+	// or the rest of a long memory looks unreachable. It rides the same
+	// registry→footer wiring as the other browser rows, so its absence would
+	// mean the registry row or its available() case regressed.
+	for _, want := range []string{"o order", "/ filter", "ctrl+d/u scroll", "esc back"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stack footer %q missing %q", got, want)
 		}

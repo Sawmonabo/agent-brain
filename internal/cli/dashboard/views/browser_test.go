@@ -1721,6 +1721,167 @@ func TestBrowserIndexMemorySortsFirst(t *testing.T) {
 	}
 }
 
+// ctrlKey builds a ctrl-modified key press. The shared key() helper only builds
+// printable runes and a handful of named specials, so the preview pane's
+// ctrl+d/ctrl+u scroll keys are constructed here (msg.String() reports them as
+// "ctrl+d"/"ctrl+u", which the preview viewport's keymap matches).
+func ctrlKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
+}
+
+// numberedRows builds a body of uniquely labelled lines ("<prefix>row 001" …)
+// so a scroll assertion can tell one preview window from another by which rows
+// it contains. A non-empty prefix distinguishes two memories' bodies.
+func numberedRows(prefix string, n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "%srow %03d\n", prefix, i)
+	}
+	return b.String()
+}
+
+// longBodyBrowser is a one-memory browser whose sole memory has a 300-line body
+// — an adversarial length certain to overflow any real preview pane. Render is
+// nil, so the preview is the raw body: unique, unwrapped lines a scroll test can
+// track exactly.
+func longBodyBrowser(t *testing.T) *Browser {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/long.md", Name: "long", Class: provider.ClassFact, ModTime: base},
+	}
+	return NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(map[string]string{"claude/long.md": numberedRows("", 300)}),
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+}
+
+// TestBrowserPreviewHeightBounded pins AT-6's core defect: at a preview-split
+// width, a long-body selection must not push the frame past its height budget
+// (in the real hub that overflow shoves the root's footer — the "option keys" —
+// off the terminal and hides the text past the fold). The frame must fit height
+// AND still carry its chrome and the head of the body.
+func TestBrowserPreviewHeightBounded(t *testing.T) {
+	t.Parallel()
+	browser := longBodyBrowser(t)
+	const width, height = 120, 30
+	got := plain(browser.View(width, height))
+	if lines := strings.Count(got, "\n") + 1; lines > height {
+		t.Errorf("preview-split View rendered %d lines, want <= %d; a long preview must not overflow its height budget\n%s", lines, height, got)
+	}
+	if !strings.Contains(got, "Memory browser") {
+		t.Errorf("View lost its title chrome under the long preview; got:\n%s", got)
+	}
+	if !strings.Contains(got, "row 001") {
+		t.Errorf("View did not show the head of the previewed body; got:\n%s", got)
+	}
+}
+
+// TestBrowserPreviewScrolls pins that the preview-pane scroll keys move the
+// visible window: ctrl+d (half page) and pgdown (full page) each scroll the top
+// of the body out of view. The list keeps focus — j/k stay the list cursor — so
+// these keys are the only way to reach the rest of a long memory.
+func TestBrowserPreviewScrolls(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	for _, testCase := range []struct {
+		name string
+		msg  tea.KeyPressMsg
+	}{
+		{"ctrl+d half page", ctrlKey('d')},
+		{"pgdown full page", tea.KeyPressMsg{Code: tea.KeyPgDown}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			browser := longBodyBrowser(t)
+			before := plain(browser.View(width, height)) // renders once so the pane is live
+			if !strings.Contains(before, "row 001") {
+				t.Fatalf("setup: top of body not visible before scrolling; got:\n%s", before)
+			}
+			next, _ := browser.Update(testCase.msg)
+			browser = next.(*Browser)
+			after := plain(browser.View(width, height))
+			if after == before {
+				t.Fatalf("%s left the preview window unchanged", testCase.name)
+			}
+			if strings.Contains(after, "row 001") {
+				t.Errorf("%s did not scroll the top of the body out of view; got:\n%s", testCase.name, after)
+			}
+		})
+	}
+}
+
+// TestBrowserPreviewResetsOnSelectionChange pins that moving the list cursor to
+// a different memory opens its preview at the head — a new document never
+// inherits the previous selection's scroll offset.
+func TestBrowserPreviewResetsOnSelectionChange(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/aaa.md", Name: "aaa", Class: provider.ClassFact, ModTime: base.Add(time.Hour)}, // newer → row 0
+		{Provider: "claude", RepoPath: "claude/bbb.md", Name: "bbb", Class: provider.ClassFact, ModTime: base},                // row 1
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder: "acme",
+		Now:    base,
+		ReadBody: fakeReadBody(map[string]string{
+			"claude/aaa.md": numberedRows("A ", 300),
+			"claude/bbb.md": numberedRows("B ", 300),
+		}),
+		List: func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+	const width, height = 120, 30
+
+	_ = browser.View(width, height)
+	next, _ := browser.Update(ctrlKey('d')) // scroll A's preview down
+	browser = next.(*Browser)
+	if scrolled := plain(browser.View(width, height)); strings.Contains(scrolled, "A row 001") {
+		t.Fatalf("setup: ctrl+d did not scroll A's preview off its top; got:\n%s", scrolled)
+	}
+
+	next, _ = browser.Update(key("down")) // move the list cursor to B
+	browser = next.(*Browser)
+	if bView := plain(browser.View(width, height)); !strings.Contains(bView, "B row 001") {
+		t.Errorf("B's preview did not open at its head after the selection changed; got:\n%s", bView)
+	}
+}
+
+// TestBrowserPreviewScrollInertWithoutPreview pins that a scroll key is a
+// harmless no-op when no preview pane is shown (narrow width): the view is
+// unchanged and nothing panics.
+func TestBrowserPreviewScrollInertWithoutPreview(t *testing.T) {
+	t.Parallel()
+	browser := longBodyBrowser(t)
+	const width, height = 80, 30 // below previewMinWidth: the list owns the full width, no preview
+	before := plain(browser.View(width, height))
+	next, _ := browser.Update(ctrlKey('d'))
+	browser = next.(*Browser)
+	if after := plain(browser.View(width, height)); after != before {
+		t.Errorf("ctrl+d changed the narrow (no-preview) view; scroll must be inert without a preview pane\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestBrowserFilteringOwnsKeysOverPreviewScroll pins that the in-browser filter
+// keeps input focus: while filtering, a typed key lands in the filter, never
+// routed to the preview viewport (updateFiltering runs before any scroll
+// routing).
+func TestBrowserFilteringOwnsKeysOverPreviewScroll(t *testing.T) {
+	t.Parallel()
+	browser := longBodyBrowser(t)
+	const width, height = 120, 30
+	_ = browser.View(width, height)
+
+	next, _ := browser.Update(key("/")) // open the filter
+	browser = next.(*Browser)
+	next, _ = browser.Update(key("r")) // 'r' is rename outside filtering; here it must type
+	browser = next.(*Browser)
+	if got := browser.filter.Value(); got != "r" {
+		t.Errorf("filter value = %q, want %q; filtering must own typed keys", got, "r")
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

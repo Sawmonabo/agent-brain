@@ -159,6 +159,17 @@ var registry = []Action{
 	// matched directly by Browser.updateKey like read/history/show-deleted: no
 	// root runner, never Mutates.
 	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
+	// scroll-preview reaches the preview pane's own viewport (AT-6): ctrl+d/u
+	// half-page and pgup/pgdown full-page, the only keys that scroll a long
+	// memory's preview — j/k stay the LIST cursor, unlike the reading view where
+	// they scroll its full-screen viewport. Matched by the pane's own restricted
+	// keymap inside Browser.updateKey (browserPreviewKeyMap), no root runner and
+	// never Mutates, like every other stack-scope navigation row. It is declared
+	// here — not left as the reading view's table-stakes viewport keys are, off
+	// the registry — precisely because the keys are non-obvious in a split where
+	// j/k mean something else: the footer/help must name them or the rest of a
+	// long memory looks unreachable (spec §14's honesty contract).
+	{ID: "browser-scroll-preview", Title: "scroll", Keys: []string{"ctrl+d", "ctrl+u", "pgup", "pgdown"}, KeyHint: "ctrl+d/u", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.
