@@ -159,10 +159,12 @@ var registry = []Action{
 	// matched directly by Browser.updateKey like read/history/show-deleted: no
 	// root runner, never Mutates.
 	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
-	// scroll-preview reaches the preview pane's own viewport: ctrl+d/u
-	// half-page and pgup/pgdown full-page, the only keys that scroll a long
-	// memory's preview — j/k stay the LIST cursor, unlike the reading view where
-	// they scroll its full-screen viewport. Matched by the pane's own restricted
+	// scroll-preview reaches the preview pane's own viewport straight from the
+	// list: ctrl+d/u half-page and pgup/pgdown full-page, the quick scroll of a
+	// long memory's preview without leaving the list — j/k stay the LIST cursor
+	// here, unlike the reading view where they scroll its full-screen viewport.
+	// For the full reading toolkit (j/k line scroll, g/G ends) tab focuses the
+	// pane (browser-focus-preview below). Matched by the pane's own restricted
 	// keymap inside Browser.updateKey (browserPreviewKeyMap), no root runner and
 	// never Mutates, like every other stack-scope navigation row. It is declared
 	// here — not left as the reading view's table-stakes viewport keys are, off
@@ -170,6 +172,15 @@ var registry = []Action{
 	// j/k mean something else: the footer/help must name them or the rest of a
 	// long memory looks unreachable (spec §14's honesty contract).
 	{ID: "browser-scroll-preview", Title: "scroll", Keys: []string{"ctrl+d", "ctrl+u", "pgup", "pgdown"}, KeyHint: "ctrl+d/u", Scope: ScopeBrowser},
+	// focus-preview (tab) gives the preview pane keyboard focus so the reading
+	// view's full scroll keymap (j/k, ctrl+d/u, pgup/pgdown, g/G) drives it — the
+	// lazygit-style focus-the-preview idiom; tab/esc hand focus back to the list.
+	// Matched directly by Browser.updateKey, no root runner and never Mutates,
+	// like every other stack-scope navigation row. Inert when no preview is on
+	// screen (narrow width) yet unconditionally available in the footer — the
+	// same honesty parity as scroll-preview: the key is real, its effect is
+	// situational (dashboard.go's available()).
+	{ID: "browser-focus-preview", Title: "focus preview", Keys: []string{"tab"}, KeyHint: "tab", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.

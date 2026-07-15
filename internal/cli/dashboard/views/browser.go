@@ -148,9 +148,11 @@ type Browser struct {
 	// previewViewport is the scrollable preview pane: a long memory's
 	// body scrolls WITHIN this window instead of growing the frame past its
 	// height budget and shoving the root's footer off the terminal. It mirrors
-	// the reading view's viewport (reading.go), with a restricted keymap
-	// (browserPreviewKeyMap) so only ctrl+d/u and pgup/pgdown reach it — j/k
-	// stay the list cursor's.
+	// the reading view's viewport (reading.go). Its keymap is swapped by focus:
+	// the unfocused browserPreviewKeyMap (ctrl+d/u + pgup/pgdown only, so j/k
+	// stay the list cursor's) while the list is focused, and the fuller
+	// browserPreviewFocusedKeyMap (the reading view's j/k + ctrl+d/u +
+	// pgup/pgdown) while previewFocused.
 	previewViewport viewport.Model
 	// previewShown records whether the last View drew the preview pane (width
 	// cleared previewMinWidth, in the normal non-filter/non-deleted body).
@@ -158,6 +160,16 @@ type Browser struct {
 	// own — View is the only place the pane's visibility is known — so this
 	// bridges them, keeping the scroll keys inert whenever no pane is on screen.
 	previewShown bool
+	// previewFocused records whether the preview pane holds keyboard focus:
+	// Tab toggles it (only when a preview is on screen), and while set the
+	// reading view's full scroll keymap drives the pane (j/k, ctrl+d/u,
+	// pgup/pgdown, g/G) instead of the list cursor — the lazygit-style
+	// focus-the-preview idiom. Effective focus is always previewFocused AND
+	// previewShown: a narrow resize that drops the pane leaves this bool set but
+	// inert, so updateKey gates the focused key block on both and the list can
+	// never go dead under a dangling focus. A click-to-focus affordance reads it
+	// too.
+	previewFocused bool
 
 	// Deleted-recovery mode (spec §6's x): a folder-wide history scan surfaces
 	// every path that some past version touched but HEAD no longer has, so a
@@ -231,6 +243,42 @@ func browserPreviewKeyMap() viewport.KeyMap {
 		Left:         keybinding.NewBinding(),
 		Right:        keybinding.NewBinding(),
 	}
+}
+
+// browserPreviewFocusedKeyMap is the preview pane's keymap while it holds
+// keyboard focus (Tab). It mirrors the reading view's viewport keymap
+// (reading.go's readingViewportKeyMap) exactly — up/k line up, down/j line
+// down, ctrl+u/d half page, pgup/pgdown page — so a focused preview scrolls
+// with the same full toolkit the reading view offers. It is installed only
+// while previewFocused; the unfocused browserPreviewKeyMap (no j/k) is restored
+// the moment focus returns to the list, so j/k drive the list cursor whenever
+// the list is focused. Left/Right stay unbound (a keyless binding never
+// matches); g/G are handled by updateKey directly (GotoTop/GotoBottom), exactly
+// as reading.go handles them — the viewport exposes the methods but binds no
+// keys to them.
+func browserPreviewFocusedKeyMap() viewport.KeyMap {
+	return viewport.KeyMap{
+		Up:           keybinding.NewBinding(keybinding.WithKeys("up", "k")),
+		Down:         keybinding.NewBinding(keybinding.WithKeys("down", "j")),
+		HalfPageUp:   keybinding.NewBinding(keybinding.WithKeys("ctrl+u")),
+		HalfPageDown: keybinding.NewBinding(keybinding.WithKeys("ctrl+d")),
+		PageUp:       keybinding.NewBinding(keybinding.WithKeys("pgup")),
+		PageDown:     keybinding.NewBinding(keybinding.WithKeys("pgdown")),
+		Left:         keybinding.NewBinding(),
+		Right:        keybinding.NewBinding(),
+	}
+}
+
+// blurPreview returns keyboard focus to the list and restores the unfocused
+// preview keymap, so j/k drive the list cursor again. Called on Tab/Esc out of
+// a focused pane and defensively wherever a transition leaves the normal body
+// (entering the filter or the deleted-recovery list): a dangling focus must
+// never outlive the pane it scrolled. Restoring the keymap here is what lets
+// the focused block install browserPreviewFocusedKeyMap freely — it is always
+// wound back the moment focus clears.
+func (b *Browser) blurPreview() {
+	b.previewFocused = false
+	b.previewViewport.KeyMap = browserPreviewKeyMap()
 }
 
 // Title names the browser's breadcrumb segment: the project folder.
@@ -388,9 +436,47 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		return b.updateDeleted(msg)
 	}
 
+	// Preview-focus mode (spec §3): while the preview holds focus AND is
+	// actually on screen, the reading view's full scroll keymap drives the pane
+	// instead of the list. Gated on previewShown too — a narrow resize drops the
+	// pane while previewFocused lingers, and without the previewShown half of the
+	// guard this block would keep swallowing j/k/Tab/Esc into an off-screen
+	// viewport, leaving the list cursor dead. Tab and Esc hand focus back to the
+	// list; g/G jump the pane's ends (GotoTop/GotoBottom — the viewport exposes
+	// the methods but binds no keys, exactly as reading.go handles them); every
+	// other key runs through the focused keymap installed just below.
+	if b.previewFocused && b.previewShown {
+		switch {
+		case keybinding.Matches(msg, DashboardKeys.BrowserFocusPreview),
+			keybinding.Matches(msg, DashboardKeys.BrowserBack):
+			b.blurPreview()
+			return b, nil
+		case msg.String() == "g":
+			b.previewViewport.GotoTop()
+			return b, nil
+		case msg.String() == "G":
+			b.previewViewport.GotoBottom()
+			return b, nil
+		}
+		b.previewViewport.KeyMap = browserPreviewFocusedKeyMap()
+		var cmd tea.Cmd
+		b.previewViewport, cmd = b.previewViewport.Update(msg)
+		return b, cmd
+	}
+
 	switch {
 	case keybinding.Matches(msg, DashboardKeys.BrowserBack):
 		return b, func() tea.Msg { return PopScreenMsg{} }
+	case keybinding.Matches(msg, DashboardKeys.BrowserFocusPreview):
+		// Tab focuses the preview pane for full-key scrolling, but only when a
+		// pane is on screen; with no preview (narrow width) it stays inert rather
+		// than arming a focus the user cannot see. The focused keymap is installed
+		// lazily on the first focused keystroke (the block above), so entering
+		// focus is a pure state flip here.
+		if b.previewShown {
+			b.previewFocused = true
+		}
+		return b, nil
 	case keybinding.Matches(msg, DashboardKeys.BrowserRead):
 		return b, b.openReading()
 	case keybinding.Matches(msg, DashboardKeys.BrowserHistory):
@@ -400,6 +486,10 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	case keybinding.Matches(msg, DashboardKeys.BrowserInsights):
 		return b, b.openInsights()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
+		// A dangling preview focus (previewFocused set while previewShown was
+		// false — a narrow resize) must not survive into filter mode, where the
+		// text input owns every key.
+		b.blurPreview()
 		b.filtering = true
 		return b, b.filter.Focus()
 	case keybinding.Matches(msg, DashboardKeys.BrowserOrder):
@@ -617,6 +707,9 @@ func (b *Browser) updateDeleted(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 // wide history scan that populates it. The scan runs even if one ran before —
 // a memory deleted since the last scan should appear.
 func (b *Browser) enterDeleted() tea.Cmd {
+	// Leaving the normal body drops any lingering preview focus (a narrow-resize
+	// dangling focus): the deleted-recovery list owns its own cursor keys.
+	b.blurPreview()
 	b.showDeleted = true
 	b.deletedLoaded = false
 	b.deletedErr = nil
@@ -1133,6 +1226,15 @@ func (b *Browser) syncPreview(selected memoryfs.Memory, width int) {
 // affordance can never itself overflow the pane it labels.
 func (b *Browser) previewScrollHint(width int) string {
 	percent := int(b.previewViewport.ScrollPercent() * 100)
+	// When the pane holds focus, the hint doubles as the focus cue (spec §3):
+	// it names the fuller focused keyset and renders emphasized (Header, not the
+	// unfocused Dim) so the reader can see at a glance that the preview — not the
+	// list — now owns the scroll keys, and that esc/tab hands focus back. It
+	// reuses the existing hint line, so the pane's height budget is unchanged.
+	if b.previewFocused {
+		label := fmt.Sprintf("── %d%% · preview focused — j/k ctrl+d/u scroll · esc/tab list ──", percent)
+		return b.deps.Styles.Header.Render(fitWidth(label, width))
+	}
 	label := fmt.Sprintf("── %d%% · ctrl+d/u pgup/pgdn scroll ──", percent)
 	return b.deps.Styles.Dim.Render(fitWidth(label, width))
 }

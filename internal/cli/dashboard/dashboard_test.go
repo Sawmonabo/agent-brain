@@ -2378,6 +2378,43 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 	}
 }
 
+// TestStackFooterRendersFocusPreviewLit pins that browser-focus-preview renders
+// LIT, not struck, in the browser stack footer. TestStackFooterAdvertisesScopedKeys
+// is a plain()-stripped substring check that would pass even if the row were
+// struck through — the strikethrough SGR strips away with the rest of the ANSI —
+// so it cannot catch the honesty gap where a runner-less action missing from
+// available()'s unconditional whitelist renders struck though its key works. This
+// inspects the raw (styled) footer: the row must carry the plain Dim rendering
+// stackFooterLine gives an available row, never the Dim+strikethrough one it
+// gives a disabled one.
+func TestStackFooterRendersFocusPreviewLit(t *testing.T) {
+	t.Parallel()
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "", nil },
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	if !m.available("browser-focus-preview") {
+		t.Fatal("available(browser-focus-preview) = false; the footer would render it struck (spec §14 honesty)")
+	}
+
+	raw := m.footer()
+	const segment = "tab focus preview" // KeyHint + Title, exactly as stackFooterLine composes it
+	if !strings.Contains(plain(raw), segment) {
+		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
+	}
+	if struck := m.styles.Dim.Strikethrough(true).Render(segment); strings.Contains(raw, struck) {
+		t.Errorf("%q renders struck in the browser footer — its available() whitelist entry regressed", segment)
+	}
+	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
+		t.Errorf("%q does not render lit in the browser footer; got:\n%q", segment, raw)
+	}
+}
+
 // TestInsightsScreenWiring pins the root plumbing the insights screen depends on
 // that lives in this package, not views: stackScope must map a pushed *Insights
 // to ScopeInsights (so its footer names esc-back and nothing tab-level), and the

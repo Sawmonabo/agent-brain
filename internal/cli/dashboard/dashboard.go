@@ -1855,7 +1855,7 @@ func (m *Model) available(id string) bool {
 	case "switch-tabs", "select", "help", "search",
 		"open-browser", "browser-read", "browser-order", "browser-filter",
 		"browser-history", "browser-show-deleted", "browser-insights",
-		"browser-scroll-preview", "browser-back",
+		"browser-scroll-preview", "browser-focus-preview", "browser-back",
 		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",

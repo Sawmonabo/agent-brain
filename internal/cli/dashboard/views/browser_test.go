@@ -1732,12 +1732,18 @@ func ctrlKey(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
 }
 
-// numberedRows builds a body of uniquely labelled lines ("<prefix>row 001" …)
-// so a scroll assertion can tell one preview window from another by which rows
-// it contains. A non-empty prefix distinguishes two memories' bodies.
-func numberedRows(prefix string, n int) string {
+// previewOverflowRows is a body line count certain to overflow any preview pane
+// a test renders — the adversarial length the preview scroll and focus tests
+// need so the pane genuinely scrolls rather than showing the whole body at once.
+const previewOverflowRows = 300
+
+// numberedRows builds a previewOverflowRows-long body of uniquely labelled lines
+// ("<prefix>row 001" …) so a scroll assertion can tell one preview window from
+// another by which rows it contains. A non-empty prefix distinguishes two
+// memories' bodies.
+func numberedRows(prefix string) string {
 	var b strings.Builder
-	for i := 1; i <= n; i++ {
+	for i := 1; i <= previewOverflowRows; i++ {
 		fmt.Fprintf(&b, "%srow %03d\n", prefix, i)
 	}
 	return b.String()
@@ -1756,7 +1762,7 @@ func longBodyBrowser(t *testing.T) *Browser {
 	return NewBrowser(BrowserDeps{
 		Folder:   "acme",
 		Now:      base,
-		ReadBody: fakeReadBody(map[string]string{"claude/long.md": numberedRows("", 300)}),
+		ReadBody: fakeReadBody(map[string]string{"claude/long.md": numberedRows("")}),
 		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
 	})
 }
@@ -1864,8 +1870,8 @@ func TestBrowserPreviewResetsOnSelectionChange(t *testing.T) {
 		Folder: "acme",
 		Now:    base,
 		ReadBody: fakeReadBody(map[string]string{
-			"claude/aaa.md": numberedRows("A ", 300),
-			"claude/bbb.md": numberedRows("B ", 300),
+			"claude/aaa.md": numberedRows("A "),
+			"claude/bbb.md": numberedRows("B "),
 		}),
 		List: func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
 	})
@@ -1917,6 +1923,221 @@ func TestBrowserFilteringOwnsKeysOverPreviewScroll(t *testing.T) {
 	if got := browser.filter.Value(); got != "r" {
 		t.Errorf("filter value = %q, want %q; filtering must own typed keys", got, "r")
 	}
+}
+
+// focusPreviewBrowser is a two-memory browser whose top (default-selected) row
+// carries a 300-line body — long enough to overflow any preview pane — and whose
+// second row carries a short one. The two rows make the focus distinction
+// load-bearing: while the preview holds focus, j must scroll the pane and leave
+// the cursor on row 0; once focus returns to the list, j must advance it to row
+// 1. Render is nil, so the preview is the raw, uniquely numbered body a scroll
+// assertion can track.
+func focusPreviewBrowser(t *testing.T) *Browser {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/long.md", Name: "long", Class: provider.ClassFact, ModTime: base.Add(time.Hour)}, // newest → row 0
+		{Provider: "claude", RepoPath: "claude/short.md", Name: "short", Class: provider.ClassFact, ModTime: base},              // row 1
+	}
+	return NewBrowser(BrowserDeps{
+		Folder: "acme",
+		Now:    base,
+		ReadBody: fakeReadBody(map[string]string{
+			"claude/long.md":  numberedRows(""),
+			"claude/short.md": "short body\n",
+		}),
+		List: func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+}
+
+// TestBrowserPreviewFocusRoutesScrollKeys pins preview-focus mode (spec §3): tab
+// focuses the on-screen preview so j/k then scroll the pane's viewport rather
+// than the list cursor, and tab (or esc) hands focus back so j/k move the list
+// cursor again. The two-row fixture makes the routing load-bearing: while
+// focused the cursor must stay on row 0 (only the viewport's YOffset moves), and
+// once blurred a j must advance it to row 1.
+func TestBrowserPreviewFocusRoutesScrollKeys(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	for _, blurKey := range []string{"tab", "esc"} {
+		t.Run("blur with "+blurKey, func(t *testing.T) {
+			t.Parallel()
+			browser := focusPreviewBrowser(t)
+			_ = plain(browser.View(width, height)) // render so the preview is on screen
+			if browser.previewViewport.YOffset() != 0 {
+				t.Fatalf("setup: preview not at its top; YOffset = %d", browser.previewViewport.YOffset())
+			}
+
+			next, _ := browser.Update(key("tab")) // focus the preview
+			browser = next.(*Browser)
+			if !browser.previewFocused {
+				t.Fatal("tab did not focus the preview pane")
+			}
+			// The focused pane renders its cue so the reader can see the preview,
+			// not the list, now owns the scroll keys (spec §3's focus affordance).
+			if focused := plain(browser.View(width, height)); !strings.Contains(focused, "preview focused") {
+				t.Errorf("focused preview shows no focus cue; got:\n%s", focused)
+			}
+
+			next, _ = browser.Update(key("j")) // scrolls the pane, not the list
+			browser = next.(*Browser)
+			if browser.previewViewport.YOffset() == 0 {
+				t.Error("j while focused did not scroll the preview viewport (YOffset still 0)")
+			}
+			if browser.cursor != 0 {
+				t.Errorf("j while focused moved the list cursor to %d; it must scroll only the preview", browser.cursor)
+			}
+			next, _ = browser.Update(key("k")) // scrolls back toward the top
+			browser = next.(*Browser)
+			if browser.previewViewport.YOffset() != 0 {
+				t.Errorf("k while focused did not scroll the preview back to its top; YOffset = %d", browser.previewViewport.YOffset())
+			}
+
+			next, _ = browser.Update(key(blurKey)) // return focus to the list
+			browser = next.(*Browser)
+			if browser.previewFocused {
+				t.Fatalf("%s did not return focus to the list", blurKey)
+			}
+			next, _ = browser.Update(key("j")) // the list owns j again
+			browser = next.(*Browser)
+			if browser.cursor != 1 {
+				t.Errorf("j after blur left the cursor at %d; the list must own j again", browser.cursor)
+			}
+		})
+	}
+}
+
+// TestBrowserPreviewFocusGGJumpEnds pins that g/G jump the focused preview to
+// its head and foot — the reading view's own end-jump keys, handled by
+// Browser.updateKey directly (the viewport exposes GotoTop/GotoBottom but binds
+// no keys to them), reachable only while the pane holds focus.
+func TestBrowserPreviewFocusGGJumpEnds(t *testing.T) {
+	t.Parallel()
+	browser := focusPreviewBrowser(t)
+	const width, height = 120, 30
+	_ = plain(browser.View(width, height))
+	next, _ := browser.Update(key("tab"))
+	browser = next.(*Browser)
+
+	next, _ = browser.Update(key("G")) // jump to the foot
+	browser = next.(*Browser)
+	if browser.previewViewport.YOffset() == 0 {
+		t.Error("G while focused did not jump the preview to its foot")
+	}
+	if !browser.previewViewport.AtBottom() {
+		t.Errorf("G while focused did not land at the bottom; YOffset = %d", browser.previewViewport.YOffset())
+	}
+	next, _ = browser.Update(key("g")) // jump back to the head
+	browser = next.(*Browser)
+	if browser.previewViewport.YOffset() != 0 {
+		t.Errorf("g while focused did not jump the preview back to its head; YOffset = %d", browser.previewViewport.YOffset())
+	}
+}
+
+// TestBrowserPreviewFocusInertWithoutPreview pins that tab is inert when no
+// preview pane is on screen (narrow width): it must not arm a focus the reader
+// cannot see, and j must keep moving the list cursor.
+func TestBrowserPreviewFocusInertWithoutPreview(t *testing.T) {
+	t.Parallel()
+	browser := focusPreviewBrowser(t)
+	const width, height = 80, 30 // < previewMinWidth: the list owns the full width, no preview
+	_ = plain(browser.View(width, height))
+	if browser.previewShown {
+		t.Fatalf("setup: preview shown at width %d, want none", width)
+	}
+
+	next, _ := browser.Update(key("tab"))
+	browser = next.(*Browser)
+	if browser.previewFocused {
+		t.Error("tab focused the preview with no pane on screen; it must be inert")
+	}
+	next, _ = browser.Update(key("j"))
+	browser = next.(*Browser)
+	if browser.cursor != 1 {
+		t.Errorf("j after an inert tab left the cursor at %d; the list must still own j", browser.cursor)
+	}
+}
+
+// TestBrowserPreviewFocusGuardKeepsListLiveAfterNarrowResize pins the
+// previewShown half of the focused-key guard (spec §3): a focus armed at a
+// preview-split width, then a resize below previewMinWidth, must not swallow
+// j into an off-screen viewport. Without the && previewShown guard the focused
+// block would keep intercepting keys against a pane that is no longer on screen,
+// freezing the list cursor; with it, j moves the list again.
+func TestBrowserPreviewFocusGuardKeepsListLiveAfterNarrowResize(t *testing.T) {
+	t.Parallel()
+	const wide, narrow, height = 120, 80, 30
+	browser := focusPreviewBrowser(t)
+	_ = plain(browser.View(wide, height))
+	next, _ := browser.Update(key("tab")) // focus the preview
+	browser = next.(*Browser)
+	if !browser.previewFocused {
+		t.Fatal("setup: tab did not focus the preview")
+	}
+	_ = plain(browser.View(narrow, height)) // narrow resize: pane gone, focus lingers
+	if browser.previewShown || !browser.previewFocused {
+		t.Fatalf("setup: want the dangling state (previewShown=false, previewFocused=true); got shown=%v focused=%v",
+			browser.previewShown, browser.previewFocused)
+	}
+
+	next, _ = browser.Update(key("j"))
+	browser = next.(*Browser)
+	if browser.cursor != 1 {
+		t.Errorf("j left the cursor at %d after a narrow resize dropped the focused pane; the list must stay live", browser.cursor)
+	}
+}
+
+// TestBrowserPreviewFocusClearsOnModeChange pins that a preview focus never
+// leaks into a mode that owns the keyboard for itself. The dangling-focus state
+// is reachable by a narrow resize: focus is armed at a preview-split width, then
+// a resize below previewMinWidth drops the pane (previewShown false) while the
+// bool lingers — entering the filter or the deleted-recovery list must clear the
+// stale bool so it cannot resurrect on the next wide frame.
+func TestBrowserPreviewFocusClearsOnModeChange(t *testing.T) {
+	t.Parallel()
+	const wide, narrow, height = 120, 80, 30
+
+	danglingFocus := func(t *testing.T) *Browser {
+		t.Helper()
+		browser := focusPreviewBrowser(t)
+		_ = plain(browser.View(wide, height)) // preview on screen
+		next, _ := browser.Update(key("tab")) // focus it
+		browser = next.(*Browser)
+		if !browser.previewFocused {
+			t.Fatal("setup: tab did not focus the preview")
+		}
+		_ = plain(browser.View(narrow, height)) // narrow resize drops the pane, focus lingers
+		if browser.previewShown || !browser.previewFocused {
+			t.Fatalf("setup: want the dangling state; got shown=%v focused=%v", browser.previewShown, browser.previewFocused)
+		}
+		return browser
+	}
+
+	t.Run("entering filter clears focus", func(t *testing.T) {
+		t.Parallel()
+		browser := danglingFocus(t)
+		next, _ := browser.Update(key("/"))
+		browser = next.(*Browser)
+		if !browser.filtering {
+			t.Fatal("/ did not enter filter mode")
+		}
+		if browser.previewFocused {
+			t.Error("entering filter mode did not clear the dangling preview focus")
+		}
+	})
+
+	t.Run("entering deleted mode clears focus", func(t *testing.T) {
+		t.Parallel()
+		browser := danglingFocus(t)
+		next, _ := browser.Update(key("x"))
+		browser = next.(*Browser)
+		if !browser.showDeleted {
+			t.Fatal("x did not enter deleted-recovery mode")
+		}
+		if browser.previewFocused {
+			t.Error("entering deleted mode did not clear the dangling preview focus")
+		}
+	})
 }
 
 var (

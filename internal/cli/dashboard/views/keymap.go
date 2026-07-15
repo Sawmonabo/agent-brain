@@ -63,7 +63,13 @@ type DashboardKeymap struct {
 	// BrowserInsights (i) opens the project insights screen (Task 16), matched
 	// directly by Browser.updateKey like the other browser read surfaces.
 	BrowserInsights keybinding.Binding
-	BrowserBack     keybinding.Binding
+	// BrowserFocusPreview (tab) hands the preview pane keyboard focus so the
+	// reading view's full scroll keymap drives it (browser.go's preview-focus
+	// mode), matched directly by Browser.updateKey. The unfocused ctrl+d/u
+	// preview passthrough runs through the viewport's own keymap rather than a
+	// matched binding, so this is the only preview key resolved here.
+	BrowserFocusPreview keybinding.Binding
+	BrowserBack         keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
 	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
 	// one hint; Reading.updateKey matches it for membership, then picks the
@@ -146,6 +152,7 @@ var DashboardKeys = DashboardKeymap{
 	BrowserHistory:        bindingFor("browser-history"),
 	BrowserShowDeleted:    bindingFor("browser-show-deleted"),
 	BrowserInsights:       bindingFor("browser-insights"),
+	BrowserFocusPreview:   bindingFor("browser-focus-preview"),
 	BrowserBack:           bindingFor("browser-back"),
 	ReadingCycleLinks:     bindingFor("reading-links"),
 	ReadingFollow:         bindingFor("reading-follow"),
