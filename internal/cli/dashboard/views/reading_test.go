@@ -422,6 +422,38 @@ func TestReadingCopyBodyEmitsRawSource(t *testing.T) {
 	}
 }
 
+// TestReadingCopyBodyOnLoadErrorToasts pins Y's degraded-screen guard: a
+// memory whose body failed to load (loadErr set, r.body left empty) must
+// never emit a CopyMemoryMsg. Copying "" while toasting a false "copied"
+// would both clobber the user's real clipboard and lie about it on a screen
+// that is simultaneously admitting "memory unavailable" — so Y must instead
+// report the failure via ToastMsg, exactly like the browser's async copy
+// error arm.
+func TestReadingCopyBodyOnLoadErrorToasts(t *testing.T) {
+	t.Parallel()
+	reading := newReadingFixture(t, func(deps *ReadingDeps) {
+		deps.ReadBody = func(memoryfs.Memory) (string, error) {
+			return "", errors.New("boom: file exceeds the read cap")
+		}
+	})
+
+	_, cmd := reading.Update(key("Y"))
+	if cmd == nil {
+		t.Fatal("Y on a load-failed memory produced no Cmd")
+	}
+	msg := cmd()
+	if copyMemory, ok := msg.(CopyMemoryMsg); ok {
+		t.Fatalf("Y on a load-failed memory emitted CopyMemoryMsg(%#v); want a ToastMsg, never a clipboard write of the empty body", copyMemory)
+	}
+	toast, ok := msg.(ToastMsg)
+	if !ok {
+		t.Fatalf("Y on a load-failed memory produced %#v, want ToastMsg", msg)
+	}
+	if !strings.Contains(toast.Text, "boom: file exceeds the read cap") {
+		t.Errorf("toast %q does not mention the load failure", toast.Text)
+	}
+}
+
 // hundredLineBody builds a body of uniquely named rows ("row 001" …
 // "row 100") so scroll assertions can pick individual lines without prefix
 // collisions.

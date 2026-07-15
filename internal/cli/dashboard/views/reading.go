@@ -293,7 +293,18 @@ func (r *Reading) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		// the glamour-styled viewport string — so what lands in the clipboard is
 		// what a user expects to paste elsewhere. Synchronous, unlike the
 		// browser's copy: the body is already in memory (adoptBody), so there is
-		// no ReadBody call and no error arm to fold in.
+		// no ReadBody call — except when the load itself failed. A memory whose
+		// body never loaded has no legitimate content behind r.body (it reads ""),
+		// so copying it while toasting a false "copied" would both clobber the
+		// user's real clipboard and lie about it on a screen that is simultaneously
+		// admitting "memory unavailable" — loadErr is the exact signal that tells
+		// this case apart from a genuinely empty but valid body, so gate on it and
+		// report the failure instead, the same idiom as the browser's async copy
+		// error arm.
+		if r.loadErr != nil {
+			loadErr := r.loadErr
+			return r, func() tea.Msg { return ToastMsg{Text: fmt.Sprintf("copy failed: %v", loadErr)} }
+		}
 		body, label := r.body, r.deps.Memory.Name
 		return r, func() tea.Msg { return CopyMemoryMsg{Body: body, Label: label} }
 	case keybinding.Matches(msg, DashboardKeys.ReadingEdit):
