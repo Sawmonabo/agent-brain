@@ -1675,6 +1675,62 @@ func (s fixedHeightScreen) View(_, height int) string {
 
 func (s fixedHeightScreen) Title() string { return s.title }
 
+// overflowScreen is a HOSTILE views.Screen double: its View ignores the height
+// budget entirely and returns far more lines than any terminal, standing in for
+// a pushed screen that forgets — or regresses — its own height bound. The
+// root's fitHeight clamp is the backstop that must keep such a screen from
+// growing the frame past the terminal and shoving the footer off the
+// alt-screen, which never scrolls.
+type overflowScreen struct{ lines int }
+
+func (o overflowScreen) Update(tea.Msg) (views.Screen, tea.Cmd) { return o, nil }
+
+func (o overflowScreen) View(_, _ int) string {
+	rows := make([]string, o.lines)
+	for i := range rows {
+		rows[i] = "hostile body line"
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (o overflowScreen) Title() string { return "hostile" }
+
+// TestRootClampsOverflowingPushedScreen pins the root height clamp (fitHeight):
+// a pushed screen whose View overflows its budget must not push the footer off
+// the alt-screen. Every per-screen fix bounds its own height, but this is the
+// defense-in-depth backstop for one that does not — the composed frame must
+// stay within the terminal height, and the footer must stay visible within the
+// top `height` rows the alt-screen actually shows (it never scrolls). A real
+// Browser cannot exercise this — it clamps its own preview now — so a hostile
+// stub stands in for the unbounded screen a future task might push.
+func TestRootClampsOverflowingPushedScreen(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+	m.status = readyStatus()
+	m = m.pushScreen(overflowScreen{lines: 500})
+
+	frame := plain(m.View().Content)
+	lines := strings.Split(frame, "\n")
+	if len(lines) > height {
+		t.Errorf("root frame is %d lines, want <= %d — an overflowing pushed screen was not clamped; its body shoved the footer off the alt-screen", len(lines), height)
+	}
+	// The alt-screen shows only the top `height` rows; the footer must be among
+	// them, not past the fold.
+	visible := lines
+	if len(visible) > height {
+		visible = visible[:height]
+	}
+	footer := plain(m.footer())
+	if footer == "" {
+		t.Fatal("setup: footer empty — the visibility assertion would be vacuous")
+	}
+	if !strings.Contains(strings.Join(visible, "\n"), footer) {
+		t.Errorf("footer not visible within the %d-row terminal after clamping; frame:\n%s", height, frame)
+	}
+}
+
 // TestFleetHeaderLine pins the Projects fleet-header string (spec §9):
 // "N units · watching M/N · last sync <outcome+relative> · vX.Y.Z". The unit
 // count and watching tally come from the fleet snapshot; the last-sync outcome

@@ -1592,6 +1592,42 @@ func (m Model) stackBodyHeight() int {
 	return 3
 }
 
+// tabBodyHeight is the vertical budget for a tab body. It equals the pushed-
+// screen budget (stackBodyHeight): both root layouts are header + one nav line
+// (the tab bar or the breadcrumb) + body + footer joined by three blank
+// separators, so the chrome framing the body is identical line-for-line. Kept a
+// named helper of its own rather than a bare call at the tab clamp so the two
+// layouts' budgets read as the distinct concepts they are — a later change to
+// one layout's chrome would then adjust only its own helper — even though they
+// coincide today.
+func (m Model) tabBodyHeight() int {
+	return m.stackBodyHeight()
+}
+
+// fitHeight clamps body to at most maxLines lines, keeping the FIRST maxLines.
+// The alt-screen renders from the top and never scrolls, so the top rows are
+// exactly the visible ones — a bottom-anchored keep would discard what the user
+// actually sees. Line counting is ANSI-safe by construction: an SGR escape
+// never contains a newline, so splitting on "\n" counts display rows regardless
+// of the colour/attribute codes woven through them.
+//
+// This is the root's defense-in-depth backstop, not the primary bound: every
+// pushed screen and tab body already sizes its content to the height View hands
+// it (the browser preview, the history diff, the conflicts list, …). fitHeight
+// is what still holds the frame — and with it the footer's place on screen —
+// when one of them regresses or a future screen forgets, so a single
+// over-tall body can never again shove the option keys past the fold.
+func fitHeight(body string, maxLines int) string {
+	if maxLines < 0 {
+		maxLines = 0
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= maxLines {
+		return body
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
+
 // stackFooterRow is one advertised key on a pushed screen's footer.
 // disabled marks a row whose action cannot run right now — it renders
 // visibly struck rather than vanishing (stackFooterLine), the crush-style
@@ -2019,10 +2055,15 @@ func (m Model) View() tea.View {
 			// current m.width/m.height, so a resize is handled purely by
 			// construction (screen.go's View doc): there is no cached
 			// dimension on the root or the screen that a WindowSizeMsg
-			// would need to separately invalidate.
-			body = strings.Join([]string{header, m.breadcrumb(), top.View(m.width, m.stackBodyHeight()), m.footer()}, "\n\n")
+			// would need to separately invalidate. fitHeight is the
+			// backstop (see its doc): the screen sizes itself to the budget,
+			// but a regressed one must still never grow the frame past the
+			// terminal and shove the footer off the alt-screen.
+			screen := fitHeight(top.View(m.width, m.stackBodyHeight()), m.stackBodyHeight())
+			body = strings.Join([]string{header, m.breadcrumb(), screen, m.footer()}, "\n\n")
 		} else {
-			body = strings.Join([]string{header, m.tabBar(), m.activeBody(), m.footer()}, "\n\n")
+			tabBody := fitHeight(m.activeBody(), m.tabBodyHeight())
+			body = strings.Join([]string{header, m.tabBar(), tabBody, m.footer()}, "\n\n")
 		}
 	}
 	view := tea.NewView(body)
