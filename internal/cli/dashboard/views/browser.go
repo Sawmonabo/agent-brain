@@ -691,12 +691,32 @@ func (b *Browser) visibleRows() []memoryfs.Memory {
 		if filtered[i].Provider != filtered[j].Provider {
 			return filtered[i].Provider < filtered[j].Provider
 		}
+		// Within a provider the derived index (claude's MEMORY.md, etc.) always
+		// sorts first: it is the map of the group, so it is the memory to open
+		// first (AT-5), and cursor 0 then makes it the default selection. Keyed
+		// on the class memoryfs already tagged it via the provider's own pattern
+		// table — never a name match in the view — so it stays on top under both
+		// order modes o toggles between (recency would sink an older index, name
+		// order an alphabetically-late one).
+		if iIndex, jIndex := isDerivedIndex(filtered[i]), isDerivedIndex(filtered[j]); iIndex != jIndex {
+			return iIndex
+		}
 		if b.orderByRecency {
 			return filtered[i].ModTime.After(filtered[j].ModTime)
 		}
 		return strings.ToLower(filtered[i].Name) < strings.ToLower(filtered[j].Name)
 	})
 	return filtered
+}
+
+// isDerivedIndex reports whether m is a provider's derived index file
+// (MEMORY.md and its kin), classified as such by memoryfs at enumeration
+// through the provider's own pattern table (spec §6). visibleRows sorts these
+// first within their provider group (AT-5) off this class, never a name match,
+// so the rule holds for any provider whose table declares an index — not just
+// claude's MEMORY.md.
+func isDerivedIndex(m memoryfs.Memory) bool {
+	return m.Class == provider.ClassDerivedIndex
 }
 
 // fuzzyMatches reports whether query is a case-insensitive subsequence of

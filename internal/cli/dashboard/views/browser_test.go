@@ -1668,6 +1668,59 @@ func TestBrowserIgnoresInsightsDataMsg(t *testing.T) {
 	}
 }
 
+// TestBrowserIndexMemorySortsFirst pins AT-5: within each provider group the
+// derived-index memory (MEMORY.md, provider.ClassDerivedIndex) sorts ahead of
+// every fact memory, in BOTH the recency and the name order o toggles between,
+// so it is always the default-selected first memory to open. The fixture buries
+// the index under either order without the fix — its ModTime is the OLDEST in
+// its group (recency would sink it) and its name sorts after a sibling (name
+// order would sink it) — and gives both providers an index so grouping (not a
+// single global pin) is what the ordering respects. A filter that excludes the
+// index simply yields the matching fact rows: no crash, nothing synthetic.
+func TestBrowserIndexMemorySortsFirst(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/alpha.md", Name: "alpha", Class: provider.ClassFact, ModTime: base.Add(2 * time.Hour)},
+		{Provider: "claude", RepoPath: "claude/zulu.md", Name: "zulu", Class: provider.ClassFact, ModTime: base.Add(time.Hour)},
+		{Provider: "claude", RepoPath: "claude/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex, ModTime: base},
+		{Provider: "codex", RepoPath: "codex/beta.md", Name: "beta", Class: provider.ClassFact, ModTime: base.Add(2 * time.Hour)},
+		{Provider: "codex", RepoPath: "codex/yankee.md", Name: "yankee", Class: provider.ClassFact, ModTime: base.Add(time.Hour)},
+		{Provider: "codex", RepoPath: "codex/MEMORY.md", Name: "MEMORY", Class: provider.ClassDerivedIndex, ModTime: base},
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+
+	assertIndexFirstPerGroup := func(t *testing.T, mode string) {
+		t.Helper()
+		lastProvider := ""
+		for row, memory := range browser.visibleRows() {
+			if memory.Provider == lastProvider {
+				continue
+			}
+			lastProvider = memory.Provider
+			if memory.Class != provider.ClassDerivedIndex {
+				t.Errorf("%s order: provider %q group starts at row %d with %q (class %v), want the derived index first",
+					mode, memory.Provider, row, memory.Name, memory.Class)
+			}
+		}
+	}
+
+	assertIndexFirstPerGroup(t, "recency") // orderByRecency defaults true
+	next, _ := browser.Update(key("o"))
+	browser = next.(*Browser)
+	assertIndexFirstPerGroup(t, "name")
+
+	browser.filter.SetValue("beta") // excludes both indexes
+	if rows := browser.visibleRows(); len(rows) != 1 || rows[0].Name != "beta" {
+		t.Fatalf("filter excluding the index: want exactly [beta], got %d rows", len(rows))
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}
