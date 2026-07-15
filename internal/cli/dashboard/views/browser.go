@@ -32,6 +32,11 @@ const previewMinWidth = 100
 // showing; the remainder goes to the preview, on the right (spec §3).
 const listPaneWidth = 46
 
+// mouseWheelScrollLines is how many preview lines one wheel notch scrolls — a
+// few lines per notch, the terminal-native step a side preview scrolls by (the
+// convention gh-dash and lazygit use for a wheel over a preview beside a list).
+const mouseWheelScrollLines = 3
+
 // descriptionTruncateAt bounds a row's rendered description so one
 // unusually long frontmatter line cannot blow out the list pane's width. It is
 // the coarse upper bound fitListRow applies ON TOP of the per-row budget, so a
@@ -424,6 +429,12 @@ func (b *Browser) Update(msg tea.Msg) (Screen, tea.Cmd) {
 		return b, nil
 	case tea.KeyPressMsg:
 		return b.updateKey(msg)
+	case tea.MouseWheelMsg:
+		b.updateMouseWheel(msg)
+		return b, nil
+	case tea.MouseClickMsg:
+		b.updateMouseClick(msg)
+		return b, nil
 	}
 	return b, nil
 }
@@ -542,6 +553,18 @@ func (b *Browser) Selected() (memoryfs.Memory, bool) {
 // root-reaches-the-concrete-type seam as Selected.
 func (b *Browser) Units() []api.UnitInfo {
 	return b.deps.Units
+}
+
+// WantsMouse reports whether the browser currently wants mouse reporting turned
+// on — true exactly while a preview pane is on screen, so the wheel can scroll it
+// and a click can focus it (spec §3). It reflects the LAST View: previewShown is
+// set during render, which is precisely when the root reads this — the root calls
+// top.View before it builds the tea.View whose MouseMode this gates, so the flag
+// and the frame it scopes always describe the same render. The same
+// root-reaches-the-concrete-type seam as Selected/Units, not part of the Screen
+// interface.
+func (b *Browser) WantsMouse() bool {
+	return b.previewShown
 }
 
 // selectedRequest builds the Cmd that emits wrap's flow-request message for
@@ -679,6 +702,79 @@ func (b *Browser) moveCursor(key string) {
 		if b.cursor < rows-1 {
 			b.cursor++
 		}
+	}
+}
+
+// overPreview reports whether column x falls in the preview pane. Column geometry
+// mirrors View: the list occupies [0, listPaneWidth) and the preview begins after
+// the two-space gap at listPaneWidth+2. Both the root and the browser share an
+// X-origin of 0 — the root joins its own chrome vertically, adding no horizontal
+// offset — so a raw event column routes with no absolute offset. Gated on
+// previewShown so a column in the preview band while no pane is drawn (narrow
+// width, or the deleted list) reads as over the list, never a phantom pane.
+func (b *Browser) overPreview(x int) bool {
+	return b.previewShown && x >= listPaneWidth+2
+}
+
+// updateMouseWheel routes a wheel notch by the column it happened over. Over the
+// preview it hover-scrolls the pane a few lines straight on the viewport —
+// bypassing the focus keymap, so it works whether or not the pane holds focus,
+// and deliberately never changing focus: wheel is a hover affordance, only a
+// click focuses (the terminal-native "scroll what is under the pointer"). Over
+// the list it nudges the list cursor one row, exactly as j/k do.
+func (b *Browser) updateMouseWheel(msg tea.MouseWheelMsg) {
+	// Inert outside the normal body — the filter input and the deleted list own
+	// their own keys and cursor, the two modes updateKey itself bails to before
+	// the list/preview. A stale previewShown from the last normal render must not
+	// let a wheel scroll the hidden preview or leak the memory-list cursor.
+	if b.filtering || b.showDeleted {
+		return
+	}
+	mouse := msg.Mouse()
+	if b.overPreview(mouse.X) {
+		switch mouse.Button {
+		case tea.MouseWheelDown:
+			b.previewViewport.ScrollDown(mouseWheelScrollLines)
+		case tea.MouseWheelUp:
+			b.previewViewport.ScrollUp(mouseWheelScrollLines)
+		}
+		return
+	}
+	switch mouse.Button {
+	case tea.MouseWheelDown:
+		b.moveCursor("down")
+	case tea.MouseWheelUp:
+		b.moveCursor("up")
+	}
+}
+
+// updateMouseClick handles a mouse button click. Only a left-click matters, and
+// only to move focus between the two panes: a click on the preview focuses it, a
+// click on the list returns focus there. The two arms mirror Task 2's focus
+// primitives rather than a bare `previewFocused = overPreview(x)` assignment — on
+// a click-to-blur that bare form would strand the lazily-installed focused keymap
+// and break the invariant that leaving focus restores the unfocused keymap (so
+// j/k drive the list again).
+//
+// Click does NOT select a specific list row: the browser is composed by the root
+// and never learns its absolute Y origin, so mapping a click to the memory on
+// that row would need a new root->screen offset seam. Left as a follow-up rather
+// than faked — a wrong row would select the wrong memory to open/edit/delete.
+func (b *Browser) updateMouseClick(msg tea.MouseClickMsg) {
+	// Inert outside the normal body, for the same reason as the wheel: the filter
+	// input and the deleted list own their own keys, so a click must not reach in
+	// to focus a preview pane the reader cannot act on there.
+	if b.filtering || b.showDeleted {
+		return
+	}
+	mouse := msg.Mouse()
+	if mouse.Button != tea.MouseLeft {
+		return
+	}
+	if b.overPreview(mouse.X) {
+		b.previewFocused = true // like Tab: a pure flip; the focused keymap installs lazily on the next focused key
+	} else {
+		b.blurPreview() // like Esc: clears focus AND restores the unfocused keymap (Task 2's blur invariant)
 	}
 }
 

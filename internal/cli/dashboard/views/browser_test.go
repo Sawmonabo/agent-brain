@@ -2140,6 +2140,214 @@ func TestBrowserPreviewFocusClearsOnModeChange(t *testing.T) {
 	})
 }
 
+// TestBrowserWantsMouseReflectsPreview pins WantsMouse to the preview pane's
+// on-screen state: true exactly while a preview is drawn (the wide render), and
+// false once a narrow width has dropped it. The root reads this AFTER the
+// browser's View has run, to gate the frame's MouseMode, so it must reflect the
+// last render's previewShown rather than any width the browser might recompute
+// on its own.
+func TestBrowserWantsMouseReflectsPreview(t *testing.T) {
+	t.Parallel()
+	browser := longBodyBrowser(t)
+	if browser.WantsMouse() {
+		t.Fatal("WantsMouse true before any render; no preview pane has been drawn yet")
+	}
+	_ = browser.View(120, 30) // wide: draws the preview split
+	if !browser.WantsMouse() {
+		t.Error("WantsMouse false after a wide render that drew the preview pane")
+	}
+	_ = browser.View(80, 30) // narrow: below previewMinWidth, so no preview pane
+	if browser.WantsMouse() {
+		t.Error("WantsMouse true after a narrow render that drew no preview pane")
+	}
+}
+
+// previewColumn is an X coordinate safely inside the preview pane (past the list
+// pane and its two-space gap), and listColumn one safely inside the list pane —
+// the column geometry the mouse handlers route on (overPreview).
+const (
+	previewColumn = listPaneWidth + 2 + 5
+	listColumn    = 5
+)
+
+// TestBrowserWheelScrollsPreview pins the terminal-native hover-scroll: a wheel
+// notch over the preview column scrolls the pane a few lines — down then back up
+// — WITHOUT moving the list cursor and WITHOUT changing focus. Wheel is a
+// hover affordance (like claude-code's own preview), so only a click may focus;
+// the cursor- and focus-unchanged assertions are the load-bearing half.
+func TestBrowserWheelScrollsPreview(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	browser := longBodyBrowser(t)
+	_ = browser.View(width, height) // render so previewShown is set and the pane is live
+	if browser.previewViewport.YOffset() != 0 {
+		t.Fatalf("setup: preview not at its top; YOffset = %d", browser.previewViewport.YOffset())
+	}
+
+	next, _ := browser.Update(tea.MouseWheelMsg{X: previewColumn, Button: tea.MouseWheelDown})
+	browser = next.(*Browser)
+	scrolled := browser.previewViewport.YOffset()
+	if scrolled == 0 {
+		t.Error("wheel-down over the preview did not scroll it (YOffset still 0)")
+	}
+	if browser.cursor != 0 {
+		t.Errorf("wheel over the preview moved the list cursor to %d; it must scroll only the preview", browser.cursor)
+	}
+	if browser.previewFocused {
+		t.Error("wheel over the preview focused it; only a click may change focus")
+	}
+
+	next, _ = browser.Update(tea.MouseWheelMsg{X: previewColumn, Button: tea.MouseWheelUp})
+	browser = next.(*Browser)
+	if back := browser.previewViewport.YOffset(); back >= scrolled {
+		t.Errorf("wheel-up did not scroll the preview back up; YOffset went %d -> %d", scrolled, back)
+	}
+}
+
+// TestBrowserWheelOverListMovesCursor pins the other half of the wheel routing:
+// a notch over the list column moves the list cursor one row per notch (down
+// then back up), the same nudge j/k give it. The two-row fixture makes the move
+// observable.
+func TestBrowserWheelOverListMovesCursor(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	browser := focusPreviewBrowser(t) // two rows, so the cursor can actually move
+	_ = browser.View(width, height)
+	if browser.cursor != 0 {
+		t.Fatalf("setup: cursor = %d, want 0", browser.cursor)
+	}
+
+	next, _ := browser.Update(tea.MouseWheelMsg{X: listColumn, Button: tea.MouseWheelDown})
+	browser = next.(*Browser)
+	if browser.cursor != 1 {
+		t.Errorf("wheel-down over the list column moved cursor to %d, want 1", browser.cursor)
+	}
+
+	next, _ = browser.Update(tea.MouseWheelMsg{X: listColumn, Button: tea.MouseWheelUp})
+	browser = next.(*Browser)
+	if browser.cursor != 0 {
+		t.Errorf("wheel-up over the list column moved cursor to %d, want 0", browser.cursor)
+	}
+}
+
+// TestBrowserClickFocusesPreview pins click-to-focus: a left-click in the
+// preview column focuses the pane (so the full scroll keymap then drives it),
+// the mouse counterpart of Tab.
+func TestBrowserClickFocusesPreview(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	browser := focusPreviewBrowser(t)
+	_ = browser.View(width, height) // render so the preview is on screen
+	if browser.previewFocused {
+		t.Fatal("setup: preview already focused before any click")
+	}
+
+	next, _ := browser.Update(tea.MouseClickMsg{X: previewColumn, Button: tea.MouseLeft})
+	browser = next.(*Browser)
+	if !browser.previewFocused {
+		t.Error("left-click in the preview column did not focus the preview")
+	}
+}
+
+// TestBrowserClickListBlursAndRestoresKeymap pins the click-to-blur invariant
+// (the keymap-state consistency Task 2's blur established): a left-click on the
+// list column must not just flip previewFocused off but also restore the
+// unfocused preview keymap, exactly as blurPreview does. Otherwise the focused
+// keymap — lazily installed on the first focused keystroke — outlives the focus
+// it belonged to. The setup deliberately installs that focused keymap first
+// (tab, then a focused key), so a bare `previewFocused = overPreview(x)` blur
+// would leave KeyMap.Down still bound to the pane and fail the keymap assertion.
+func TestBrowserClickListBlursAndRestoresKeymap(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+	browser := focusPreviewBrowser(t)
+	_ = browser.View(width, height)
+
+	next, _ := browser.Update(key("tab")) // focus the preview
+	browser = next.(*Browser)
+	next, _ = browser.Update(key("j")) // a focused keystroke lazily installs the focused keymap
+	browser = next.(*Browser)
+	if len(browser.previewViewport.KeyMap.Down.Keys()) == 0 {
+		t.Fatal("setup: focused keymap not installed (Down binds no keys); the blur pin would be vacuous")
+	}
+
+	next, _ = browser.Update(tea.MouseClickMsg{X: listColumn, Button: tea.MouseLeft})
+	browser = next.(*Browser)
+	if browser.previewFocused {
+		t.Error("left-click in the list column did not blur the preview")
+	}
+	if got := browser.previewViewport.KeyMap.Down.Keys(); len(got) != 0 {
+		t.Errorf("click-to-blur left the focused keymap installed (Down still binds %v); blur must restore the unfocused keymap so j/k drive the list", got)
+	}
+}
+
+// TestBrowserMouseInertOutsideNormalBody pins that the wheel and click are a
+// no-op while the filter input or the deleted-recovery list owns the browser —
+// the two modes updateKey itself bails to before the normal body. Without the
+// guard a stale previewShown (set by the last normal render) would let a wheel
+// scroll the hidden preview or leak the list cursor, and a click would focus a
+// pane the reader cannot act on.
+func TestBrowserMouseInertOutsideNormalBody(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 30
+
+	t.Run("wheel inert while filtering", func(t *testing.T) {
+		t.Parallel()
+		browser := longBodyBrowser(t)
+		_ = browser.View(width, height)
+		next, _ := browser.Update(key("/")) // enter filter mode
+		browser = next.(*Browser)
+		before := browser.previewViewport.YOffset()
+		next, _ = browser.Update(tea.MouseWheelMsg{X: previewColumn, Button: tea.MouseWheelDown})
+		browser = next.(*Browser)
+		if after := browser.previewViewport.YOffset(); after != before {
+			t.Errorf("wheel scrolled the preview while filtering (YOffset %d -> %d); mouse must be inert there", before, after)
+		}
+	})
+
+	t.Run("click inert while filtering", func(t *testing.T) {
+		t.Parallel()
+		browser := longBodyBrowser(t)
+		_ = browser.View(width, height)
+		next, _ := browser.Update(key("/"))
+		browser = next.(*Browser)
+		next, _ = browser.Update(tea.MouseClickMsg{X: previewColumn, Button: tea.MouseLeft})
+		browser = next.(*Browser)
+		if browser.previewFocused {
+			t.Error("click focused the preview while filtering; mouse must be inert there")
+		}
+	})
+
+	t.Run("wheel inert while showing deleted", func(t *testing.T) {
+		t.Parallel()
+		browser := focusPreviewBrowser(t) // two rows, so a leaked cursor move would be observable
+		_ = browser.View(width, height)
+		next, _ := browser.Update(key("x")) // enter deleted-recovery mode
+		browser = next.(*Browser)
+		if !browser.showDeleted {
+			t.Fatal("setup: x did not enter deleted-recovery mode")
+		}
+		next, _ = browser.Update(tea.MouseWheelMsg{X: listColumn, Button: tea.MouseWheelDown})
+		browser = next.(*Browser)
+		if browser.cursor != 0 {
+			t.Errorf("wheel moved the memory-list cursor to %d while the deleted list was showing; mouse must be inert there", browser.cursor)
+		}
+	})
+
+	t.Run("click inert while showing deleted", func(t *testing.T) {
+		t.Parallel()
+		browser := focusPreviewBrowser(t)
+		_ = browser.View(width, height)
+		next, _ := browser.Update(key("x"))
+		browser = next.(*Browser)
+		next, _ = browser.Update(tea.MouseClickMsg{X: previewColumn, Button: tea.MouseLeft})
+		browser = next.(*Browser)
+		if browser.previewFocused {
+			t.Error("click focused the preview while the deleted list was showing; mouse must be inert there")
+		}
+	})
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}

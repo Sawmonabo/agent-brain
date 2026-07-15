@@ -962,6 +962,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updatePhase = updateInstalled
 		return m, nil
 
+	case tea.MouseWheelMsg, tea.MouseClickMsg:
+		// Mouse reporting is enabled only while a browser preview is on screen
+		// (View's MouseMode gate), so a mouse event means that browser is the stack
+		// top; forward it there. With no stack — the mode was never on, but a stray
+		// event could still arrive — it is a harmless no-op rather than something
+		// the tabs try to interpret (native selection stays theirs).
+		if _, ok := m.stackTop(); ok {
+			return m.forwardToStack(msg)
+		}
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -2029,6 +2040,11 @@ func replayKey(r rune) tea.KeyPressMsg {
 // scrolls the terminal's scrollback.
 func (m Model) View() tea.View {
 	var body string
+	// Armed below for exactly one surface — a browser whose preview pane is on
+	// screen — and left None for every daemon-down/help/palette/search-overlay
+	// frame and every tab and non-browser screen, so native terminal selection
+	// stays intact everywhere the wheel/click are not wanted (spec §3).
+	mouseWanted := false
 	switch {
 	case m.daemonDown:
 		body = m.daemonDownView()
@@ -2060,6 +2076,13 @@ func (m Model) View() tea.View {
 			// but a regressed one must still never grow the frame past the
 			// terminal and shove the footer off the alt-screen.
 			screen := fitHeight(top.View(m.width, m.stackBodyHeight()), m.stackBodyHeight())
+			// top.View just ran, so a browser's previewShown — and thus WantsMouse —
+			// now reflects this exact frame: read it here, before the tea.View is
+			// built, to arm the mouse only while the preview pane the wheel/click act
+			// on is actually drawn.
+			if browser, isBrowser := top.(*views.Browser); isBrowser && browser.WantsMouse() {
+				mouseWanted = true
+			}
 			body = strings.Join([]string{header, m.breadcrumb(), screen, m.footer()}, "\n\n")
 		} else {
 			tabBody := fitHeight(m.activeBody(), m.tabBodyHeight())
@@ -2069,6 +2092,13 @@ func (m Model) View() tea.View {
 	view := tea.NewView(body)
 	view.AltScreen = true
 	view.WindowTitle = "agent-brain dashboard"
+	if mouseWanted {
+		// Cell-motion mode delivers wheel + click; the renderer diffs this back to
+		// None on the first frame that leaves the preview (and on close), so leaving
+		// the browser — or quitting mid-preview — restores native selection with no
+		// explicit teardown here.
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 	return view
 }
 

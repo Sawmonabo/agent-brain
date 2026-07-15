@@ -4002,3 +4002,130 @@ func TestDoctorScanNotRefusedWhileQuiesced(t *testing.T) {
 		t.Fatalf("scan ran %d times while quiesced, want 1", scanCalls)
 	}
 }
+
+// mouseBrowser builds a pushed *views.Browser with two memories, so a forwarded
+// wheel over the list column has a row to move the cursor to — a selection change
+// the root test can observe through the exported Selected() (the browser's scroll
+// offset and focus flag are unexported, out of this package's reach). At a wide
+// render its preview pane shows, which is what arms the root's MouseMode gate.
+// Newest-first ordering puts claude/a.md on row 0 and claude/b.md on row 1.
+func mouseBrowser(t *testing.T) *views.Browser {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/a.md", Name: "aaa", Class: provider.ClassFact, ModTime: base.Add(time.Hour)}, // newer -> row 0
+		{Provider: "claude", RepoPath: "claude/b.md", Name: "bbb", Class: provider.ClassFact, ModTime: base},                // row 1
+	}
+	return views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "body\n", nil },
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+}
+
+// TestRootForwardsMouseToStack pins that a mouse message reaching the root Update
+// is forwarded to the pushed screen: a wheel over the list column, routed through
+// the ROOT, moves the browser's cursor (an observable selection change). Mouse
+// reporting is enabled only while that browser's preview is on screen (View's
+// MouseMode gate), so the stack top is exactly the screen that wants the event.
+func TestRootForwardsMouseToStack(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+
+	// Render once so the browser's previewShown reflects this frame — the browser
+	// reads it to route the wheel, and the root reads it to gate MouseMode.
+	_ = m.View()
+	browser := m.stack[0].(*views.Browser)
+	if !browser.WantsMouse() {
+		t.Fatal("setup: preview not shown after a wide render; the wheel routing would be inert")
+	}
+	before, _ := browser.Selected()
+
+	// X=10 is inside the list pane (the left 46 columns), so the wheel nudges the
+	// list cursor — reached only if the root forwards the event to the stack.
+	next, _ := m.Update(tea.MouseWheelMsg{X: 10, Button: tea.MouseWheelDown})
+	m = next.(Model)
+	after, _ := m.stack[0].(*views.Browser).Selected()
+	if after.RepoPath == before.RepoPath {
+		t.Errorf("a wheel routed through the root left the selection on %q; the root did not forward it to the stack", before.RepoPath)
+	}
+}
+
+// TestRootMouseNoOpWithoutStack pins the brief's named edge case: a mouse message
+// arriving with nothing on the stack (mouse reporting was never enabled there,
+// but a stray event could still land) is a harmless no-op — no panic, no Cmd, no
+// stack change.
+func TestRootMouseNoOpWithoutStack(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	if len(m.stack) != 0 {
+		t.Fatalf("setup: stack depth = %d, want 0", len(m.stack))
+	}
+
+	next, cmd := m.Update(tea.MouseWheelMsg{X: 60, Button: tea.MouseWheelDown})
+	m = next.(Model)
+	if cmd != nil {
+		t.Error("a mouse message with no stack produced a Cmd; want none")
+	}
+	if len(m.stack) != 0 {
+		t.Errorf("a mouse message with no stack changed the stack depth to %d, want 0", len(m.stack))
+	}
+}
+
+// TestRootViewMouseModeGate pins that the root frame arms cell-motion mouse mode
+// for exactly one surface — a browser whose preview pane is on screen — and
+// leaves it None everywhere else, so native terminal selection survives on every
+// other screen, tab, and overlay. None is the zero value, so a regression that
+// drops the gate reads as "mouse never on."
+func TestRootViewMouseModeGate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		width int
+		setup func(t *testing.T, m Model) Model
+		want  tea.MouseMode
+	}{
+		{
+			name:  "browser preview on top",
+			width: 120,
+			setup: func(t *testing.T, m Model) Model { return m.pushScreen(mouseBrowser(t)) },
+			want:  tea.MouseModeCellMotion,
+		},
+		{
+			name:  "narrow browser shows no preview",
+			width: 80, // below previewMinWidth: the list owns the width, no preview pane
+			setup: func(t *testing.T, m Model) Model { return m.pushScreen(mouseBrowser(t)) },
+			want:  tea.MouseModeNone,
+		},
+		{
+			name:  "bare tab, no stack",
+			width: 120,
+			setup: func(_ *testing.T, m Model) Model { return m },
+			want:  tea.MouseModeNone,
+		},
+		{
+			name:  "help open over a browser",
+			width: 120,
+			setup: func(t *testing.T, m Model) Model {
+				m = m.pushScreen(mouseBrowser(t))
+				m.helpOpen = true // the overlay owns the frame; the browser under it must not arm the mouse
+				return m
+			},
+			want: tea.MouseModeNone,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: tc.width, Height: 40})
+			m = tc.setup(t, m)
+			if got := m.View().MouseMode; got != tc.want {
+				t.Errorf("View().MouseMode = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
