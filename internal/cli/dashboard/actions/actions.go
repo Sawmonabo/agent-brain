@@ -159,7 +159,7 @@ var registry = []Action{
 	// matched directly by Browser.updateKey like read/history/show-deleted: no
 	// root runner, never Mutates.
 	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
-	// scroll-preview reaches the preview pane's own viewport (AT-6): ctrl+d/u
+	// scroll-preview reaches the preview pane's own viewport: ctrl+d/u
 	// half-page and pgup/pgdown full-page, the only keys that scroll a long
 	// memory's preview — j/k stay the LIST cursor, unlike the reading view where
 	// they scroll its full-screen viewport. Matched by the pane's own restricted

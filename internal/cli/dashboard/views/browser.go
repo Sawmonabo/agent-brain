@@ -145,7 +145,7 @@ type Browser struct {
 	// when nothing about the selection has changed. On a cache hit the viewport
 	// already holds the render, so nothing re-renders.
 	preview previewCache
-	// previewViewport is the scrollable preview pane (AT-6): a long memory's
+	// previewViewport is the scrollable preview pane: a long memory's
 	// body scrolls WITHIN this window instead of growing the frame past its
 	// height budget and shoving the root's footer off the terminal. It mirrors
 	// the reading view's viewport (reading.go), with a restricted keymap
@@ -743,7 +743,7 @@ func (b *Browser) visibleRows() []memoryfs.Memory {
 		}
 		// Within a provider the derived index (claude's MEMORY.md, etc.) always
 		// sorts first: it is the map of the group, so it is the memory to open
-		// first (AT-5), and cursor 0 then makes it the default selection. Keyed
+		// first, and cursor 0 then makes it the default selection. Keyed
 		// on the class memoryfs already tagged it via the provider's own pattern
 		// table — never a name match in the view — so it stays on top under both
 		// order modes o toggles between (recency would sink an older index, name
@@ -762,7 +762,7 @@ func (b *Browser) visibleRows() []memoryfs.Memory {
 // isDerivedIndex reports whether m is a provider's derived index file
 // (MEMORY.md and its kin), classified as such by memoryfs at enumeration
 // through the provider's own pattern table (spec §6). visibleRows sorts these
-// first within their provider group (AT-5) off this class, never a name match,
+// first within their provider group off this class, never a name match,
 // so the rule holds for any provider whose table declares an index — not just
 // claude's MEMORY.md.
 func isDerivedIndex(m memoryfs.Memory) bool {
@@ -846,7 +846,7 @@ func (b *Browser) View(width, height int) string {
 
 	// Preview split: the list is confined to listPaneWidth, so rows are fit to
 	// that — the MaxWidth pane then has nothing to wrap. The preview is a
-	// height-bounded scrollable viewport (AT-6), so a long body scrolls within
+	// height-bounded scrollable viewport, so a long body scrolls within
 	// the pane instead of growing the JoinHorizontal block past the height
 	// budget and shoving the root's footer off the terminal.
 	b.previewShown = true
@@ -1030,7 +1030,7 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 }
 
 // renderPreviewPane renders the selected memory into the height-bounded,
-// scrollable preview viewport (AT-6) and returns the pane's lines. A body that
+// scrollable preview viewport and returns the pane's lines. A body that
 // fits sizes the viewport to its own content, so a short preview lets the list
 // drive the joined height and an empty one adds nothing; a body taller than the
 // pane is bounded to the height budget and scrolls in place, its bottom line
@@ -1121,7 +1121,7 @@ func (b *Browser) syncPreview(selected memoryfs.Memory, width int) {
 }
 
 // previewScrollHint is the one-line overflow affordance rendered at the bottom
-// of the preview pane when the body is taller than the pane (AT-6). The reading
+// of the preview pane when the body is taller than the pane. The reading
 // view needs none — its viewport owns the whole screen, so its cut edge IS the
 // screen edge — but the browser's preview is one column of a split, with content
 // beside and below it and no other signal that text continues past the fold. It

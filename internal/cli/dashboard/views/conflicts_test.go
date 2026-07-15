@@ -136,8 +136,8 @@ func TestConflictsViewSetReclampsCursor(t *testing.T) {
 	}
 }
 
-// TestConflictsViewWindowsAroundCursor pins the height window (the same defect
-// AT-6 fixed in the browser preview, here in the Conflicts tab): a log longer
+// TestConflictsViewWindowsAroundCursor pins the height window (the same class the
+// browser preview fix bounds, here in the Conflicts tab): a log longer
 // than the tab is tall must keep the selected row on screen AND never render
 // more lines than the height budget. Unwindowed the view emits every capped
 // record from the top, so at height 12 a 50-row log overflows to ~53 lines and

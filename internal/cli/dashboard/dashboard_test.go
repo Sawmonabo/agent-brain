@@ -2361,7 +2361,7 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 	m, _ = step(m, views.PushScreenMsg{Screen: browser})
 
 	got := plain(m.footer())
-	// "ctrl+d/u scroll" is AT-6's honesty pin: the preview pane's scroll keys
+	// "ctrl+d/u scroll" is the preview-scroll honesty pin: the preview pane's scroll keys
 	// are non-obvious (j/k stay the list cursor), so the footer must name them
 	// or the rest of a long memory looks unreachable. It rides the same
 	// registry→footer wiring as the other browser rows, so its absence would

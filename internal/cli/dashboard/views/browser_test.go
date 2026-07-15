@@ -1668,7 +1668,7 @@ func TestBrowserIgnoresInsightsDataMsg(t *testing.T) {
 	}
 }
 
-// TestBrowserIndexMemorySortsFirst pins AT-5: within each provider group the
+// TestBrowserIndexMemorySortsFirst pins the index-first order: within each provider group the
 // derived-index memory (MEMORY.md, provider.ClassDerivedIndex) sorts ahead of
 // every fact memory, in BOTH the recency and the name order o toggles between,
 // so it is always the default-selected first memory to open. The fixture buries
@@ -1758,7 +1758,7 @@ func longBodyBrowser(t *testing.T) *Browser {
 	})
 }
 
-// TestBrowserPreviewHeightBounded pins AT-6's core defect: at a preview-split
+// TestBrowserPreviewHeightBounded pins the pane's core height contract: at a preview-split
 // width, a long-body selection must not push the frame past its height budget
 // (in the real hub that overflow shoves the root's footer — the "option keys" —
 // off the terminal and hides the text past the fold). The frame must fit height
