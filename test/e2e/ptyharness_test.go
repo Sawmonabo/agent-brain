@@ -745,28 +745,29 @@ func assertTeardownTailOrder(t *testing.T, raw string) {
 // escape a 1007 terminal synthesizes per wheel notch — until predicate holds
 // over the rendered screen, then returns that screen. It sends one notch every
 // few polls rather than a fixed count up front, but NOT because early notches
-// are dropped — they are not. A root-cause investigation
-// (.superpowers/sdd/probe-investigation.md) proved every notch scrolls the
-// viewport by exactly one line from the very first: the wire reacts with the
-// identical DECSTBM-plus-LF-at-bottom-margin burst on notch 1 as on every
-// later one (bubbletea v2's renderer scroll-optimization), and vt10x applies
-// each burst faithfully (byte-identical to a live replay). What actually
-// varies is RENDER GEOMETRY, not input delivery: glamour prepends an "# H1"
-// heading plus a blank line before the long memory's fenced body
-// (seedMemories, above, builds that exact string), and the reading view's own
-// View adds two more chrome lines on top of that (views/reading.go's own
-// chromeLines) — so line-001 sits several rows below the viewport's top edge
-// and survives a few notches before the document has scrolled far enough to
-// carry it off-screen. That threshold shifts with heading size, chrome, and
-// terminal height, none of which this helper's caller should have to predict;
-// the contract under test is "wheel bytes scroll the reading view", not "the
-// Nth byte is the one that clears line-001", so this drives to the observable
-// outcome instead of assuming a fixed notch count lands. The per-notch,
-// one-line translation itself is already pinned at the unit layer, with no
-// PTY involved (views/reading_test.go's TestReadingViewportScroll: one "j"
-// advances the body by exactly one line). Synchronization is the predicate
-// poll on the same pollInterval cadence as waitScreen; the notch spacing is
-// pacing, not a synchronization sleep.
+// are dropped — they are not. ADR 21 (docs/decisions/21-adr-alternate-scroll.md)'s
+// "Automated wire-contract coverage" amendment persists this finding: every
+// notch scrolls the viewport by exactly one line from the very first — the
+// wire reacts with the identical DECSTBM-plus-LF-at-bottom-margin burst on
+// notch 1 as on every later one (bubbletea v2's renderer scroll-optimization),
+// and vt10x applies each burst faithfully (byte-identical to a live replay).
+// What actually varies is RENDER GEOMETRY, not input delivery: glamour
+// prepends an "# H1" heading plus a blank line before the long memory's
+// fenced body (seedMemories, above, builds that exact string), and the
+// reading view's own View adds two more chrome lines on top of that
+// (views/reading.go's own chromeLines) — so line-001 sits several rows below
+// the viewport's top edge and survives a few notches before the document has
+// scrolled far enough to carry it off-screen. That threshold shifts with
+// heading size, chrome, and terminal height, none of which this helper's
+// caller should have to predict; the contract under test is "wheel bytes
+// scroll the reading view", not "the Nth byte is the one that clears
+// line-001", so this drives to the observable outcome instead of assuming a
+// fixed notch count lands. The per-notch, one-line translation itself is
+// already pinned at the unit layer, with no PTY involved
+// (views/reading_test.go's TestReadingViewportScroll: one "j" advances the
+// body by exactly one line). Synchronization is the predicate poll on the
+// same pollInterval cadence as waitScreen; the notch spacing is pacing, not a
+// synchronization sleep.
 func (s *hubSession) scrollByWheel(downByte string, predicate func(screen string) bool) string {
 	s.t.Helper()
 	// One notch every pollsPerNotch polls (~50ms): far enough apart that a warm

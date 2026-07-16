@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // openBrowser takes the hub from its opening Projects tab into the seeded
@@ -117,17 +118,28 @@ func TestPTYHubArmsAlternateScrollInOrder(t *testing.T) {
 // fence renders each on its own row and "the top line advanced" is a legible
 // screen fact. Each subtest pins the contract at two grains:
 //
-//  1. A single-notch pin (below) proves ONE notch produces a genuine one-line
-//     scroll, via the POSITIVE signal that scroll produces — a previously
-//     off-screen line appearing at the viewport's new bottom edge — never via
-//     line-001's absence. line-001 alone is the wrong predicate for one notch:
-//     a probe-investigation (.superpowers/sdd/probe-investigation.md) proved it
-//     stays on screen for several notches purely from render geometry (glamour's
-//     "# H1" heading plus a blank line ahead of the fence, plus the reading
-//     view's own two chrome lines — views/reading.go's own chromeLines — put
-//     line-001 several rows below the viewport's top edge), NOT because any
-//     notch was dropped; every notch reacts on the wire identically from the
-//     first.
+//  1. A single-notch pin (below) proves ONE notch reveals EXACTLY one new
+//     line, not merely "at least one": send ONE notch, wait for the
+//     previously off-screen line one past everything CURRENTLY visible to
+//     appear (the POSITIVE signal a scroll produces — never line-001's
+//     absence, see below), then, on that SAME snapshot, assert the line TWO
+//     past pre-notch's max is still absent. That negative half is what earns
+//     "exactly one": without it, a wheel notch that decoded into two KeyDown
+//     events would satisfy the positive half just as well, and the unit-layer
+//     magnitude pin can't catch that either — it pins the translation of a
+//     single KeyDown, not how many KeyDowns arrive per physical notch. The
+//     long memory is 200 lines against a viewport showing roughly two dozen,
+//     so the "two past max" line always names a real line still in the
+//     document body; its absence is a fact about this notch, never a false
+//     pass from running off the document's end. line-001's own absence is
+//     the wrong predicate for one notch: ADR 21
+//     (docs/decisions/21-adr-alternate-scroll.md)'s "Automated wire-contract
+//     coverage" amendment persists the finding that it stays on screen for
+//     several notches purely from render geometry (glamour's "# H1" heading
+//     plus a blank line ahead of the fence, plus the reading view's own two
+//     chrome lines — views/reading.go's own chromeLines — put line-001
+//     several rows below the viewport's top edge), NOT because any notch was
+//     dropped; every notch reacts on the wire identically from the first.
 //  2. scrollByWheel then drives to a deeper-scroll outcome (line-001 gone,
 //     line-004 present) with no fixed notch count assumed, because exactly how
 //     many notches clear line-001 is a function of that same render geometry —
@@ -148,19 +160,49 @@ func TestPTYWheelBytesScrollReadingView(t *testing.T) {
 			t.Parallel()
 			s := startHubSession(t, defaultSessionConfig())
 			openLongMemory(t, s)
-			// Precondition: the fresh reading view is showing the document top.
-			preNotch := s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
+			// Precondition: the fresh reading view is showing the document
+			// top, settled — not merely the first frame in which line-001
+			// happens to appear (waitStableMaxVisibleLineNumber's own doc has
+			// the full reasoning: a mid-paint read here would under-read the
+			// max below and make the pin measure the paint, not the notch).
+			preNotch := waitStableMaxVisibleLineNumber(t, s)
 
 			// Single-notch pin: send exactly ONE notch, then wait for the
 			// previously off-screen line one past everything CURRENTLY visible
 			// (derived from preNotch, not hardcoded — line-026 under today's
 			// 120x40 geometry, but this holds under any viewport height) to
-			// appear. That is the positive proof a single notch scrolls exactly
-			// one line; see the doc above for why line-001's absence is the
-			// wrong predicate at this grain.
-			revealed := fmt.Sprintf("line-%03d", maxVisibleLineNumber(preNotch)+1)
+			// appear. That is the positive proof a single notch scrolls AT
+			// LEAST one line; see the doc above for why line-001's absence is
+			// the wrong predicate at this grain.
+			maxVisibleBeforeNotch := maxVisibleLineNumber(preNotch)
+			revealed := fmt.Sprintf("line-%03d", maxVisibleBeforeNotch+1)
+			// secondNotchReveal is the line a SECOND notch would newly
+			// reveal. Asserting its absence right after the FIRST notch is
+			// the negative half that upgrades the pin from "at least one
+			// line" to "exactly one": a wheel notch that decoded into two
+			// KeyDown events would still satisfy `revealed` above, and the
+			// unit-layer magnitude pin (views/reading_test.go's
+			// TestReadingViewportScroll) can't catch that either, since it
+			// pins the translation of a single KeyDown, not how many
+			// KeyDowns arrive per physical notch. The document is 200 lines
+			// and the viewport shows roughly two dozen, so this line number
+			// always names a real line still in the body — its absence here
+			// is a fact about THIS notch, never a false pass from running
+			// past the document's end.
+			secondNotchReveal := fmt.Sprintf("line-%03d", maxVisibleBeforeNotch+2)
 			s.send(encoding.down)
-			s.waitScreen(func(screen string) bool { return strings.Contains(screen, revealed) })
+			// postNotch is the SAME mutex-consistent snapshot that satisfied
+			// the wait: readLoop (ptyharness_test.go) holds s.mu across both
+			// the raw-log append and the screen write, and waitScreen returns
+			// the grid it matched against rather than a fresh read, so this
+			// checks the identical frame the wait already proved contains
+			// `revealed` — never a later poll that could have scrolled
+			// further still.
+			postNotch := s.waitScreen(func(screen string) bool { return strings.Contains(screen, revealed) })
+			if strings.Contains(postNotch, secondNotchReveal) {
+				t.Errorf("one wheel notch revealed more than one line: both %s and %s present\nscreen:\n%s",
+					revealed, secondNotchReveal, postNotch)
+			}
 
 			s.scrollByWheel(encoding.down, func(screen string) bool {
 				return !strings.Contains(screen, "line-001") && strings.Contains(screen, "line-004")
@@ -185,6 +227,46 @@ func maxVisibleLineNumber(screen string) int {
 		}
 	}
 	return highest
+}
+
+// waitStableMaxVisibleLineNumber blocks until the reading view has painted
+// line-001, then further until maxVisibleLineNumber reads the SAME value on
+// two consecutive polls, returning the screen that confirmed the second read.
+// The single-notch pin (TestPTYWheelBytesScrollReadingView) derives its whole
+// predicate — which line a notch must reveal, and which line it must NOT —
+// from this snapshot, so the snapshot has to be the fully-painted frame, not
+// whichever chunk of it happened to have landed when line-001 first showed up.
+// readLoop (ptyharness_test.go) locks s.mu only per read chunk, so a poll can
+// land between two chunks of the SAME still-arriving frame and observe
+// line-001 alongside only a partial run of the lines below it. Deriving
+// `revealed` from that under-read screen would still make the pin pass — but
+// `revealed` appearing would then be timing the paint finishing, not the
+// notch that has not been sent yet: a silent degradation from measuring the
+// notch to measuring the render, one that would never surface as a test
+// FAILURE, only as a pin that quietly stopped proving what its comments
+// claim. Two consecutive equal reads is a quiet-frame gate consistent with
+// the no-bare-sleeps discipline: a screen still being painted keeps producing
+// larger values and never repeats, while a settled one trivially does. Polls
+// at the package's standard pollInterval cadence (ptyharness_test.go); this
+// is a predicate wait, never a bare sleep.
+func waitStableMaxVisibleLineNumber(t *testing.T, s *hubSession) string {
+	t.Helper()
+	screen := s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
+	previousMax := maxVisibleLineNumber(screen)
+	deadline := time.Now().Add(waitDeadline)
+	for {
+		time.Sleep(pollInterval)
+		screen = s.snapshotScreen()
+		currentMax := maxVisibleLineNumber(screen)
+		if currentMax == previousMax {
+			return screen
+		}
+		previousMax = currentMax
+		if time.Now().After(deadline) {
+			t.Fatalf("maxVisibleLineNumber never stabilized within %s (last read line-%03d)\nscreen:\n%s\nraw tail: %q",
+				waitDeadline, currentMax, screen, tail(s.snapshotRaw()))
+		}
+	}
 }
 
 // TestPTYClickBytesSelectBrowserRow proves an SGR mouse click selects the
