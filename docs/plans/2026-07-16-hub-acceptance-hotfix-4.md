@@ -148,6 +148,31 @@
 - [ ] **Step 3: Green + mutation** — drop the height bound: overflow test RED (root clamp would mask at the frame level, so assert on the tab body string, not the root frame). Restore.
 - [ ] **Step 4: Package run; commit** — `feat(dashboard): doctor and activity tabs scroll (viewport convention)`
 
+### Task 7: gh-auth staleness — continuous detection, hub attention state, one-key re-auth handoff
+
+**Why this task exists (verified live at the user's machine):** the memories checkout's remote is
+SSH (`git@github.com:Sawmonabo/agent-brain-memories.git`), so sync cycles never touch the gh
+OAuth token — an invalid token silently breaks ONLY the gh-dependent features: the update
+banner/self-update (ghx release calls), init/re-provisioning, and doctor's gh row. Today the
+user discovers an invalid token only by opening the Doctor tab; the update-check path fails
+silently (no banner, no error). GitHub's design makes silent re-mint IMPOSSIBLE — `gh auth
+login`/`gh auth refresh` are interactive device/browser flows, so no daemon may attempt one;
+what the product owes the user is instant loud detection and a one-keypress remediation.
+
+**Files:**
+- Modify: the update-check call path (P5 T18 seam — locate the periodic release check and its error handling; it is the natural detector cadence, no new timer), `internal/ghx` (failure classification: auth-invalid vs offline vs other — corpus includes the real stderr `The token in keyring is invalid` and `Failed to log in to github.com account`), `internal/cli/dashboard/dashboard.go` (persistent header/status attention segment per spec §2), the doctor tab's fix routing (T19 r/f/s machinery) + the terminal-handoff seam the $EDITOR flow uses
+- Test: ghx classification corpus tests; attention-state render pins; doctor-row handoff wiring (fake `gh` script on PATH, e2e `fakegh` precedent); registry shape rows if new bindings
+
+**Interfaces:**
+- Produces: an auth-attention state set when any gh call classifies as auth-invalid (sticky until a probe succeeds — never cleared by mere time passing); hub header renders it loudly (`gh auth invalid — Doctor tab: f re-authenticates`); doctor's fix action on the gh row hands the terminal to interactive `gh auth login -h github.com` (same suspend/resume seam as the editor handoff, including the 1007 re-assert on return — Task ADR 21 contract), re-probes on return, clears the attention state on success, honest failure toast otherwise.
+
+- [ ] **Step 1: Failing classification tests** — table over real gh stderr corpora: keyring-invalid and failed-login lines → auth-invalid; the existing offline signatures stay offline; unknown stays other. (Extend the phantom-seam fail-closed classifier idiom; never regex-match locale-dependent text without `LC_ALL=C` precedent.)
+- [ ] **Step 2: Failing surfacing test** — model with auth-attention set renders the header segment; cleared state does not; the segment survives frame recompute (sticky, not a TTL toast).
+- [ ] **Step 3: Implement detection** — classify at the shared ghx error seam so update-check, init-time calls, and doctor all feed the same state; the daemon/update path must NOT retry-storm on auth failures (respect the existing backoff).
+- [ ] **Step 4: Implement the handoff fix** — doctor gh row's `f` triggers the terminal handoff running `gh auth login -h github.com`; on return re-run the gh probe; success clears attention + ok toast, failure keeps state + failure toast naming the manual command. Wire the 1007 re-assert exactly like the editor return path.
+- [ ] **Step 5: Green + mutations** — (a) misroute auth-invalid to offline: classification RED; (b) drop the sticky render: surfacing RED; (c) fake-gh handoff test proves the child ran and the re-probe fired (marker file from the fake script). Restore all.
+- [ ] **Step 6: Package runs + commit** — `feat(dashboard): loud gh-auth attention state with one-key re-auth handoff`
+
 ---
 
 ## Verification (whole-branch, before merge)
@@ -162,6 +187,6 @@
 
 ## Explicitly recorded non-goals (with reasons — not silent deferrals)
 
-- gh re-authentication: environmental, user-side (`gh auth login -h github.com`) — doctor already diagnoses it precisely with the fix hint; nothing for the product to build.
+- Silent gh token re-mint: impossible by GitHub's design — the device/browser flow requires the human; the daemon never attempts one. Task 7 builds everything buildable around that constraint (instant detection, loud surfacing, one-key interactive handoff); the interactive mint itself stays the user's keypress.
 - Emulator-side CI jobs (Xvfb/xterm, Playwright/xterm.js) and lychee link CI: recurring-cost CI infrastructure testing third parties; queued as the explicit close-out housekeeping decision (board #26) for the user's go/no-go — surfaced, not silently dropped.
 - Scoped/partial mouse capture (capture clicks but allow native selection simultaneously): not expressible in the terminal protocol — capture is terminal-global; the toggle is the honest primitive.
