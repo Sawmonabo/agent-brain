@@ -1716,8 +1716,8 @@ func (s fixedHeightScreen) Title() string { return s.title }
 // overflowScreen is a HOSTILE views.Screen double: its View ignores the height
 // budget entirely and returns far more lines than any terminal, standing in for
 // a pushed screen that forgets — or regresses — its own height bound. The
-// root's fitHeight clamp is the backstop that must keep such a screen from
-// growing the frame past the terminal and shoving the footer off the
+// root's fitAndFillHeight clamp is the backstop that must keep such a screen
+// from growing the frame past the terminal and shoving the footer off the
 // alt-screen, which never scrolls.
 type overflowScreen struct{ lines int }
 
@@ -1733,7 +1733,7 @@ func (o overflowScreen) View(_, _ int) string {
 
 func (o overflowScreen) Title() string { return "hostile" }
 
-// TestRootClampsOverflowingPushedScreen pins the root height clamp (fitHeight):
+// TestRootClampsOverflowingPushedScreen pins the root height clamp (fitAndFillHeight):
 // a pushed screen whose View overflows its budget must not push the footer off
 // the alt-screen. Every per-screen fix bounds its own height, but this is the
 // defense-in-depth backstop for one that does not — the composed frame must
@@ -1767,6 +1767,130 @@ func TestRootClampsOverflowingPushedScreen(t *testing.T) {
 	if !strings.Contains(strings.Join(visible, "\n"), footer) {
 		t.Errorf("footer not visible within the %d-row terminal after clamping; frame:\n%s", height, frame)
 	}
+}
+
+// TestRootPadsShortPushedBodyToFillTerminalHeight extends the root height
+// invariant TestRootClampsOverflowingPushedScreen already pins for an
+// OVER-tall body to the opposite — and far more common — direction: a real
+// Browser previewing a short memory renders a body far shorter than its
+// stackBodyHeight budget (unlike fixedHeightScreen's deliberately exact
+// fill), and the composed frame must still reach the terminal's last row.
+// Before the fix, fitHeight only clamped — it never padded — so a short body
+// left the footer stranded mid-screen with blank rows beneath it: the
+// live-hub defect this task fixes (see the sibling test below for the
+// across-selections symptom itself).
+//
+// Both toast slots are populated so the header sits at its own reserved
+// maximum (TestStackFrameExactFillAtEveryToastOccupancy's "both slots" case) —
+// that isolates the axis this test pins (the PUSHED SCREEN's own height)
+// from the header's independent, already-pinned chrome reservation, under
+// which fewer toasts deliberately leave the frame short by design (that
+// test's own doc). Without both slots the frame's true target here would be
+// height-4, not height, for a reason this test does not exist to cover.
+func TestRootPadsShortPushedBodyToFillTerminalHeight(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 40
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "short body", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", Name: "solo", RepoPath: "claude/solo.md"}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
+	m.status = readyStatus()
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+	m.pushStickyToast("save failed — kept at /scratch/x.md")
+	m.pushToast("path: /home/u/x.md")
+
+	frame := plain(m.View().Content)
+	lines := strings.Split(frame, "\n")
+	if len(lines) != height {
+		t.Fatalf("root frame is %d lines, want exactly %d — a short pushed body was not padded to fill the terminal", len(lines), height)
+	}
+	footer := plain(m.footer())
+	if footer == "" {
+		t.Fatal("setup: footer empty — the last-row assertion would be vacuous")
+	}
+	if last := lines[len(lines)-1]; !strings.Contains(last, footer) {
+		t.Errorf("footer not on the frame's last row; last row = %q, want to contain %q\nframe:\n%s", last, footer, frame)
+	}
+}
+
+// TestRootFooterRowFixedAcrossShortAndTallPreview pins the exact live-hub
+// symptom report: the footer must sit on the SAME screen row whether the
+// selected memory's preview is short or tall, never float up and down as the
+// user moves the cursor between memories. Two memories share one browser —
+// "short" renders a one-line preview, "tall" a 200-line one, echoing the PTY
+// battery's own seeded index/long-scroll-target split — and the footer's row
+// index is captured on both sides of a cursor move between them.
+//
+// Both toast slots are populated for the same isolation reason
+// TestRootPadsShortPushedBodyToFillTerminalHeight's doc gives: it pins this
+// test's row at the terminal's true last row (height-1) rather than at
+// whatever shorter row the header's own, separately-pinned toast-occupancy
+// reservation would otherwise put it on.
+func TestRootFooterRowFixedAcrossShortAndTallPreview(t *testing.T) {
+	t.Parallel()
+	const width, height = 120, 40
+	tallBody := strings.Repeat("line\n", 200)
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder: "acme",
+		Now:    time.Now(),
+		ReadBody: func(m memoryfs.Memory) (string, error) {
+			if m.Name == "tall" {
+				return tallBody, nil
+			}
+			return "short body", nil
+		},
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{
+				{Provider: "claude", Name: "short", RepoPath: "claude/short.md"},
+				{Provider: "claude", Name: "tall", RepoPath: "claude/tall.md"},
+			}, nil
+		},
+	})
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
+	m.status = readyStatus()
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+	m.pushStickyToast("save failed — kept at /scratch/x.md")
+	m.pushToast("path: /home/u/x.md")
+
+	footer := plain(m.footer())
+	if footer == "" {
+		t.Fatal("setup: footer empty — the row-match assertion would be vacuous")
+	}
+
+	shortFrame := strings.Split(plain(m.View().Content), "\n")
+	shortRow := footerRowIndex(t, shortFrame, footer)
+
+	m, _ = step(m, key("j")) // cursor: short-preview memory -> tall-preview memory
+
+	tallFrame := strings.Split(plain(m.View().Content), "\n")
+	tallRow := footerRowIndex(t, tallFrame, footer)
+
+	if shortRow != tallRow {
+		t.Errorf("footer row changed with the preview height: row %d (short preview) vs row %d (tall preview), want identical", shortRow, tallRow)
+	}
+	if want := height - 1; shortRow != want {
+		t.Errorf("footer row = %d, want %d — the terminal's last row", shortRow, want)
+	}
+}
+
+// footerRowIndex returns the 0-based index of frame's one line containing
+// footer, failing if none does.
+func footerRowIndex(t *testing.T, frame []string, footer string) int {
+	t.Helper()
+	for i, line := range frame {
+		if strings.Contains(line, footer) {
+			return i
+		}
+	}
+	t.Fatalf("no frame line contains the footer %q; frame:\n%s", footer, strings.Join(frame, "\n"))
+	return -1
 }
 
 // TestFleetHeaderLine pins the Projects fleet-header string (spec §9):

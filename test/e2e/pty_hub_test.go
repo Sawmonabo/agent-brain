@@ -403,3 +403,60 @@ func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 		t.Errorf("kill-switch session emitted 1007 bytes on the wire; want none\nraw tail: %q", tail(raw))
 	}
 }
+
+// TestPTYFooterStaysAnchoredAcrossSelections proves the root fill-to-budget
+// fix (dashboard.go's fitAndFillHeight) holds over a REAL rendered frame, not
+// just the dashboard package's own Model.View() unit pins
+// (TestRootPadsShortPushedBodyToFillTerminalHeight and
+// TestRootFooterRowFixedAcrossShortAndTallPreview): the footer must render on
+// the identical screen row whether the selected memory's preview is short
+// (the index, previewing "See long-scroll-target.") or tall (the 200-line
+// long-scroll-target), never float up and down the way the live-hub bug
+// report described.
+//
+// "enter read" is the browser scope's FIRST key hint (actions.go's
+// browser-read row, rendered by stackFooterLine in registry order) —
+// distinctive against both seeded bodies' text, so a match can only be the
+// footer's own row, never a coincidence in the previewed markdown. It has to
+// be the first hint, not a later one: the full footer line is wider than
+// this session's 120-column width and the terminal clips rather than wraps
+// it, so a hint late in registry order (e.g. "esc back") never reaches the
+// visible grid at all. The row index itself is derived from
+// the FIRST captured frame rather than hardcoded: stackBodyHeight's chrome
+// reservation holds room for a header at its two-toast maximum
+// (dashboard.go's own doc), so with no toast ever pushed in this scenario the
+// footer settles a few rows above the terminal's absolute last row — a fixed,
+// already-pinned characteristic of that unrelated reservation
+// (TestStackFrameExactFillAtEveryToastOccupancy, dashboard_test.go), not a
+// number this scenario should assume. What this scenario proves is that the
+// row stays fixed as the previewed content's height swings from one line to
+// two hundred, which is the actual defect being fixed.
+func TestPTYFooterStaysAnchoredAcrossSelections(t *testing.T) {
+	t.Parallel()
+	s := startHubSession(t, defaultSessionConfig())
+	shortFrame := openBrowser(t, s) // index selected, its one-line body previewed
+	shortRow := footerLineIndex(t, shortFrame, "enter read")
+
+	s.send("j") // selection: index (short preview) -> long-scroll-target (tall preview)
+	tallFrame := s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
+	tallRow := footerLineIndex(t, tallFrame, "enter read")
+
+	if shortRow != tallRow {
+		t.Errorf("footer row changed with the preview height: row %d (short preview) vs row %d (tall preview), want identical\nshort frame:\n%s\ntall frame:\n%s",
+			shortRow, tallRow, shortFrame, tallFrame)
+	}
+	s.quitAndDrain()
+}
+
+// footerLineIndex returns the 0-based row index of screen's one line
+// containing fragment, failing if none does.
+func footerLineIndex(t *testing.T, screen, fragment string) int {
+	t.Helper()
+	for i, line := range strings.Split(screen, "\n") {
+		if strings.Contains(line, fragment) {
+			return i
+		}
+	}
+	t.Fatalf("no screen line contains %q\nscreen:\n%s", fragment, screen)
+	return -1
+}

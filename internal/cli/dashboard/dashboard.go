@@ -1692,28 +1692,45 @@ func (m Model) tabBodyHeight() int {
 	return m.stackBodyHeight()
 }
 
-// fitHeight clamps body to at most maxLines lines, keeping the FIRST maxLines.
-// The alt-screen renders from the top and never scrolls, so the top rows are
-// exactly the visible ones — a bottom-anchored keep would discard what the user
-// actually sees. Line counting is ANSI-safe by construction: an SGR escape
-// never contains a newline, so splitting on "\n" counts display rows regardless
-// of the colour/attribute codes woven through them.
+// fitAndFillHeight clamps body to at most exact lines, keeping the FIRST
+// exact (the alt-screen renders from the top and never scrolls, so the top
+// rows are exactly the visible ones — a bottom-anchored keep would discard
+// what the user actually sees), and pads a SHORTER body with trailing blank
+// lines up to exactly exact lines. Line counting is ANSI-safe by
+// construction: an SGR escape never contains a newline, so splitting on "\n"
+// counts display rows regardless of the colour/attribute codes woven through
+// them.
 //
-// This is the root's defense-in-depth backstop, not the primary bound: every
-// pushed screen and tab body already sizes its content to the height View hands
-// it (the browser preview, the history diff, the conflicts list, …). fitHeight
-// is what still holds the frame — and with it the footer's place on screen —
-// when one of them regresses or a future screen forgets, so a single
-// over-tall body can never again shove the option keys past the fold.
-func fitHeight(body string, maxLines int) string {
-	if maxLines < 0 {
-		maxLines = 0
+// The pad half is what pins the footer to the terminal's last row on every
+// frame, not just the ones whose body happens to fill its budget: a screen
+// like the browser preview deliberately sizes itself to its own content
+// (renderPreviewPane's doc) rather than space-filling out to the height it
+// was handed, so without padding here a short preview left the composed
+// frame — header + breadcrumb/tabBar + body + footer — shorter than the
+// terminal, and the footer floated mid-screen with blank rows beneath it
+// instead of anchored to the bottom (the live-hub defect this fixes). Filling
+// every call site to the identical budget stackBodyHeight/tabBodyHeight
+// already compute keeps the total frame height invariant regardless of how
+// short or tall the content underneath turns out to be.
+//
+// The clamp half is unchanged from the prior fitHeight: the root's defense-
+// in-depth backstop, not the primary bound — every pushed screen and tab body
+// already sizes its content to the height View hands it. This is what still
+// holds the frame when one of them regresses or a future screen forgets, so
+// a single over-tall body can never again shove the option keys past the
+// fold.
+func fitAndFillHeight(body string, exact int) string {
+	if exact < 0 {
+		exact = 0
 	}
 	lines := strings.Split(body, "\n")
-	if len(lines) <= maxLines {
-		return body
+	if len(lines) > exact {
+		return strings.Join(lines[:exact], "\n")
 	}
-	return strings.Join(lines[:maxLines], "\n")
+	if missing := exact - len(lines); missing > 0 {
+		return body + strings.Repeat("\n", missing)
+	}
+	return body
 }
 
 // stackFooterRow is one advertised key on a pushed screen's footer.
@@ -2148,11 +2165,14 @@ func (m Model) View() tea.View {
 			// current m.width/m.height, so a resize is handled purely by
 			// construction (screen.go's View doc): there is no cached
 			// dimension on the root or the screen that a WindowSizeMsg
-			// would need to separately invalidate. fitHeight is the
+			// would need to separately invalidate. fitAndFillHeight is the
 			// backstop (see its doc): the screen sizes itself to the budget,
 			// but a regressed one must still never grow the frame past the
-			// terminal and shove the footer off the alt-screen.
-			screen := fitHeight(top.View(m.width, m.stackBodyHeight()), m.stackBodyHeight())
+			// terminal and shove the footer off the alt-screen — and a
+			// screen that sizes SHORTER than its budget (the browser preview,
+			// by design) still leaves the footer pinned to the last row
+			// rather than floating above unfilled space.
+			screen := fitAndFillHeight(top.View(m.width, m.stackBodyHeight()), m.stackBodyHeight())
 			// top.View just ran, so a browser's previewShown — and thus WantsMouse —
 			// now reflects this exact frame: read it here, before the tea.View is
 			// built, to arm the mouse only while the preview pane the wheel/click act
@@ -2162,7 +2182,13 @@ func (m Model) View() tea.View {
 			}
 			body = strings.Join([]string{header, m.breadcrumb(), screen, m.footer()}, "\n\n")
 		} else {
-			tabBody := fitHeight(m.activeBody(), m.tabBodyHeight())
+			// fitAndFillHeight's pad half matters here too: the Projects table
+			// self-fills its configured height (bubbles table.Model pads its own
+			// blank rows), but Conflicts/Activity/Doctor render an unbounded body
+			// with no height budget of their own, so without padding here a tab
+			// with little content would leave the same short-frame, floating-
+			// footer symptom the pushed-screen path had.
+			tabBody := fitAndFillHeight(m.activeBody(), m.tabBodyHeight())
 			body = strings.Join([]string{header, m.tabBar(), tabBody, m.footer()}, "\n\n")
 		}
 	}

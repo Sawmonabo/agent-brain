@@ -142,7 +142,7 @@ func TestConflictsViewSetReclampsCursor(t *testing.T) {
 // more lines than the height budget. Unwindowed the view emits every capped
 // record from the top, so at height 12 a 50-row log overflows to ~53 lines and
 // the cursor's row — walked near the bottom — sits far below the fold (where
-// only the root's fitHeight backstop clips it, hiding the very row the user
+// only the root's fitAndFillHeight backstop clips it, hiding the very row the user
 // selected). 50 rows at height 12 with the cursor at 40: the cursor's row is
 // visible, the top row is not, and the frame fits the budget.
 func TestConflictsViewWindowsAroundCursor(t *testing.T) {

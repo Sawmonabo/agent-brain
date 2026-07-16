@@ -153,7 +153,7 @@ func (v ConflictsView) View(height int) string {
 	// cursor, the same visibleWindow the browser list uses: a log longer than
 	// the tab is tall must keep the selected row on screen and never overflow
 	// the budget, rather than render every row from the top and let the cursor
-	// walk off the bottom (where the root's fitHeight backstop would clip it).
+	// walk off the bottom (where the root's fitAndFillHeight backstop would clip it).
 	budget := max(height-conflictsChrome, 1)
 	if truncated > 0 {
 		budget = max(budget-1, 1) // the "… and N older" disclosure row

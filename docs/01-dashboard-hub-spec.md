@@ -48,7 +48,8 @@ Root ─ tab bar: [Projects] [Conflicts] [Activity] [Doctor]
 Navigation: `tab`/`shift+tab` cycle tabs, `j/k`/arrows move, `enter` drill
 in, `esc` backs out one level (from root: quit prompt), `q` quits from root
 views. Every keybinding appears in the `?` overlay; contextual hints render
-in each view's footer.
+in each view's footer, which is anchored to the terminal's bottom row on
+every frame regardless of how tall the active view's own content is.
 
 ## 3. Memory browser (per project)
 
