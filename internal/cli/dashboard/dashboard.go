@@ -513,7 +513,15 @@ func newMarkdownRenderer(style string) func(markdown string, width int) string {
 // terminal's background color so the theme can pick Mocha vs Latte
 // (tea.BackgroundColorMsg, handled in Update; default dark until it answers).
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.tickCmd(), tea.RequestBackgroundColor)
+	cmds := []tea.Cmd{m.reloadCmd(), m.tickCmd(), tea.RequestBackgroundColor}
+	if m.settings.Dashboard.AlternateScroll {
+		// Set once for the whole session; the terminal keeps the mode across
+		// the editor handoff's altscreen exit/re-entry (it is dormant outside
+		// the alternate screen), and editorFinishedMsg re-asserts it in case
+		// the child editor reset it.
+		cmds = append(cmds, tea.Raw(setAlternateScroll))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) tickCmd() tea.Cmd {
@@ -925,7 +933,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.startRestoreFlow(msg), nil
 
 	case editorFinishedMsg:
-		return m.finishEdit(msg), nil
+		updated := m.finishEdit(msg)
+		if m.settings.Dashboard.AlternateScroll {
+			// Re-assert 1007 on the editor's exit: the in-terminal $EDITOR
+			// handoff hands the terminal to a child that may reset private
+			// modes, so the mode is set again here. Keyed off the exit itself,
+			// not the land outcome — idempotent when the child left it alone
+			// (4 bytes), and harmless on the GUI path, which never released the
+			// terminal.
+			return updated, tea.Raw(setAlternateScroll)
+		}
+		return updated, nil
 
 	case views.PaletteChoiceMsg:
 		return m, m.dispatch(msg.ID)

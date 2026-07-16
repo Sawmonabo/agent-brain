@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image/color"
 	"os"
 	"path/filepath"
@@ -254,6 +255,38 @@ func TestTickTriggersReloadAndReschedules(t *testing.T) {
 	}
 	if !containsMsg[tickMsg](msgs) {
 		t.Error("tick did not reschedule the next tick")
+	}
+}
+
+// TestInitEmitsAlternateScroll pins the enable half of the 1007 lifecycle:
+// Init's batch carries the set sequence as a RawMsg exactly when the setting
+// is on. Table covers both setting states so the config gate is proven
+// load-bearing, not decorative.
+func TestInitEmitsAlternateScroll(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		enabled bool
+		want    bool
+	}{
+		{name: "enabled emits set", enabled: true, want: true},
+		{name: "disabled emits nothing", enabled: false, want: false},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			model := newTestModel(&fakeData{})
+			model.settings.Dashboard.AlternateScroll = testCase.enabled
+			found := false
+			for _, message := range drain(model.Init()) {
+				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == setAlternateScroll {
+					found = true
+				}
+			}
+			if found != testCase.want {
+				t.Errorf("Init emitted set-1007 RawMsg = %v, want %v", found, testCase.want)
+			}
+		})
 	}
 }
 

@@ -157,6 +157,11 @@ func launchHub(cmd *cobra.Command) error {
 		tea.WithOutput(cmd.OutOrStdout()),
 	)
 	finalModel, err := program.Run()
+	// Whatever the exit path — clean quit, ctrl+c, context cancel, kill — the
+	// terminal must not keep translating the wheel to arrows for the shell.
+	// Explicit call, not deferred: maybeReExec below may syscall.Exec, which
+	// replaces the process image before any defer could run.
+	dashboard.RestoreAlternateScroll(cmd.OutOrStdout(), settings.Dashboard.AlternateScroll)
 	if err != nil {
 		// A context-cancelled run (external signal) is a clean user exit,
 		// not a CLI failure to report as exit code 1.

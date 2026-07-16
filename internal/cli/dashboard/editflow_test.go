@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -158,6 +159,54 @@ func TestEditUnchangedIsCancelled(t *testing.T) {
 	}
 	if m.pendingCapture != nil {
 		t.Error("a cancelled edit set a pendingCapture; nothing landed, nothing to confirm")
+	}
+}
+
+// TestEditorFinishReassertsAlternateScroll pins the re-assert half of the 1007
+// lifecycle: the in-terminal $EDITOR handoff hands the terminal to a child that
+// may reset private modes, so the editor's exit re-emits the set sequence as a
+// RawMsg exactly when the setting is on. The finish here is a cancel (the
+// scratch is left untouched), proving the re-assert keys off the editor's exit
+// itself — not the land outcome — which is why it re-asserts even when nothing
+// changed. Table covers both setting states so the config gate is proven
+// load-bearing here too, not only at Init.
+func TestEditorFinishReassertsAlternateScroll(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		enabled bool
+		want    bool
+	}{
+		{name: "enabled re-asserts", enabled: true, want: true},
+		{name: "disabled re-asserts nothing", enabled: false, want: false},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			settings := terminalEditorSettings()
+			settings.Dashboard.AlternateScroll = testCase.enabled
+			m, _ := newFlowModel(t, settings)
+			memory := writeFlowMemory(t, t.TempDir(), "note.md", "# note\n")
+
+			m, _ = step(m, views.EditRequestMsg{Memory: memory})
+			if m.editing == nil {
+				t.Fatal("setup: no edit session after the request")
+			}
+
+			// Scratch left unchanged: a cancelled finish, which must still
+			// re-assert the mode when enabled.
+			_, cmd := step(m, editorFinishedMsg{})
+
+			found := false
+			for _, message := range drain(cmd) {
+				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == setAlternateScroll {
+					found = true
+				}
+			}
+			if found != testCase.want {
+				t.Errorf("editorFinishedMsg emitted set-1007 RawMsg = %v, want %v", found, testCase.want)
+			}
+		})
 	}
 }
 
