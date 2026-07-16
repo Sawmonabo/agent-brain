@@ -54,7 +54,12 @@ setting that defaults on.
   bubbletea's supported raw-escape seam —
   `tea.Raw(saveAlternateScrollState+setAlternateScroll)` is batched into the
   model's `Init` as a single payload, so the mode is armed once as the
-  program starts.
+  program starts. **Amended 2026-07-16:** a PTY battery pinned exactly where
+  this payload lands relative to entering the alternate screen: `1007s` <
+  `1007h` < `1049h` on the wire, the arm preceding the alt-screen enter —
+  the reverse of what a first reading of "the hub renders in the alternate
+  screen" (Context, above) might suggest. See "Automated wire-contract
+  coverage," below.
 - **Config-gated, default-on.** Every set and the teardown are guarded by
   `settings.Dashboard.AlternateScroll` (`internal/config/settings.go`,
   `toml:"alternate_scroll"`, default `true`).
@@ -154,6 +159,93 @@ terminal the mode *breaks*, only ones it does not help.
   our own answer to the browser preview's suppressed selection, not a Claude
   Code emulation.
 
+## Automated wire-contract coverage
+
+`test/e2e/pty_hub_test.go` (scenarios) and `test/e2e/ptyharness_test.go`
+(harness) added a PTY battery that drives the real compiled binary on a real
+pseudo-terminal, proving wire-level facts no unit test can reach: a unit
+test pins the bytes a call site emits, never their place in the actual
+render stream or their effect on a real screen model. Six scenarios:
+
+- `TestPTYHubArmsAlternateScrollInOrder` pins the arm order on the wire:
+  `1007s` < `1007h` < `1049h` — XTSAVE and DECSET both land before the
+  alternate-screen enter (see the Decision section's amendment, above).
+- `TestPTYWheelBytesScrollReadingView` pins that a single wheel notch
+  scrolls the reading viewport by exactly one line, not merely "at least
+  one," over both wire encodings a 1007 terminal can emit — sibling
+  subtests `csi-normal-cursor-keys` (`\x1b[B`) and
+  `ss3-application-cursor-keys` (`\x1bOB`) — then drives to a
+  deeper-scroll outcome with no fixed notch count assumed.
+- `TestPTYClickBytesSelectBrowserRow` pins that an SGR mouse click on a
+  browser row moves the selection cursor AND re-targets the preview to
+  that row's body — the body is the deliberately stronger of the two
+  signals, since the row's title alone also appears in the list row and
+  would pass on selection movement alone.
+- `TestPTYEditorRoundTripReAssertsWithoutReSaving` pins the no-re-save
+  decision (above) on the wire: exactly one XTSAVE and at least two
+  DECSETs across a session that round-trips through the `$EDITOR`
+  handoff (Init's arm plus the post-editor re-assert).
+- `TestPTYQuitRestoresAlternateScrollTail` drives the one interactive
+  esc→y quit-confirmation route this battery exercises (every other
+  scenario quits via ctrl+c), proving the shared teardown-tail assertion
+  below also holds on the documented interactive path, not only the
+  unconditional-quit shortcut.
+- `TestPTYKillSwitchEmitsNoAlternateScrollBytes` is the standing negative
+  control: with `alternate_scroll = false`, a full open→browse→read→quit
+  cycle puts ZERO 1007 bytes on the wire, which is what makes every other
+  scenario's "1007 present" assertion load-bearing rather than vacuous.
+
+The teardown-tail order — `1049l` < `1007l` < `1007r` — is pinned once, in
+a shared helper, and runs on every armed session's quit: the unconditional
+ctrl+c route and the interactive esc→y route both funnel through the same
+drain path, so the order is proven on both exit routes independently
+rather than resting on one dedicated scenario alone.
+
+**The scroll-geometry finding.** An investigation into an apparent "dropped
+first notches" anomaly found no drop at all: every wheel notch scrolls the
+reading viewport by exactly one line from the very first notch, on plain
+`j`, CSI (`\x1b[B`), and SS3 (`\x1bOB`) alike — no input is ever dropped.
+The anomaly was a test-predicate illusion: glamour renders an H1 heading
+plus a blank line ahead of the long memory's fenced body, and the reading
+view adds two more chrome lines on top of that, so the body's first line
+sits roughly four rows below the viewport's top edge — an absence-based
+predicate ("line-001 is gone") needs four-plus notches to observe it
+leaving, even though the wire already carried an identical one-line
+scroll burst on notch one. This is the reasoning behind the wheel
+scenario's two-grain design above: the single-notch pin asserts the wire
+fact directly (one notch, one new line, and the second notch's line
+provably absent on that same snapshot), while the deeper-scroll drive
+targets an observable outcome instead of a hardcoded notch count that
+render geometry would make fragile.
+
+**Harness posture.** The battery spawns the real `agent-brain` binary on a
+real pseudo-terminal, never the package under test in-process, and
+reconstructs the visible screen with a VT emulator rather than grepping
+the raw escape stream — bubbletea v2's renderer emits cell diffs, not
+whole frames, so a screen model is the only way to reconstruct what is
+currently visible. Every wait is a poll-until-predicate over a bounded
+deadline, never a bare sleep, and session cleanup has a hard-kill
+fallback, so a child that outlives its pty becomes a fast, diagnosable
+test failure instead of a hung suite.
+
+**Dependencies (test-only).** `github.com/charmbracelet/x/xpty` v0.1.3 —
+charm's own PTY harness, the same transport huh v2's own tests use — and
+`github.com/hinshun/vt10x`, the VT screen model the Go expect/survey
+lineage standardized on. Both MIT. Buy over build: `xpty` and
+`creack/pty` share identical unix mechanics, but `xpty` is charm-maintained
+and its use in huh's own test suite is an existence proof for the whole
+stack; a hand-rolled screen model would have to reimplement what `vt10x`
+already does just to make "what is on screen" assertable at all.
+
+**Boundary adjudication.** Both imports resolve to
+`test/e2e/ptyharness_test.go` alone — no other package in the module
+imports either — and even there they never reach
+`internal/cli/dashboard`: the battery drives the hub as a subprocess of
+the compiled binary over its own pty, never as an in-process import. Spec
+§15's "`internal/cli/dashboard` remains the only TUI-importing package" is
+unaffected: `test/e2e` is harness, exercising a compiled artifact from
+outside, not a member of that package tree.
+
 ## Consequences
 
 - **No per-view wheel code.** Scroll works under the wheel on every current and
@@ -173,16 +265,34 @@ terminal the mode *breaks*, only ones it does not help.
   and restoring DEC private mode state recover the user's own pre-hub 1007
   preference on exit; every other terminal has nothing saved to restore, so
   `XTRESTORE` is a no-op there and the plain `DECRST` stands alone.
-- **One irreducible manual smoke cell.** No unit test has a real tty, so the
-  wheel/selection behavior is verified by hand across the cross-OS matrix:
-  wheel scrolls the reading view on iTerm2 with the setting on; wheel still
-  hover-scrolls the browser preview; drag-select works in the reading view
-  *without* modifier keys on 1007-honoring terminals; `alternate_scroll =
-  false` restores the old wheel; quitting leaves the shell's wheel normal; a
-  terminal-level alternate-scroll preference armed before launching the hub
-  (e.g. iTerm2's profile toggle) still holds after quitting, on
-  XTSAVE/XTRESTORE-supporting terminals; and the xterm.js/Cursor cell is
-  checked explicitly.
+- **Automated by the PTY battery.** The arm order, wheel-to-scroll at
+  exactly one line per notch, SGR click re-targeting of the browser
+  preview, the editor round trip's no-re-save guarantee, the
+  teardown-tail order on every armed quit route, and the kill switch's
+  zero-1007 guarantee are now proven on the wire by the PTY battery (see
+  "Automated wire-contract coverage," above) rather than resting on manual
+  spot checks alone.
+- **Manual smoke matrix, narrowed to emulator and config residue.** What
+  remains is exactly the residue no PTY harness can reach — behavior that
+  depends on a real terminal's own choices, not on how our program answers
+  a given input byte: whether a given emulator translates the wheel to
+  arrows under 1007, composes that correctly with the mouse-tracking
+  precedence rule so the browser preview still hover-scrolls, and leaves
+  drag-select alone with no modifier key required — checked by hand on
+  iTerm2, Terminal.app, and Windows Terminal (kitty is documented to
+  always-translate regardless of 1007, and tmux is documented to swallow
+  the inner program's 1007 behind its own
+  `WheelUpPane`/`WheelDownPane` user binding, so neither needs a fresh
+  by-hand check beyond confirming the documented behavior); whether a
+  pre-armed 1007 preference in the user's own terminal config (an xterm
+  `alternateScroll` resource, an iTerm2 profile toggle) round-trips
+  through a real XTSAVE/XTRESTORE-supporting terminal's own state storage
+  (the wire order of the save/restore itself is automated, above; a
+  terminal's own storage of it is not); the xterm.js/Cursor cell, tracked
+  as partial/in-flux upstream (terminal matrix, above); and OSC52
+  clipboard reception — the emitted payload is unit-pinned, but whether a
+  given terminal actually places it on the system clipboard is a
+  terminal-side effect no PTY can observe.
 - **DECRQM support detection is deliberately absent.** Nothing branches on
   whether the terminal implements 1007; set-and-forget is strictly simpler and
   equally safe, since unsupported terminals ignore the sequence.
