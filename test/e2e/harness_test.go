@@ -46,6 +46,11 @@ func testMain(m *testing.M) int {
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 
+	// The PTY battery (pty_hub_test.go) lazily starts one shared daemon child
+	// against a hermetic store; stop it here so the child never outlives the
+	// suite. A no-op when no PTY test ran.
+	defer stopSharedHubStore()
+
 	binPath = filepath.Join(root, "agent-brain")
 	build := exec.Command("go", "build", "-o", binPath, "../../cmd/agent-brain")
 	if out, err := build.CombinedOutput(); err != nil {
