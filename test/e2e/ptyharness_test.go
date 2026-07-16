@@ -67,6 +67,13 @@ const (
 	// tailBytes is how much of the raw log a failure message quotes. Enough to
 	// show the last few frames of escape traffic without burying the message.
 	tailBytes = 800
+	// cleanupKillGrace bounds how long cleanup waits for a still-running child
+	// to exit on its own — via the closed slave/master fds — before falling
+	// back to Process.Kill(). Generous enough for a normal process to notice
+	// EOF/HUP and unwind; far below a hung test's package -timeout, so a child
+	// that outlives its pty becomes a fast, diagnosable test failure instead of
+	// wedging the whole binary (cleanup's own doc has the full story).
+	cleanupKillGrace = 5 * time.Second
 )
 
 // seededMemoryUnit is the one enrolled project every PTY session browses. The
@@ -407,6 +414,13 @@ func defaultSessionConfig() sessionConfig {
 type hubSession struct {
 	t   *testing.T
 	pty xpty.Pty
+	// cmd is the hub child process, retained so cleanup's hard-kill fallback
+	// can reach Process.Kill() directly. suiteCtx is context.Background()
+	// (harness_test.go), so exec.CommandContext gives cmd no cancellation
+	// backstop of its own — closing the pty's fds is only a REQUEST that a
+	// still-running child notice and exit, not a guarantee, and cleanup needs
+	// a way to force the issue when that request goes unanswered.
+	cmd *exec.Cmd
 
 	mu     sync.Mutex
 	raw    []byte
@@ -440,6 +454,7 @@ func startHubSession(t *testing.T, cfg sessionConfig) *hubSession {
 	session := &hubSession{
 		t:          t,
 		pty:        pty,
+		cmd:        cmd,
 		screen:     vt10x.New(vt10x.WithSize(cfg.cols, cfg.rows)),
 		readerDone: make(chan struct{}),
 		procDone:   make(chan struct{}),
@@ -647,8 +662,9 @@ func (s *hubSession) waitScreen(predicate func(screen string) bool) string {
 // screen's own copy binding instead of confirming a prompt that never opened.
 // Whatever the trigger, launchHub's RestoreAlternateScroll runs after
 // program.Run returns (internal/cli/dashboard.go — "Whatever the exit path"), so
-// the teardown tail is identical; the teardown-tail scenario drives the
-// documented q→y path explicitly through quitViaPromptAndDrain to pin that.
+// the teardown tail is identical on every route — drainAfterQuit's own
+// assertTeardownTailOrder checks it on THIS session's log too, not only the
+// dedicated teardown-tail scenario's esc→y route (quitViaPromptAndDrain).
 // Blocks until the process has exited and the reader has drained, then returns
 // the COMPLETE raw log, teardown tail included, for the exit-order assertions.
 func (s *hubSession) quitAndDrain() string {
@@ -674,7 +690,9 @@ func (s *hubSession) quitViaPromptAndDrain() string {
 
 // drainAfterQuit blocks until the hub process has exited and the reader has
 // drained the last teardown bytes, then returns the complete raw log. Shared by
-// both quit paths so the exit-and-drain bookkeeping lives in one place.
+// both quit paths so the exit-and-drain bookkeeping — AND the teardown-tail
+// order assertion below — lives in one place, run identically regardless of
+// which route a scenario quit through.
 func (s *hubSession) drainAfterQuit() string {
 	s.t.Helper()
 	select {
@@ -683,20 +701,72 @@ func (s *hubSession) drainAfterQuit() string {
 		s.t.Fatalf("hub did not exit within %s after quit\nraw tail: %q\nscreen:\n%s", processExitDeadline, tail(s.snapshotRaw()), s.snapshotScreen())
 	}
 	<-s.readerDone
-	return s.snapshotRaw()
+	raw := s.snapshotRaw()
+	assertTeardownTailOrder(s.t, raw)
+	return raw
+}
+
+// assertTeardownTailOrder asserts the exit teardown's byte order — primary-
+// screen restore (1049l), then DECRST (1007l), then XTRESTORE (1007r) — on a
+// session's COMPLETE drained raw log, whatever quit route produced it:
+// ctrl+c's unconditional tea.Quit (quitAndDrain) and the interactive
+// esc-prompt-y confirm (quitViaPromptAndDrain) both run this same helper from
+// drainAfterQuit, since dashboard.RestoreAlternateScroll runs from exactly one
+// post-Run choke point (internal/cli/dashboard.go:159-164) that every exit
+// path — clean quit, ctrl+c, context cancel, kill — funnels through on the way
+// out. Pinning the order HERE, in the one place every drained log passes
+// through, is what turns "every exit path tears down the same way" from a
+// claim reasoned from reading that one call site into a fact checked on the
+// wire for every scenario's own session. A session that never armed 1007 (the
+// kill-switch scenario) has no 1007h on the wire at all, so it is skipped by
+// construction — its own assertion is that zero 1007 bytes appear, which
+// already covers the absence case this helper would otherwise have nothing to
+// check.
+func assertTeardownTailOrder(t *testing.T, raw string) {
+	t.Helper()
+	if !strings.Contains(raw, "\x1b[?1007h") {
+		return
+	}
+	restorePrimary := strings.LastIndex(raw, "\x1b[?1049l")
+	resetScroll := strings.LastIndex(raw, "\x1b[?1007l")
+	restoreScroll := strings.LastIndex(raw, "\x1b[?1007r")
+	if restorePrimary == -1 || resetScroll == -1 || restoreScroll == -1 {
+		t.Fatalf("missing teardown markers: 1049l=%d 1007l=%d 1007r=%d\nraw tail: %q",
+			restorePrimary, resetScroll, restoreScroll, tail(raw))
+	}
+	tailInOrder := restorePrimary < resetScroll && resetScroll < restoreScroll
+	if !tailInOrder {
+		t.Errorf("teardown tail order wrong: want 1049l < 1007l < 1007r, got 1049l@%d 1007l@%d 1007r@%d\nraw tail: %q",
+			restorePrimary, resetScroll, restoreScroll, tail(raw))
+	}
 }
 
 // scrollByWheel drives the reading viewport with wheel-down notches — the arrow
 // escape a 1007 terminal synthesizes per wheel notch — until predicate holds
 // over the rendered screen, then returns that screen. It sends one notch every
-// few polls rather than a fixed count up front because the first notch(es) after
-// a reading screen is pushed are DROPPED while the freshly-pushed viewport
-// establishes its scroll extent (observed: a first rapid batch moves nothing, a
-// second batch scrolls one line per notch). The contract under test is "wheel
-// bytes scroll the reading view", not "the Nth byte is the one that moves it",
-// so it drives to the observable outcome. Synchronization is the predicate poll
-// on the same pollInterval cadence as waitScreen; the notch spacing is pacing,
-// not a synchronization sleep.
+// few polls rather than a fixed count up front, but NOT because early notches
+// are dropped — they are not. A root-cause investigation
+// (.superpowers/sdd/probe-investigation.md) proved every notch scrolls the
+// viewport by exactly one line from the very first: the wire reacts with the
+// identical DECSTBM-plus-LF-at-bottom-margin burst on notch 1 as on every
+// later one (bubbletea v2's renderer scroll-optimization), and vt10x applies
+// each burst faithfully (byte-identical to a live replay). What actually
+// varies is RENDER GEOMETRY, not input delivery: glamour prepends an "# H1"
+// heading plus a blank line before the long memory's fenced body
+// (seedMemories, above, builds that exact string), and the reading view's own
+// View adds two more chrome lines on top of that (views/reading.go's own
+// chromeLines) — so line-001 sits several rows below the viewport's top edge
+// and survives a few notches before the document has scrolled far enough to
+// carry it off-screen. That threshold shifts with heading size, chrome, and
+// terminal height, none of which this helper's caller should have to predict;
+// the contract under test is "wheel bytes scroll the reading view", not "the
+// Nth byte is the one that clears line-001", so this drives to the observable
+// outcome instead of assuming a fixed notch count lands. The per-notch,
+// one-line translation itself is already pinned at the unit layer, with no
+// PTY involved (views/reading_test.go's TestReadingViewportScroll: one "j"
+// advances the body by exactly one line). Synchronization is the predicate
+// poll on the same pollInterval cadence as waitScreen; the notch spacing is
+// pacing, not a synchronization sleep.
 func (s *hubSession) scrollByWheel(downByte string, predicate func(screen string) bool) string {
 	s.t.Helper()
 	// One notch every pollsPerNotch polls (~50ms): far enough apart that a warm
@@ -722,19 +792,42 @@ func (s *hubSession) scrollByWheel(downByte string, predicate func(screen string
 
 // cleanup kills a still-running hub, drains, and closes the pty. Safe to call
 // more than once (t.Cleanup plus any explicit path).
+//
+// The bounded wait-then-kill below is not theoretical hardening: a failed probe
+// run once left a child that outlived its pty, and because suiteCtx
+// (harness_test.go) is context.Background(), exec.CommandContext gave that
+// child no cancellation backstop — the unconditional `<-s.procDone` this used
+// to end on then blocked the ENTIRE test binary until the package -timeout
+// fired, since a wedged cleanup on one test's t.Cleanup stack blocks every
+// other test waiting to run. Closing the slave/master is only a REQUEST that a
+// still-running child notice EOF/HUP and exit; a child that does not honor it
+// (a hang on the failure path, same as a probe outliving its pty) now gets a
+// bounded grace and then a direct kill, so a stuck child becomes a fast,
+// diagnosable test failure instead of a silent hang. Every normal quit
+// (quitAndDrain / quitViaPromptAndDrain) already closes procDone well within
+// cleanupKillGrace, so those paths never reach the kill branch below.
 func (s *hubSession) cleanup() {
 	s.stopOnce.Do(func() {
 		select {
 		case <-s.procDone:
 		default:
-			// Still running (a test bailed before quitAndDrain): kill it so
-			// waitLoop's Wait returns and closes the slave.
+			// Still running (a test bailed before quitAndDrain): close the
+			// slave so waitLoop's cmd.Wait() has a chance to return on its own.
 			if unixPTY, ok := s.pty.(*xpty.UnixPty); ok {
 				_ = unixPTY.Slave().Close()
 			}
 		}
 		_ = s.pty.Close()
-		<-s.procDone
+		select {
+		case <-s.procDone:
+		case <-time.After(cleanupKillGrace):
+			if s.cmd != nil && s.cmd.Process != nil {
+				s.t.Logf("cleanup: hub pid %d did not exit within %s of pty close; killing it",
+					s.cmd.Process.Pid, cleanupKillGrace)
+				_ = s.cmd.Process.Kill()
+			}
+			<-s.procDone
+		}
 		<-s.readerDone
 	})
 }
@@ -747,12 +840,40 @@ func tail(s string) string {
 	return "…" + s[len(s)-tailBytes:]
 }
 
+// browserListPaneWidth mirrors the browser view's own unexported listPaneWidth
+// (internal/cli/dashboard/views/browser.go): with a preview pane showing, the
+// list occupies columns [0, browserListPaneWidth) and the preview begins after
+// a two-column gap, at browserListPaneWidth+2 (browser.go's overPreview).
+// listPaneOf anchors matching to that same boundary.
+const browserListPaneWidth = 46
+
+// listPaneOf trims one rendered screen line to the browser's list-pane
+// columns, so a caller matching against the list can never be fooled by a
+// token that ALSO appears in the preview pane sitting on the same screen row.
+// This is not a hypothetical: the seeded index's own body is "See
+// long-scroll-target." (seedMemories, ptyharness_test.go), so the instant the
+// index is selected and previewed, the literal memory name the click/selection
+// scenarios search for is on screen TWICE — once as the list row, once as
+// preview prose — and an unanchored scan can return the preview's row instead
+// of the list's. Rune-sliced, not byte-sliced: a row's ⚠ lint badge is
+// multi-byte, and cutting at a raw byte offset could sever it mid-rune and
+// corrupt the tail of the slice.
+func listPaneOf(line string) string {
+	runes := []rune(line)
+	if len(runes) > browserListPaneWidth {
+		runes = runes[:browserListPaneWidth]
+	}
+	return string(runes)
+}
+
 // lineRowOf returns the 1-based screen row (as a terminal reports mouse Y) of
-// the first rendered line containing token, or 0 if none. The click scenario
-// uses it to aim an SGR mouse report at a memory's actual rendered row.
+// the first rendered line whose LIST-PANE columns contain token, or 0 if none.
+// The click scenario uses it to aim an SGR mouse report at a memory's actual
+// rendered row — anchored to listPaneOf so a same-named token in the preview
+// pane (see its doc) can never be mistaken for the list row.
 func lineRowOf(screen, token string) int {
 	for index, line := range strings.Split(screen, "\n") {
-		if strings.Contains(line, token) {
+		if strings.Contains(listPaneOf(line), token) {
 			return index + 1
 		}
 	}

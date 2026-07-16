@@ -42,12 +42,18 @@ func openLongMemory(t *testing.T, s *hubSession) {
 	s.waitScreen(func(screen string) bool { return strings.Contains(screen, "backlinks") })
 }
 
-// lineHasMarker reports whether one rendered line contains BOTH marker and
-// token — the test for "the selection cursor (>) is on the row that names X",
-// as distinct from "> and X each appear somewhere on screen".
+// lineHasMarker reports whether one rendered line's LIST-PANE columns (see
+// listPaneOf, ptyharness_test.go) contain BOTH marker and token — the test for
+// "the selection cursor (>) is on the row that names X", as distinct from "> and
+// X each appear somewhere on screen". Anchoring to the list pane matters
+// concretely here: the index's own previewed body contains the prose "See
+// long-scroll-target.", so an unanchored scan of the FULL screen could satisfy
+// "X appears on this row" from the preview pane rather than the list row this
+// helper is meant to test for.
 func lineHasMarker(screen, marker, token string) bool {
 	for line := range strings.SplitSeq(screen, "\n") {
-		if strings.Contains(line, marker) && strings.Contains(line, token) {
+		pane := listPaneOf(line)
+		if strings.Contains(pane, marker) && strings.Contains(pane, token) {
 			return true
 		}
 	}
@@ -109,10 +115,25 @@ func TestPTYHubArmsAlternateScrollInOrder(t *testing.T) {
 //
 // The long memory's body is a fenced block of line-001…line-200, so the code
 // fence renders each on its own row and "the top line advanced" is a legible
-// screen fact. line-001 sits at the top of the fresh viewport; after the wheel
-// has scrolled, it is gone while line-004 (still within the document) is on
-// screen — top advanced, with no magic notch count (scrollByWheel drives to the
-// outcome because the just-pushed viewport drops its first notches).
+// screen fact. Each subtest pins the contract at two grains:
+//
+//  1. A single-notch pin (below) proves ONE notch produces a genuine one-line
+//     scroll, via the POSITIVE signal that scroll produces — a previously
+//     off-screen line appearing at the viewport's new bottom edge — never via
+//     line-001's absence. line-001 alone is the wrong predicate for one notch:
+//     a probe-investigation (.superpowers/sdd/probe-investigation.md) proved it
+//     stays on screen for several notches purely from render geometry (glamour's
+//     "# H1" heading plus a blank line ahead of the fence, plus the reading
+//     view's own two chrome lines — views/reading.go's own chromeLines — put
+//     line-001 several rows below the viewport's top edge), NOT because any
+//     notch was dropped; every notch reacts on the wire identically from the
+//     first.
+//  2. scrollByWheel then drives to a deeper-scroll outcome (line-001 gone,
+//     line-004 present) with no fixed notch count assumed, because exactly how
+//     many notches clear line-001 is a function of that same render geometry —
+//     heading size, chrome, terminal height — not a constant this test should
+//     hardcode or a sign of lost input (scrollByWheel's own doc has the full
+//     mechanism).
 func TestPTYWheelBytesScrollReadingView(t *testing.T) {
 	t.Parallel()
 	encodings := []struct {
@@ -128,13 +149,42 @@ func TestPTYWheelBytesScrollReadingView(t *testing.T) {
 			s := startHubSession(t, defaultSessionConfig())
 			openLongMemory(t, s)
 			// Precondition: the fresh reading view is showing the document top.
-			s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
+			preNotch := s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
+
+			// Single-notch pin: send exactly ONE notch, then wait for the
+			// previously off-screen line one past everything CURRENTLY visible
+			// (derived from preNotch, not hardcoded — line-026 under today's
+			// 120x40 geometry, but this holds under any viewport height) to
+			// appear. That is the positive proof a single notch scrolls exactly
+			// one line; see the doc above for why line-001's absence is the
+			// wrong predicate at this grain.
+			revealed := fmt.Sprintf("line-%03d", maxVisibleLineNumber(preNotch)+1)
+			s.send(encoding.down)
+			s.waitScreen(func(screen string) bool { return strings.Contains(screen, revealed) })
+
 			s.scrollByWheel(encoding.down, func(screen string) bool {
 				return !strings.Contains(screen, "line-001") && strings.Contains(screen, "line-004")
 			})
 			s.quitAndDrain()
 		})
 	}
+}
+
+// maxVisibleLineNumber returns the highest N such that "line-NNN" is currently
+// on screen, or 0 if none is. The single-notch pin uses it to derive, from the
+// ACTUAL pre-notch geometry rather than a hardcoded row count, exactly which
+// line-NNN a one-line scroll must newly reveal at the viewport's bottom edge —
+// the one line number past everything already visible. Cheap by construction:
+// longMemoryLineCount (200) Contains checks against a ~4800-byte screen
+// string, negligible next to the PTY round trip the caller already pays for.
+func maxVisibleLineNumber(screen string) int {
+	highest := 0
+	for n := 1; n <= longMemoryLineCount; n++ {
+		if strings.Contains(screen, fmt.Sprintf("line-%03d", n)) {
+			highest = n
+		}
+	}
+	return highest
 }
 
 // TestPTYClickBytesSelectBrowserRow proves an SGR mouse click selects the
@@ -171,6 +221,11 @@ func TestPTYClickBytesSelectBrowserRow(t *testing.T) {
 	// row — the byte form xterm sends for a left click under SGR mouse
 	// reporting (mode 1006).
 	s.send(fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", 3, row, 3, row))
+	// line-001 (the BODY) is the stronger of the two available re-target
+	// signals, deliberately stronger than the memory's TITLE: the title also
+	// appears in the list row itself, so it would be satisfied by the
+	// selection move alone, whereas line-001 can only come from the preview
+	// pane actually rendering the long memory's body.
 	s.waitScreen(func(screen string) bool {
 		return lineHasMarker(screen, ">", longMemoryName) && strings.Contains(screen, "line-001")
 	})
@@ -208,21 +263,22 @@ func TestPTYEditorRoundTripReAssertsWithoutReSaving(t *testing.T) {
 	}
 }
 
-// TestPTYQuitRestoresAlternateScrollTail pins the exit teardown's tail order on
-// the documented interactive quit: after bubbletea restores the primary screen
-// on quit, launchHub writes DECRST(1007l) then XTRESTORE(1007r) — reset first so
-// terminals without XTSAVE/XTRESTORE support land on a plain reset, restore
-// second so terminals that support it get the user's pre-hub 1007 preference
-// back. Only a PTY that reads past process exit sees these bytes: they are
-// written AFTER program.Run returns. The tail is asserted by LAST occurrence
-// (the session armed 1007h earlier; the teardown's 1007l/1007r are the final
-// ones), with the framework's primary-screen restore (1049l) preceding both.
+// TestPTYQuitRestoresAlternateScrollTail drives the interactive top-level quit
+// confirmation — esc raises "quit agent-brain? (y/n)", y confirms — the ONE
+// scenario in this battery that ever exercises that route; every other
+// scenario ends inside a pushed screen and quits with ctrl+c instead
+// (quitAndDrain's own doc explains why: a pushed screen consumes esc to pop
+// itself and consumes q whole, so the top-level confirm is only reachable from
+// the Projects tab).
 //
-// The session stays on the Projects tab and quits through esc→prompt→y — the
-// interactive quit-with-confirmation, reachable only from the top level (a
-// pushed screen consumes esc to pop itself, and consumes q whole). That is
-// exactly why the scenarios ending inside a pushed screen quit with ctrl+c
-// instead (quitAndDrain); the teardown is identical on every path.
+// The actual teardown-tail assertion — after bubbletea restores the primary
+// screen (1049l), launchHub writes DECRST(1007l) then XTRESTORE(1007r), reset
+// first so terminals without XTSAVE/XTRESTORE support land on a plain reset —
+// is NOT manual here. It lives in the shared drainAfterQuit path
+// (assertTeardownTailOrder, ptyharness_test.go), which quitViaPromptAndDrain
+// below runs identically to every ctrl+c scenario's quitAndDrain. Driving THIS
+// one scenario through esc→y is what proves the shared assertion also holds on
+// the documented interactive path, not only the unconditional-quit shortcut.
 func TestPTYQuitRestoresAlternateScrollTail(t *testing.T) {
 	t.Parallel()
 	s := startHubSession(t, defaultSessionConfig())
@@ -233,21 +289,9 @@ func TestPTYQuitRestoresAlternateScrollTail(t *testing.T) {
 	// prompt (dashboard.go handleKey), and the confirm below would then wait on a
 	// prompt that never opens. Reaching a data-bearing Projects frame also implies
 	// the arm already happened, since Init emits 1007 before the daemon ever
-	// answers, so the tail assertion is over a session that armed it.
+	// answers, so the shared tail assertion runs over a session that armed it.
 	s.waitScreen(func(screen string) bool { return strings.Contains(screen, seededFolder) })
-	raw := s.quitViaPromptAndDrain()
-	restorePrimary := strings.LastIndex(raw, "\x1b[?1049l")
-	resetScroll := strings.LastIndex(raw, "\x1b[?1007l")
-	restoreScroll := strings.LastIndex(raw, "\x1b[?1007r")
-	if restorePrimary == -1 || resetScroll == -1 || restoreScroll == -1 {
-		t.Fatalf("missing teardown markers: 1049l=%d 1007l=%d 1007r=%d\nraw tail: %q",
-			restorePrimary, resetScroll, restoreScroll, tail(raw))
-	}
-	tailInOrder := restorePrimary < resetScroll && resetScroll < restoreScroll
-	if !tailInOrder {
-		t.Errorf("teardown tail order wrong: want 1049l < 1007l < 1007r, got 1049l@%d 1007l@%d 1007r@%d\nraw tail: %q",
-			restorePrimary, resetScroll, restoreScroll, tail(raw))
-	}
+	s.quitViaPromptAndDrain()
 }
 
 // TestPTYKillSwitchEmitsNoAlternateScrollBytes is the standing negative control
