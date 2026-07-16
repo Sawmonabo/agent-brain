@@ -4257,3 +4257,75 @@ func TestRootViewMouseModeGate(t *testing.T) {
 		})
 	}
 }
+
+// frameLineContaining returns the 0-based index of the first frame line holding
+// sub — the terminal-absolute Y a click on that line carries — failing if none
+// does.
+func frameLineContaining(t *testing.T, frame, sub string) int {
+	t.Helper()
+	for i, line := range strings.Split(frame, "\n") {
+		if strings.Contains(line, sub) {
+			return i
+		}
+	}
+	t.Fatalf("no frame line contains %q; frame:\n%s", sub, frame)
+	return -1
+}
+
+// TestStackMouseTranslation pins the root→screen coordinate contract end to end:
+// a stack-bound mouse click reaches the pushed browser with Y rebased by exactly
+// the chrome the root composes above it — the status header (with and without a
+// toast line), the breadcrumb, and the blank join line each contributes. The
+// offset is never hard-coded: the test finds the frame row where a memory is
+// drawn and clicks there, then proves through the browser's own Selected() that
+// the click landed on that memory. The toast case (an extra status line above the
+// browser) then proves the translation tracks the real chrome height rather than
+// a fixed number, and mousePrefixLines is never asserted against itself.
+func TestStackMouseTranslation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		withToast bool
+	}{
+		{name: "no toast", withToast: false},
+		{name: "toast present", withToast: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+			m = m.pushScreen(mouseBrowser(t)) // aaa -> row 0, bbb -> row 1
+			if tc.withToast {
+				m.pushStickyToast("heads up") // one more status line above the browser body
+			}
+
+			// The browser must actually be drawing its preview — the only frame the
+			// root arms the mouse on — or the coordinate contract under test would
+			// never be exercised in the real hub.
+			frame := plain(m.View().Content)
+			browser := m.stack[0].(*views.Browser)
+			if !browser.WantsMouse() {
+				t.Fatal("setup: browser preview not on screen after a wide render")
+			}
+			before, ok := browser.Selected()
+			if !ok || before.RepoPath != "claude/a.md" {
+				t.Fatalf("setup: initial selection = %q (ok=%v), want claude/a.md on row 0", before.RepoPath, ok)
+			}
+
+			// Click the frame row where bbb (row 1, not the cursor's initial row 0)
+			// is drawn. X stays in the list column so the click maps to a row rather
+			// than the preview pane.
+			targetY := frameLineContaining(t, frame, "bbb")
+			next, _ := m.Update(tea.MouseClickMsg{X: 10, Y: targetY, Button: tea.MouseLeft})
+			m = next.(Model)
+
+			after, ok := m.stack[0].(*views.Browser).Selected()
+			if !ok {
+				t.Fatal("no selection after the click")
+			}
+			if after.RepoPath != "claude/b.md" {
+				t.Errorf("click on bbb's frame row (Y=%d) selected %q, want claude/b.md; the root did not rebase the click to screen-local coordinates", targetY, after.RepoPath)
+			}
+		})
+	}
+}

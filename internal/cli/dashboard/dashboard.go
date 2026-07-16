@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	glamour "charm.land/glamour/v2"
 	glamourstyles "charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/actions"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/links"
@@ -995,11 +996,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelMsg, tea.MouseClickMsg:
 		// Mouse reporting is enabled only while a browser preview is on screen
 		// (View's MouseMode gate), so a mouse event means that browser is the stack
-		// top; forward it there. With no stack — the mode was never on, but a stray
-		// event could still arrive — it is a harmless no-op rather than something
-		// the tabs try to interpret (native selection stays theirs).
+		// top; rebase it to that screen's own coordinates (translateStackMouse) and
+		// forward it there. With no stack — the mode was never on, but a stray event
+		// could still arrive — it is a harmless no-op rather than something the tabs
+		// try to interpret (native selection stays theirs).
 		if _, ok := m.stackTop(); ok {
-			return m.forwardToStack(msg)
+			return m.forwardToStack(m.translateStackMouse(msg))
 		}
 		return m, nil
 
@@ -1492,6 +1494,42 @@ func (m Model) forwardToStack(msg tea.Msg) (Model, tea.Cmd) {
 	}
 	next, cmd := top.Update(msg)
 	return m.replaceStackTop(next), cmd
+}
+
+// mousePrefixLines is how many terminal rows the root composes above a stack
+// screen's first line: the status header (the toast line included when present),
+// one blank line from the "\n\n" join, the breadcrumb, and its blank join line.
+// Built from the same strings View joins (statusHeader/toastLine/breadcrumb) so
+// the offset and the pixels cannot drift; mouse reporting is only ever armed on
+// the stack-top browser frame (View's MouseMode gate), so the default branch's
+// shape — header, breadcrumb, screen, footer — is the only one a mouse event can
+// arrive under.
+func (m Model) mousePrefixLines() int {
+	header := m.statusHeader()
+	if toastLine := m.toastLine(); toastLine != "" {
+		header = strings.Join([]string{header, toastLine}, "\n\n")
+	}
+	return lipgloss.Height(header) + 1 + lipgloss.Height(m.breadcrumb()) + 1
+}
+
+// translateStackMouse rebases a mouse event from terminal-absolute rows to
+// screen-local rows before it is forwarded down the stack — the seam the browser's
+// click-to-select contract needs (updateMouseClick's row mapping), left unbuilt
+// when hover-scroll landed. X passes through untouched: the root adds no
+// horizontal chrome (overPreview's documented invariant). The wheel's Y is unused
+// today (updateMouseWheel routes on X alone), but is rebased anyway so every
+// stack-bound mouse event reaches a screen in one coordinate space.
+func (m Model) translateStackMouse(msg tea.Msg) tea.Msg {
+	offset := m.mousePrefixLines()
+	switch mouse := msg.(type) {
+	case tea.MouseClickMsg:
+		mouse.Y -= offset
+		return mouse
+	case tea.MouseWheelMsg:
+		mouse.Y -= offset
+		return mouse
+	}
+	return msg
 }
 
 // forwardToSearchOverlay routes msg to the open search overlay — keys while

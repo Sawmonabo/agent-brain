@@ -176,6 +176,17 @@ type Browser struct {
 	// too.
 	previewFocused bool
 
+	// listLineRows maps each rendered list-block line to the visibleRows index it
+	// displays — -1 for a provider-header line, which selects nothing — and
+	// listTopLines is how many browser-body lines sit above that block. Both are
+	// recorded during View (renderList fills the map; a frame that draws no list —
+	// a notice or the deleted view — leaves it empty), the same last-rendered-frame
+	// contract as previewShown: the map describes the frame the user is looking at,
+	// so a click and the pixels under it can never disagree. updateMouseClick reads
+	// them to turn a screen-local click Y into the memory it landed on.
+	listLineRows []int
+	listTopLines int
+
 	// Deleted-recovery mode (spec §6's x): a folder-wide history scan surfaces
 	// every path that some past version touched but HEAD no longer has, so a
 	// deleted memory stays reachable — enter/h on one of these rows opens its
@@ -777,18 +788,21 @@ func (b *Browser) updateMouseWheel(msg tea.MouseWheelMsg) {
 	}
 }
 
-// updateMouseClick handles a mouse button click. Only a left-click matters, and
-// only to move focus between the two panes: a click on the preview focuses it, a
-// click on the list returns focus there. The two arms mirror Task 2's focus
-// primitives rather than a bare `previewFocused = overPreview(x)` assignment — on
-// a click-to-blur that bare form would strand the lazily-installed focused keymap
-// and break the invariant that leaving focus restores the unfocused keymap (so
-// j/k drive the list again).
+// updateMouseClick handles a mouse button click. Only a left-click matters. A
+// click over the preview focuses that pane (the mouse counterpart of Tab); a
+// click over the list blurs the preview and moves the list cursor to the memory
+// on the clicked row. The focus arms mirror Task 2's focus primitives rather than
+// a bare `previewFocused = overPreview(x)` assignment — on a click-to-blur that
+// bare form would strand the lazily-installed focused keymap and break the
+// invariant that leaving focus restores the unfocused keymap (so j/k drive the
+// list again).
 //
-// Click does NOT select a specific list row: the browser is composed by the root
-// and never learns its absolute Y origin, so mapping a click to the memory on
-// that row would need a new root->screen offset seam. Left as a follow-up rather
-// than faked — a wrong row would select the wrong memory to open/edit/delete.
+// Row selection reads the render-time hit-map renderList recorded for the last
+// frame (listLineRows/listTopLines). The browser is composed by the root, which
+// now rebases a stack-bound mouse event to screen-local rows (translateStackMouse)
+// before forwarding it, so the browser's own chrome above the list is all that
+// stands between the event's Y and the map — no absolute Y origin to learn. A
+// provider-header line (-1) or an out-of-range Y selects nothing.
 func (b *Browser) updateMouseClick(msg tea.MouseClickMsg) {
 	// Inert outside the normal body, for the same reason as the wheel: the filter
 	// input and the deleted list own their own keys, so a click must not reach in
@@ -802,8 +816,18 @@ func (b *Browser) updateMouseClick(msg tea.MouseClickMsg) {
 	}
 	if b.overPreview(mouse.X) {
 		b.previewFocused = true // like Tab: a pure flip; the focused keymap installs lazily on the next focused key
-	} else {
-		b.blurPreview() // like Esc: clears focus AND restores the unfocused keymap (Task 2's blur invariant)
+		return
+	}
+	b.blurPreview() // like Esc: clears focus AND restores the unfocused keymap (Task 2's blur invariant)
+	// Screen-local Y minus the browser's own chrome above the list is the index
+	// into the recorded hit-map; a header line (-1) or an out-of-range click
+	// (below the last row, or a stale line past this frame's list) selects nothing.
+	line := mouse.Y - b.listTopLines
+	if line < 0 || line >= len(b.listLineRows) {
+		return
+	}
+	if row := b.listLineRows[line]; row >= 0 {
+		b.cursor = row
 	}
 }
 
@@ -1027,6 +1051,12 @@ func (b *Browser) View(width, height int) string {
 	// notices, or narrow no-preview mode) leaves the scroll keys inert
 	// (updateKey reads this).
 	b.previewShown = false
+	// Clear this frame's click hit-map for the same last-rendered-frame reason:
+	// renderList refills it below for the frames that draw the list, and a frame
+	// that returns early with a notice — or the deleted view just below — leaves
+	// it empty, so a click on such a frame maps to no row.
+	b.listLineRows = nil
+	b.listTopLines = 0
 	if b.showDeleted {
 		return b.deletedView(width, height)
 	}
@@ -1057,6 +1087,14 @@ func (b *Browser) View(width, height int) string {
 	}
 
 	rowBudget := b.listRowBudget(rows, height)
+	// The list block is written next in both branches below, and body — the title
+	// and its blank, plus the filter line and its blank when open — is identical
+	// for each at this point, so record the browser-body lines above the list once
+	// here. body ends on a blank join line, so its newline count is the 0-based
+	// index of the list's first line; updateMouseClick subtracts this to turn a
+	// screen-local click Y into a hit-map index. Same last-rendered-frame contract
+	// as the map itself.
+	b.listTopLines = strings.Count(body.String(), "\n")
 	if width < previewMinWidth {
 		// No preview pane: the list owns the full content width, so fit rows to
 		// it directly.
@@ -1207,11 +1245,19 @@ func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget, width int) strin
 	rows = rows[start:end]
 
 	var lines []string
+	// lineRows records, per emitted line, the visibleRows index it shows so a
+	// click can map back to a row (updateMouseClick): -1 for a provider header,
+	// and the row's ABSOLUTE index (start+i — the space b.cursor and Selected read,
+	// never the window-relative i) for a memory line, so a click in a scrolled list
+	// still lands on the memory drawn there. Built in lockstep with lines and
+	// published to the field View reset for this frame.
+	lineRows := make([]int, 0, len(rows)+1)
 	lastProvider := ""
 	for i, m := range rows {
 		row := start + i
 		if m.Provider != lastProvider {
 			lines = append(lines, b.deps.Styles.Header.Render(fitWidth(m.Provider, width)))
+			lineRows = append(lineRows, -1)
 			lastProvider = m.Provider
 		}
 		marker := "  "
@@ -1227,7 +1273,9 @@ func (b *Browser) renderList(rows []memoryfs.Memory, rowBudget, width int) strin
 			line = b.deps.Styles.Selected.Render(line)
 		}
 		lines = append(lines, line)
+		lineRows = append(lineRows, row)
 	}
+	b.listLineRows = lineRows
 	return strings.Join(lines, "\n")
 }
 

@@ -2429,6 +2429,198 @@ func TestBrowserMouseInertOutsideNormalBody(t *testing.T) {
 	})
 }
 
+// clickRowBrowser builds a two-provider browser (claude, then codex) with six
+// memories in each group — two groups so a click has to cross a provider-header
+// line, and twelve rows so a short height windows the list. Descending ModTime
+// within each group sorts index i to that group's row i (newest first), so the
+// visibleRows order is c0..c5 then x0..x5 with no resort surprises. The preview
+// body is a constant carrying no row-name digits, so a name search over the
+// rendered frame never collides with the preview pane beside the list.
+func clickRowBrowser(t *testing.T) *Browser {
+	t.Helper()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	var memories []memoryfs.Memory
+	for i := range 6 {
+		memories = append(
+			memories,
+			memoryfs.Memory{Provider: "claude", RepoPath: fmt.Sprintf("claude/c%d.md", i), Name: fmt.Sprintf("c%d", i), Class: provider.ClassFact, ModTime: base.Add(time.Duration(6-i) * time.Hour)},
+			memoryfs.Memory{Provider: "codex", RepoPath: fmt.Sprintf("codex/x%d.md", i), Name: fmt.Sprintf("x%d", i), Class: provider.ClassFact, ModTime: base.Add(time.Duration(6-i) * time.Minute)},
+		)
+	}
+	return NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      base.Add(7 * time.Hour),
+		ReadBody: func(memoryfs.Memory) (string, error) { return "preview line\n", nil },
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+}
+
+// lineContaining returns the 0-based index of the first rendered line holding
+// sub — the screen-local Y a click on that line carries — failing if none does.
+func lineContaining(t *testing.T, view, sub string) int {
+	t.Helper()
+	for i, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, sub) {
+			return i
+		}
+	}
+	t.Fatalf("no rendered line contains %q; view:\n%s", sub, view)
+	return -1
+}
+
+// TestBrowserClickSelectsRow pins the click→row contract over the render-time
+// hit-map renderList records: a click on a memory line moves the cursor to that
+// memory (proven through Selected), a click on a provider-header line or below
+// the last rendered row changes nothing, a click in the preview band focuses the
+// pane instead (the unchanged pane-focus contract), and clicks are inert while
+// filtering and in the deleted list. The windowed case proves the map stores the
+// ABSOLUTE visibleRows index, not a window-relative one. Each case drives View
+// first so the map reflects a real frame, then clicks, then asserts.
+func TestBrowserClickSelectsRow(t *testing.T) {
+	t.Parallel()
+	const (
+		splitWidth  = 120 // clears previewMinWidth: a preview pane shows beside the list
+		narrowWidth = 80  // below previewMinWidth: the list owns the full width, no preview
+		tall        = 30  // clears the row budget: all twelve rows render, no windowing
+		windowed    = 10  // budget of six rows: the list windows around the cursor
+	)
+	// Both helpers drive keys through Update, which mutates the browser in place
+	// and hands back the same *Browser, so the caller's pointer sees the change
+	// with no reassignment.
+	down := func(n int) func(*testing.T, *Browser) {
+		return func(t *testing.T, b *Browser) {
+			t.Helper()
+			for range n {
+				b.Update(key("down"))
+			}
+		}
+	}
+	enter := func(name string) func(*testing.T, *Browser) {
+		return func(t *testing.T, b *Browser) {
+			t.Helper()
+			b.Update(key(name))
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		width     int // 0 defaults to splitWidth
+		height    int
+		setup     func(*testing.T, *Browser) // cursor / mode before the render, nil for none
+		clickX    int
+		findLine  string // click the line holding this substring; "" uses fixedY
+		below     bool   // click one line below findLine's line instead of on it
+		fixedY    int    // click Y when findLine is empty (a mode that draws no list)
+		wantPath  string // Selected().RepoPath after the click
+		wantFocus bool   // previewFocused after the click
+	}{
+		{
+			name:     "first memory of provider A",
+			height:   tall,
+			setup:    down(3), // start off row 0 so landing on it is a real move
+			clickX:   listColumn,
+			findLine: "c0",
+			wantPath: "claude/c0.md",
+		},
+		{
+			name:     "single-pane list with no preview",
+			width:    narrowWidth, // previewShown is false here: the other View branch must still record the map
+			height:   tall,
+			clickX:   listColumn,
+			findLine: "c1",
+			wantPath: "claude/c1.md",
+		},
+		{
+			name:     "row of provider B after a header line",
+			height:   tall,
+			clickX:   listColumn,
+			findLine: "x0", // the codex group, reached only across its header line
+			wantPath: "codex/x0.md",
+		},
+		{
+			name:     "provider header line selects nothing",
+			height:   tall,
+			clickX:   listColumn,
+			findLine: "codex",
+			wantPath: "claude/c0.md", // cursor stays on its initial row 0
+		},
+		{
+			name:     "click below the last rendered row",
+			height:   tall,
+			clickX:   listColumn,
+			findLine: "x5", // the last visible memory
+			below:    true,
+			wantPath: "claude/c0.md",
+		},
+		{
+			name:      "preview band focuses the pane",
+			height:    tall,
+			clickX:    previewColumn,
+			findLine:  "c0",
+			wantPath:  "claude/c0.md", // selection unchanged; only focus moves
+			wantFocus: true,
+		},
+		{
+			name:     "inert while filtering",
+			height:   tall,
+			setup:    enter("/"), // the filter input owns every key
+			clickX:   listColumn,
+			findLine: "x0", // would select the codex row but for the guard
+			wantPath: "claude/c0.md",
+		},
+		{
+			name:     "inert while showing deleted",
+			height:   tall,
+			setup:    enter("x"), // the deleted-recovery list owns the body
+			clickX:   listColumn,
+			fixedY:   5, // the deleted view draws no memory list to hit
+			wantPath: "claude/c0.md",
+		},
+		{
+			name:     "windowed list maps to the absolute row",
+			height:   windowed,
+			setup:    down(11), // cursor deep in codex; the window starts past row 0
+			clickX:   listColumn,
+			findLine: "x0", // rendered on the window's first row, absolute index 6
+			wantPath: "codex/x0.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			browser := clickRowBrowser(t)
+			if tc.setup != nil {
+				tc.setup(t, browser)
+			}
+			width := tc.width
+			if width == 0 {
+				width = splitWidth
+			}
+			view := plain(browser.View(width, tc.height))
+
+			y := tc.fixedY
+			if tc.findLine != "" {
+				y = lineContaining(t, view, tc.findLine)
+				if tc.below {
+					y++
+				}
+			}
+
+			next, _ := browser.Update(tea.MouseClickMsg{X: tc.clickX, Y: y, Button: tea.MouseLeft})
+			browser = next.(*Browser)
+
+			got, ok := browser.Selected()
+			if !ok {
+				t.Fatalf("no selection after the click; view:\n%s", view)
+			}
+			if got.RepoPath != tc.wantPath {
+				t.Errorf("click selected %q, want %q; view:\n%s", got.RepoPath, tc.wantPath, view)
+			}
+			if browser.previewFocused != tc.wantFocus {
+				t.Errorf("previewFocused = %v after the click, want %v", browser.previewFocused, tc.wantFocus)
+			}
+		})
+	}
+}
+
 var (
 	_ Screen  = (*Browser)(nil)
 	_ tea.Msg = RefreshMsg{}
