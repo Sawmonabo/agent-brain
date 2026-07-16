@@ -190,3 +190,40 @@ at a real terminal can verify."
 - No Xvfb/xterm or Playwright/xterm.js emulator-side jobs (deferred with reasons above; candidate for close-out housekeeping alongside lychee).
 - No Windows ConPTY leg — supported targets are macOS/Linux/WSL2, all unix PTYs.
 - No OSC52 clipboard assertion — the terminal-side effect is unobservable from a PTY; the emitted OSC52 payload is already unit-pinned.
+
+## Execution deltas (empirical corrections + review adjudications, recorded before merge)
+
+The plan's own Orientation and skeletons predicted two wire facts wrong; the battery's first live
+runs corrected them, and the shipped tests plus ADR 21's dated amendment pin reality. Recorded here
+so this plan is never read as truth against the code — the superseded lines above stay as written,
+per the append-only plan-history convention:
+
+- **Arm order.** Orientation's "assert ORDER of the three markers (`?1049h` then `?1007s` then
+  `?1007h`)" and Step 1's skeleton (its comment and the `altScreen < save && save < set` assertion)
+  are empirically false: the real wire order is `1007s` < `1007h` < `1049h` — the single `tea.Raw`
+  arm payload flushes BEFORE bubbletea's alt-screen entry. `1007s` < `1007h` is the semantic core
+  (the save must capture pre-hub state before the set overwrites it; DEC private-mode state is
+  terminal-global), while `1007h` < `1049h` is a version-coupled snapshot of bubbletea v2's flush
+  order. `TestPTYHubArmsAlternateScrollInOrder` pins the corrected order, red-proven by inversion.
+- **Quit model.** Orientation's "`q` sets `quitPrompt`" and Step 5's "quit via `q` + the confirm
+  key" inverted the routes: `q` is an immediate global quit; `esc` raises the confirm prompt, and
+  only from the top-level Projects tab (pushed screens consume `esc` to pop themselves). The
+  battery quits pushed-screen scenarios via ctrl+c and drives the interactive route as esc→y in
+  `TestPTYQuitRestoresAlternateScrollTail`; both funnel through the shared teardown-tail assertion.
+- **Wheel geometry.** The "dropped first notches" appearance during development was a
+  test-predicate illusion, not input loss: every notch scrolls exactly one line from the very
+  first, but glamour renders heading chrome ahead of the body, so the body's first line sits ~4
+  rows below the viewport top and absence-predicates need 4+ notches to observe anything leave.
+  The shipped wheel test pairs a positive single-notch pin (derived line numbers, with the
+  second notch's line provably absent on the same snapshot) with a drive-to-outcome deeper
+  scroll; ADR 21's "Automated wire-contract coverage" section carries the full finding.
+- **Final-review fix round.** The kill-switch scenario additionally drives one $EDITOR
+  round-trip, covering the `editorFinishedMsg` re-assert's disabled gate — previously the one
+  mutation (hoisting the re-assert out of its config gate) the whole suite could not catch. The
+  alt-scroll plan's supersession note was corrected to say the battery drives the binary its
+  TestMain builds, not "the installed binary" — that word belongs to the self-update vocabulary.
+- **Accepted residual.** `waitStableMaxVisibleLineNumber`'s two-consecutive-poll quiet-frame gate
+  carries a theoretical under-read window if a frame stalls longer than one poll interval
+  mid-scroll; proven green across repeated `-race -count=3` rounds. Harden to three equal reads on
+  the first observed flake — not before, since each extra sample widens every wheel test's floor
+  latency to defend against a window nobody has observed.

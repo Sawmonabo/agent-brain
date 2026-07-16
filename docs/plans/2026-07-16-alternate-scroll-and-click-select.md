@@ -666,7 +666,7 @@ inherently manual. Nothing was dropped without a ruling.
 **Superseded post-merge (recorded when the follow-up landed):** the Verification checklist's
 "Manual smoke handoff note (cannot be automated — no real tty in tests)" premise — and the
 "irreducibly manual" phrasing in the residual above — were overtaken by the PTY e2e battery
-(`docs/plans/2026-07-16-pty-e2e-battery.md`): the battery drives the installed binary on a real
+(`docs/plans/2026-07-16-pty-e2e-battery.md`): the battery drives the binary its TestMain builds on a real
 pseudo-terminal and wire-pins the our-side cells (arm order, wheel-notch scrolling in both
 cursor-key encodings, click-to-select, editor re-assert without re-save, teardown tail order on
 both quit routes, and the kill-switch). What stays manual is the narrowed emulator-side matrix
