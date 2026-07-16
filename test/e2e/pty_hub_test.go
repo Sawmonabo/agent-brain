@@ -378,12 +378,12 @@ func TestPTYQuitRestoresAlternateScrollTail(t *testing.T) {
 
 // TestPTYKillSwitchEmitsNoAlternateScrollBytes is the standing negative control
 // for every 1007-presence assertion in this battery: with dashboard.
-// alternate_scroll = false, a full open→browse→read→quit cycle must put ZERO
-// 1007 bytes on the wire — Init emits neither XTSAVE nor DECSET, and
-// RestoreAlternateScroll is a no-op, so there is no 1007l/1007r either. A
-// refactor that armed 1007 unconditionally would trip this; and this test's
-// silence is what makes the other scenarios' "1007 present" assertions
-// load-bearing rather than vacuous.
+// alternate_scroll = false, a full open→browse→read→edit→quit cycle must put
+// ZERO 1007 bytes on the wire — Init emits neither XTSAVE nor DECSET, the
+// editorFinishedMsg handler skips its re-assert, and RestoreAlternateScroll is
+// a no-op, so there is no 1007l/1007r either. A refactor that armed 1007
+// unconditionally would trip this; and this test's silence is what makes the
+// other scenarios' "1007 present" assertions load-bearing rather than vacuous.
 func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 	t.Parallel()
 	store := ensureHubStore(t)

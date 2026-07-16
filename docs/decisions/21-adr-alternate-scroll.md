@@ -200,9 +200,11 @@ render stream or their effect on a real screen model. Six scenarios:
   below also holds on the documented interactive path, not only the
   unconditional-quit shortcut.
 - `TestPTYKillSwitchEmitsNoAlternateScrollBytes` is the standing negative
-  control: with `alternate_scroll = false`, a full open→browse→read→quit
-  cycle puts ZERO 1007 bytes on the wire, which is what makes every other
-  scenario's "1007 present" assertion load-bearing rather than vacuous.
+  control: with `alternate_scroll = false`, a full open→browse→read→edit→quit
+  cycle — including one $EDITOR round-trip, so the re-assert's disabled gate
+  is exercised too — puts ZERO 1007 bytes on the wire, which is what makes
+  every other scenario's "1007 present" assertion load-bearing rather than
+  vacuous.
 
 The teardown-tail order — `1049l` < `1007l` < `1007r` — is pinned once, in
 a shared helper, and runs on every armed session's quit: the unconditional
