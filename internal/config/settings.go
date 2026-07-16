@@ -67,6 +67,17 @@ type LintSettings struct {
 	StaleAfterDays int `toml:"stale_after_days"`
 }
 
+// DashboardSettings tunes the hub TUI.
+type DashboardSettings struct {
+	// AlternateScroll asks the terminal for alternate-scroll mode (DECSET
+	// 1007) while the hub runs: the wheel scrolls hub content (delivered as
+	// arrow keys) instead of the terminal's own scrollback, without mouse
+	// tracking — so native drag-select stays intact everywhere. False
+	// restores the terminal's raw wheel behavior. Terminals that do not
+	// implement the mode ignore it either way.
+	AlternateScroll bool `toml:"alternate_scroll"`
+}
+
 // ClassifyRule overrides one classification pattern for a provider.
 // Class is one of provider.Class.String()'s exact values ("fact",
 // "derived-index", "regenerated", "ignore") — LoadSettings rejects
@@ -89,10 +100,11 @@ type ProviderSettings struct {
 // to the program (ADR 17: `agent-brain init` writes it once from a
 // template; nothing ever rewrites it, so user comments survive).
 type Settings struct {
-	Sync    SyncSettings    `toml:"sync"`
-	Migrate MigrateSettings `toml:"migrate"`
-	Editor  EditorSettings  `toml:"editor"`
-	Lint    LintSettings    `toml:"lint"`
+	Sync      SyncSettings      `toml:"sync"`
+	Migrate   MigrateSettings   `toml:"migrate"`
+	Editor    EditorSettings    `toml:"editor"`
+	Lint      LintSettings      `toml:"lint"`
+	Dashboard DashboardSettings `toml:"dashboard"`
 	// Providers keys by provider name (e.g. "codex") — see ProviderSettings.
 	Providers map[string]ProviderSettings `toml:"providers"`
 }
@@ -114,6 +126,9 @@ func DefaultSettings() Settings {
 		},
 		Lint: LintSettings{
 			StaleAfterDays: 90,
+		},
+		Dashboard: DashboardSettings{
+			AlternateScroll: true,
 		},
 	}
 }

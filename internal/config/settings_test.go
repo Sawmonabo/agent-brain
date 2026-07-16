@@ -341,3 +341,38 @@ func TestLoadSettingsLintRejectsUnknownKey(t *testing.T) {
 		t.Fatal("LoadSettings() accepted an unknown [lint] key; want error")
 	}
 }
+
+// TestLoadSettingsAlternateScroll pins the dashboard.alternate_scroll
+// contract: absent file and absent section both keep the default (on), an
+// explicit false wins, an explicit true round-trips.
+func TestLoadSettingsAlternateScroll(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name string
+		toml string // "" = no file written
+		want bool
+	}{
+		{name: "no config file", toml: "", want: true},
+		{name: "section absent", toml: "[lint]\nstale_after_days = 30\n", want: true},
+		{name: "explicit false", toml: "[dashboard]\nalternate_scroll = false\n", want: false},
+		{name: "explicit true", toml: "[dashboard]\nalternate_scroll = true\n", want: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if testCase.toml != "" {
+				if err := os.WriteFile(path, []byte(testCase.toml), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			settings, err := config.LoadSettings(path)
+			if err != nil {
+				t.Fatalf("LoadSettings: %v", err)
+			}
+			if got := settings.Dashboard.AlternateScroll; got != testCase.want {
+				t.Errorf("Dashboard.AlternateScroll = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
