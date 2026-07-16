@@ -311,14 +311,14 @@ func TestBrowserRegistryRowsShape(t *testing.T) {
 	}
 }
 
-// TestReadingRegistryRowsShape pins Task 12's registry additions: the
-// browser's enter-to-read row and the reading view's own in-screen keys
-// (ScopeReading). Same discipline as the browser rows above: none Mutates,
-// none has a root-level runner (direct view-level key routing), so they are
-// footer/help-only and absent from the palette. h-history is deliberately
-// NOT here — Task 14 registers that row together with its screen; the edit
-// flow's own rows (e/n/r/d, all Mutates) are pinned separately by
-// TestFlowRegistryRowsShape below.
+// TestReadingRegistryRowsShape pins Task 12's registry additions (plus the
+// later reading-scroll row, ADR 21): the browser's enter-to-read row and the
+// reading view's own in-screen keys (ScopeReading). Same discipline as the
+// browser rows above: none Mutates, none has a root-level runner (direct
+// view-level key routing), so they are footer/help-only and absent from the
+// palette. h-history is deliberately NOT here — Task 14 registers that row
+// together with its screen; the edit flow's own rows (e/n/r/d, all Mutates)
+// are pinned separately by TestFlowRegistryRowsShape below.
 func TestReadingRegistryRowsShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -327,6 +327,7 @@ func TestReadingRegistryRowsShape(t *testing.T) {
 		scope Scope
 	}{
 		{id: "browser-read", keys: []string{"enter"}, scope: ScopeBrowser},
+		{id: "reading-scroll", keys: []string{"j", "k"}, scope: ScopeReading},
 		{id: "reading-links", keys: []string{"tab", "shift+tab"}, scope: ScopeReading},
 		{id: "reading-follow", keys: []string{"enter"}, scope: ScopeReading},
 		{id: "reading-backlinks", keys: []string{"b"}, scope: ScopeReading},
@@ -360,6 +361,23 @@ func TestReadingRegistryRowsShape(t *testing.T) {
 				t.Error("Title must not be empty — it is the palette/help label")
 			}
 		})
+	}
+}
+
+// TestReadingScrollLeadsReadingScope pins reading-scroll's position, not just
+// its shape (TestReadingRegistryRowsShape above covers that): the footer
+// renders a scope's rows in registry order (spec §14), and reading-scroll is
+// the reading view's primary navigation affordance, so it must lead the
+// reading footer rather than land wherever registry insertion happened to
+// put it.
+func TestReadingScrollLeadsReadingScope(t *testing.T) {
+	t.Parallel()
+	rows := ForScope(ScopeReading)
+	if len(rows) == 0 {
+		t.Fatal("ForScope(ScopeReading) returned no rows")
+	}
+	if got := rows[0].ID; got != "reading-scroll" {
+		t.Errorf("first ScopeReading row = %q, want %q (the scroll hint must lead the reading footer)", got, "reading-scroll")
 	}
 }
 

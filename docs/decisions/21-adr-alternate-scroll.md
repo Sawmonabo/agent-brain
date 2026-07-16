@@ -55,9 +55,10 @@ setting that defaults on.
   batched into the model's `Init`, so the mode is armed once as the program
   starts.
 - **Config-gated, default-on.** Every set and the teardown are guarded by
-  `settings.Dashboard.AlternateScroll` (`config/settings.go`, `toml:
-  "alternate_scroll"`, default `true`). `dashboard.alternate_scroll = false`
-  restores the terminal's raw wheel and skips the reset entirely.
+  `settings.Dashboard.AlternateScroll` (`internal/config/settings.go`,
+  `toml:"alternate_scroll"`, default `true`).
+  `dashboard.alternate_scroll = false` restores the terminal's raw wheel and
+  skips the reset entirely.
 - **Reset on every exit path.** The wheel must not keep translating to arrows
   for the shell after the hub quits. `RestoreAlternateScroll` (`altscroll.go`)
   writes the reset from the one choke point every quit shares — the CLI command

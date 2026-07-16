@@ -61,7 +61,8 @@ in each view's footer.
   (theme-aware light/dark).
 - While the preview pane is shown the mouse wheel scrolls it and a click
   focuses it. That turns on terminal mouse reporting, which suppresses the
-  terminal's own drag-select in the browser. To copy text: press `y` to copy
+  terminal's own drag-select in the browser. While that capture is armed,
+  clicking a browser list row selects it. To copy text: press `y` to copy
   the selected memory to the system clipboard (OSC 52 — carries over SSH, tmux
   with `allow-passthrough`, and WSL2), or bypass mouse reporting with
   Option-drag (macOS Terminal/iTerm2) or Shift-drag (Linux terminals, Windows
@@ -70,11 +71,11 @@ in each view's footer.
 - Everywhere else the hub captures no mouse. Instead it sets the terminal's
   alternate-scroll mode (DECSET 1007) for the session, so the wheel scrolls
   hub content — delivered as arrow keys — with native drag-select intact on
-  every screen (ADR 21; Codex's posture). Clicking a browser list row selects
-  it. Terminals that ignore the mode: kitty already translates wheel to
-  arrows in the alternate screen unconditionally; tmux swallows it unless the
-  user binds `WheelUpPane`/`WheelDownPane` with `#{alternate_on}` send-keys
-  (documented beside the OSC52 `allow-passthrough` note). Config:
+  every screen (ADR 21; Codex's posture). Terminals that ignore the mode:
+  kitty already translates wheel to arrows in the alternate screen
+  unconditionally; tmux swallows it unless the user binds
+  `WheelUpPane`/`WheelDownPane` with `#{alternate_on}` send-keys (documented
+  beside the OSC52 `allow-passthrough` note). Config:
   `dashboard.alternate_scroll = false` restores the terminal's raw wheel.
 - In-project filter: `/` inside the browser filters the list (fuzzy on
   name + description).
