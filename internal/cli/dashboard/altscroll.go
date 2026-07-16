@@ -39,12 +39,15 @@ const (
 //
 // The enabled path writes DECRST then XTRESTORE as one string, in that
 // order: DECRST first returns terminals with no XTSAVE/XTRESTORE support to
-// the plain-reset posture (XTRESTORE is simply ignored there, since nothing
-// was ever saved into their state); XTRESTORE then overrides that reset with
-// the saved pre-hub state on terminals that do support the round-trip, so a
+// the plain-reset posture — they ignore the trailing XTRESTORE as an
+// unimplemented sequence. XTRESTORE then overrides that reset with the
+// saved pre-hub state on terminals that do support the round-trip, so a
 // user's own alternate-scroll preference — armed by their own xterm
 // resource or iTerm2 profile before the hub ever ran — survives the hub
-// instead of being clobbered by an unconditional reset.
+// instead of being clobbered by an unconditional reset. If the program
+// failed before Init ever emitted the paired XTSAVE, a round-trip terminal
+// restores its startup value instead — the user's own default, still no
+// worse than the bare reset.
 //
 // The disabled path stays a full no-op: when the kill-switch is off we never
 // emitted the paired XTSAVE in Init, so there is nothing of ours to restore,
