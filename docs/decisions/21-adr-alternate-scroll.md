@@ -58,8 +58,14 @@ setting that defaults on.
   this payload lands relative to entering the alternate screen: `1007s` <
   `1007h` < `1049h` on the wire, the arm preceding the alt-screen enter —
   the reverse of what a first reading of "the hub renders in the alternate
-  screen" (Context, above) might suggest. See "Automated wire-contract
-  coverage," below.
+  screen" (Context, above) might suggest. The two halves of that order carry
+  different weight: `1007s` < `1007h` is the semantic core — the save must
+  capture the pre-hub state before the set overwrites it — and holds
+  wherever the alt-screen switch falls, because DEC private-mode state is
+  terminal-global and only the wheel's *effect* is alt-screen-conditional;
+  `1007h` < `1049h` is a snapshot of bubbletea v2's flush order, a fact to
+  re-verify on a framework bump rather than a designed contract. See
+  "Automated wire-contract coverage," below.
 - **Config-gated, default-on.** Every set and the teardown are guarded by
   `settings.Dashboard.AlternateScroll` (`internal/config/settings.go`,
   `toml:"alternate_scroll"`, default `true`).
@@ -84,7 +90,10 @@ setting that defaults on.
   private modes. On the editor's return, the `editorFinishedMsg` handler
   re-asserts 1007. It is keyed off the exit itself, not the edit outcome: the
   sequence is idempotent when the child left the mode alone (4 bytes) and
-  harmless on the GUI-editor path, which never released the terminal.
+  harmless on the GUI-editor path, which never released the terminal. The
+  handler re-emits only the set, never a second `XTSAVE`: a mid-session save
+  would overwrite the captured pre-hub state with the hub's own armed mode,
+  and the exit restore would then faithfully "restore" the wrong thing.
 
 ## Alternatives rejected
 
@@ -203,8 +212,10 @@ rather than resting on one dedicated scenario alone.
 
 **The scroll-geometry finding.** An investigation into an apparent "dropped
 first notches" anomaly found no drop at all: every wheel notch scrolls the
-reading viewport by exactly one line from the very first notch, on plain
-`j`, CSI (`\x1b[B`), and SS3 (`\x1bOB`) alike — no input is ever dropped.
+reading viewport by exactly one line from the very first notch — over both
+wire encodings a 1007 notch can take (CSI `\x1b[B` and SS3 `\x1bOB`) and
+identically for a plain `j` keypress on the keyboard path — no input is
+ever dropped.
 The anomaly was a test-predicate illusion: glamour renders an H1 heading
 plus a blank line ahead of the long memory's fenced body, and the reading
 view adds two more chrome lines on top of that, so the body's first line
