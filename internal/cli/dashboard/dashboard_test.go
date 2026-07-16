@@ -2508,6 +2508,34 @@ func TestStackFooterRendersReadingCopyBodyLit(t *testing.T) {
 	}
 }
 
+// TestStackFooterRendersReadingScrollLit pins the reading-view scroll row:
+// reading-scroll (j/k) must render lit in the reading stack footer, never
+// struck, so the footer and help advertise the viewport scroll keys (spec §4)
+// honestly — the row carries no root runner, so its always-true available()
+// arm is what keeps it lit. The wheel reaches the same keys via alternate
+// scroll (ADR 21), so the footer speaks for both the keyboard and the wheel.
+func TestStackFooterRendersReadingScrollLit(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
+
+	if !m.available("reading-scroll") {
+		t.Fatal("available(reading-scroll) = false; the footer would render it struck (spec §14 honesty)")
+	}
+
+	raw := m.footer()
+	const segment = "j/k scroll" // KeyHint + Title, exactly as stackFooterLine composes it
+	if !strings.Contains(plain(raw), segment) {
+		t.Fatalf("reading stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
+	}
+	if struck := m.styles.Dim.Strikethrough(true).Render(segment); strings.Contains(raw, struck) {
+		t.Errorf("%q renders struck in the reading footer — its available() whitelist entry regressed", segment)
+	}
+	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
+		t.Errorf("%q does not render lit in the reading footer; got:\n%q", segment, raw)
+	}
+}
+
 // TestInsightsScreenWiring pins the root plumbing the insights screen depends on
 // that lives in this package, not views: stackScope must map a pushed *Insights
 // to ScopeInsights (so its footer names esc-back and nothing tab-level), and the
@@ -2721,7 +2749,7 @@ func TestStackFooterAdvertisesReadingScopedKeys(t *testing.T) {
 	m, _ = step(m, views.PushScreenMsg{Screen: pushedReading(nil)})
 
 	got := plain(m.footer())
-	for _, want := range []string{"tab links", "enter follow", "b backlinks", "y copy path", "Y copy body", "esc back"} {
+	for _, want := range []string{"j/k scroll", "tab links", "enter follow", "b backlinks", "y copy path", "Y copy body", "esc back"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("stack footer %q missing %q", got, want)
 		}

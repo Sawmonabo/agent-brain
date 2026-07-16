@@ -193,6 +193,11 @@ var registry = []Action{
 	// view's own in-screen keys, matched directly by Reading.updateKey.
 	// h-history is deliberately absent — Task 14 declares that row together
 	// with its screen, so no dead row advertises an unbuilt key.
+	// scroll documents the viewport keys (spec §4) in the footer and help; the
+	// viewport's own keymap matches them (readingViewportKeyMap), no root
+	// runner. The wheel reaches the same path: alternate scroll (ADR 21)
+	// delivers wheel notches as these arrow keys.
+	{ID: "reading-scroll", Title: "scroll", Keys: []string{"j", "k"}, KeyHint: "j/k", Scope: ScopeReading},
 	{ID: "reading-links", Title: "links", Keys: []string{"tab", "shift+tab"}, KeyHint: "tab", Scope: ScopeReading},
 	{ID: "reading-follow", Title: "follow", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeReading},
 	{ID: "reading-backlinks", Title: "backlinks", Keys: []string{"b"}, KeyHint: "b", Scope: ScopeReading},

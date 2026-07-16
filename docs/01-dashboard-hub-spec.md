@@ -67,6 +67,15 @@ in each view's footer.
   Option-drag (macOS Terminal/iTerm2) or Shift-drag (Linux terminals, Windows
   Terminal), or press `enter` into the reading view — which captures no mouse —
   and select normally.
+- Everywhere else the hub captures no mouse. Instead it sets the terminal's
+  alternate-scroll mode (DECSET 1007) for the session, so the wheel scrolls
+  hub content — delivered as arrow keys — with native drag-select intact on
+  every screen (ADR 21; Codex's posture). Clicking a browser list row selects
+  it. Terminals that ignore the mode: kitty already translates wheel to
+  arrows in the alternate screen unconditionally; tmux swallows it unless the
+  user binds `WheelUpPane`/`WheelDownPane` with `#{alternate_on}` send-keys
+  (documented beside the OSC52 `allow-passthrough` note). Config:
+  `dashboard.alternate_scroll = false` restores the terminal's raw wheel.
 - In-project filter: `/` inside the browser filters the list (fuzzy on
   name + description).
 - Keys: `enter` read · `e` edit · `n` new · `r` rename · `d` delete ·
@@ -75,7 +84,7 @@ in each view's footer.
 ## 4. Reading view
 
 - Full-width scrollable glamour render (viewport; `j/k`, `ctrl+d/u`,
-  `g/G`).
+  `g/G` — and the wheel via alternate scroll).
 - Frontmatter summarized in a header line: name · type · modified · size.
 - `[[link]]` navigation: `tab`/`shift+tab` cycle link targets (highlighted
   in the render), `enter` jumps to the linked memory's reading view
@@ -245,7 +254,7 @@ Badges on browser rows; detail in the insights view. Never blocks anything
 ## 16. Non-goals (this phase)
 
 - No embedded multi-line editor (ADR 20 decision 2).
-- No remote/SSH serving of the TUI; no mouse-first interactions.
+- No remote/SSH serving of the TUI. Keyboard-first: the wheel (alternate scroll) and the browser's scoped mouse reporting are conveniences layered over complete keyboard paths, never the only path.
 - No new mutating daemon endpoints; no git operations from the TUI.
 - No CLI `history` subcommand (hub-only for now).
 - Windows-native posture unchanged (WSL2 rules per ADR 04 stand).

@@ -37,10 +37,10 @@ type CopyPathMsg struct{ Path string }
 // CopyMemoryMsg asks the root to copy Body — a memory's RAW markdown source —
 // to the system clipboard. It is the feature-full answer to native drag-select
 // being suppressed while the browser holds mouse mode (an xterm-protocol
-// constraint, not ours): an app-level copy, the same thing Claude Code's CLI
-// does, that additionally carries over SSH/tmux/WSL2 where a pointer selection
-// cannot. Label is the memory's display name, printed verbatim in the
-// confirmation toast. Like CopyPathMsg the clipboard write is bubbletea's OSC52
+// constraint, not ours): an app-level OSC52 copy that carries over SSH, tmux
+// (allow-passthrough), and WSL2 — places a pointer selection cannot reach.
+// Label is the memory's display name, printed verbatim in the confirmation
+// toast. Like CopyPathMsg the clipboard write is bubbletea's OSC52
 // escape — best effort, terminal support varies, and there is no delivery ack —
 // so the visible toast, not the silent escape, is what the binding promises.
 // The body is copied raw, never the glamour-styled preview string: raw markdown

@@ -1935,7 +1935,7 @@ func (m *Model) available(id string) bool {
 		"open-browser", "browser-read", "browser-order", "browser-filter",
 		"browser-history", "browser-show-deleted", "browser-insights", "browser-copy",
 		"browser-scroll-preview", "browser-focus-preview", "browser-back",
-		"reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
+		"reading-scroll", "reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
 		"insights-back",
