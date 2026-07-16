@@ -613,3 +613,52 @@ the OSC52 comment drops its disproved Claude Code attribution."
 - Double-click-to-open: bubbletea v2.0.8 exposes no click-count; single click selects, `enter` opens.
 - DECRQM support detection: no behavior branches on it; set-and-forget is strictly simpler and equally safe.
 - Hub-wide mouse capture toggle: superseded by 1007 (Decision Record 1).
+
+## Execution deltas (review adjudications, recorded post-merge)
+
+Every finding from the four task reviews and the final whole-branch review landed in exactly
+one of three states — fixed/built, adjudicated KEEP with the reviewer concurring, or
+inherently manual. Nothing was dropped without a ruling.
+
+**Fixed or built:**
+- T4 round 1 Important — the brief's conditional "extend the registry-shape test" was skipped;
+  `reading-scroll` entry added to `TestReadingRegistryRowsShape` (5f4a668).
+- T4 Minors — `ForScope(ScopeReading)[0]` lead-position pin added; ADR 21 path corrected to
+  `internal/config/settings.go` with the `toml:"alternate_scroll"` span unbroken (5f4a668).
+- Plan-author adjudication — this plan's own §3 spec text placed "Clicking a browser list row
+  selects it." inside the 1007 bullet; clicks only arrive while the preview's mouse capture is
+  armed, so the sentence moved into the capture bullet as a conditional (5f4a668). The plan's
+  draft wording was wrong; the landed spec is more accurate.
+- Final-review Minor 1 — plain exit DECRST could clobber a 1007 the user's own terminal config
+  pre-armed. Built rather than deferred: XTSAVE before arming (save+set as ONE `tea.Raw`;
+  `tea.Batch` guarantees no ordering), exit writes DECRST-then-XTRESTORE so non-supporting
+  terminals land on the plain-reset posture and supporting ones round-trip the user's state;
+  the editor re-assert deliberately never re-saves, pinned by exact-payload equality (1245968).
+- Final-review Minor 2 — `mousePrefixLines` comment overstated its frame invariant; reworded to
+  name the one-cycle in-flight window and why it is benign (1245968).
+- Increment-verify Minor — the teardown comment conflated "terminal ignores XTRESTORE" with the
+  early-exit case where a supporting terminal restores its startup value; split (d838b01).
+- Task 2 plan-text correction — the Interfaces block named `Model.alternateScrollCmd() tea.Cmd`
+  while Step 4 showed the inline `Init` batch; the step body governed and the sketch was never
+  built. Plan internal inconsistency, implementation correct.
+
+**Adjudicated KEEP (reviewer concurred, not merge-blocking):**
+- `reading-scroll` advertises `j/k` only: registry rows carry primary bindings by idiom; the
+  full viewport set (ctrl+d/u, pgup/pgdn, g/G) is spec §4's contract. A schema change to carry
+  a help-only elaboration for one row would be over-engineering.
+- Twin per-row footer lit tests (`…ReadingCopyBodyLit` / `…ReadingScrollLit`): the file's idiom
+  is per-row lit functions (four siblings); consolidating only the new pair would split the
+  idiom. Whole-family table consolidation is legitimate future cleanup, out of this branch.
+- Save/restore constant pins are literal-vs-literal by nature (the constants are hand-built —
+  there is no derivation to guard, unlike the x/ansi-derived set/reset pair); the test comment
+  says so honestly.
+
+**Accepted residuals (no code answer exists; documented where they live):**
+- A mouse event already in flight when an overlay opens lands one frame late and may move the
+  browser cursor invisibly — benign, recoverable, and the class predates this branch (code
+  comment at `mousePrefixLines` carries it).
+- A child `$EDITOR` that itself emits XTSAVE for mode 1007 during the handoff could poison the
+  saved slot; there is no terminal-honest defense, and never re-saving remains strictly better
+  than re-saving.
+- The cross-OS wheel/drag-select/kill-switch/click behavior is irreducibly manual — the smoke
+  matrix in ADR 21 is the human gate's checklist.
