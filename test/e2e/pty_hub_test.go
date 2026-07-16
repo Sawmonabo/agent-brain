@@ -389,11 +389,15 @@ func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 	store := ensureHubStore(t)
 	cfg := defaultSessionConfig()
 	cfg.configDirOverride = store.killSwitchConfigDir(t)
+	cfg.editorScript = writeNoopEditor(t)
 	s := startHubSession(t, cfg)
-	// Exercise the same surfaces the armed scenarios do, so a stray 1007 from
-	// any of them would surface here: open the browser, drop into the reading
-	// view, then quit.
+	// Exercise the same surfaces the armed scenarios do — browser, reading
+	// view, and one $EDITOR round-trip, whose editorFinishedMsg cycle must
+	// keep the 1007 re-assert behind the disabled gate — so a stray 1007 from
+	// any of them would surface here.
 	openLongMemory(t, s)
+	s.send("e")
+	s.waitScreen(func(screen string) bool { return strings.Contains(screen, "no changes") })
 	raw := s.quitAndDrain()
 	if strings.Contains(raw, "[?1007") {
 		t.Errorf("kill-switch session emitted 1007 bytes on the wire; want none\nraw tail: %q", tail(raw))
