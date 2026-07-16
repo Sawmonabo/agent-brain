@@ -6,8 +6,10 @@ import (
 )
 
 // TestAlternateScrollSequences pins the exact escapes: private mode 1007
-// set/reset. Hand-typed literals, not the ansi helpers, so a helper
-// regression cannot silently rewrite both sides of the comparison.
+// set/reset, and the XTSAVE/XTRESTORE save/restore pair. Hand-typed
+// literals, not the ansi helpers or the production constants, so a
+// regression in either cannot silently rewrite both sides of the
+// comparison.
 func TestAlternateScrollSequences(t *testing.T) {
 	t.Parallel()
 	if setAlternateScroll != "\x1b[?1007h" {
@@ -16,11 +18,20 @@ func TestAlternateScrollSequences(t *testing.T) {
 	if resetAlternateScroll != "\x1b[?1007l" {
 		t.Errorf("resetAlternateScroll = %q, want %q", resetAlternateScroll, "\x1b[?1007l")
 	}
+	if saveAlternateScrollState != "\x1b[?1007s" {
+		t.Errorf("saveAlternateScrollState = %q, want %q", saveAlternateScrollState, "\x1b[?1007s")
+	}
+	if restoreAlternateScrollState != "\x1b[?1007r" {
+		t.Errorf("restoreAlternateScrollState = %q, want %q", restoreAlternateScrollState, "\x1b[?1007r")
+	}
 }
 
 // TestRestoreAlternateScroll pins the command-layer teardown: enabled writes
-// exactly the reset sequence, disabled writes nothing (the mode was never
-// set, so resetting would flip a state the user's own tooling may have set).
+// exactly DECRST followed by XTRESTORE (reset first, so terminals without
+// the XTSAVE/XTRESTORE round-trip land on the plain-reset posture; restore
+// second, so terminals that do support it recover the user's pre-hub state).
+// Disabled writes nothing — the mode was never set, so resetting or
+// restoring would flip a state the user's own tooling may have set.
 func TestRestoreAlternateScroll(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
@@ -28,7 +39,7 @@ func TestRestoreAlternateScroll(t *testing.T) {
 		enabled bool
 		want    string
 	}{
-		{name: "enabled resets", enabled: true, want: "\x1b[?1007l"},
+		{name: "enabled resets then restores", enabled: true, want: "\x1b[?1007l\x1b[?1007r"},
 		{name: "disabled writes nothing", enabled: false, want: ""},
 	}
 	for _, testCase := range testCases {

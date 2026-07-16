@@ -259,9 +259,14 @@ func TestTickTriggersReloadAndReschedules(t *testing.T) {
 }
 
 // TestInitEmitsAlternateScroll pins the enable half of the 1007 lifecycle:
-// Init's batch carries the set sequence as a RawMsg exactly when the setting
-// is on. Table covers both setting states so the config gate is proven
-// load-bearing, not decorative.
+// Init's batch carries the save-then-set sequence as a single RawMsg exactly
+// when the setting is on — save and set travel together because tea.Batch
+// gives no ordering guarantee between separate commands, and the save must
+// land before the set arms the mode. The expected payload is hand-typed
+// rather than built from saveAlternateScrollState/setAlternateScroll, so a
+// regression in either constant's value turns this test red, not just a
+// regression in whether Init calls them. Table covers both setting states so
+// the config gate is proven load-bearing, not decorative.
 func TestInitEmitsAlternateScroll(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
@@ -269,7 +274,7 @@ func TestInitEmitsAlternateScroll(t *testing.T) {
 		enabled bool
 		want    bool
 	}{
-		{name: "enabled emits set", enabled: true, want: true},
+		{name: "enabled emits save+set", enabled: true, want: true},
 		{name: "disabled emits nothing", enabled: false, want: false},
 	}
 	for _, testCase := range testCases {
@@ -279,12 +284,12 @@ func TestInitEmitsAlternateScroll(t *testing.T) {
 			model.settings.Dashboard.AlternateScroll = testCase.enabled
 			found := false
 			for _, message := range drain(model.Init()) {
-				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == setAlternateScroll {
+				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == "\x1b[?1007s\x1b[?1007h" {
 					found = true
 				}
 			}
 			if found != testCase.want {
-				t.Errorf("Init emitted set-1007 RawMsg = %v, want %v", found, testCase.want)
+				t.Errorf("Init emitted save+set-1007 RawMsg = %v, want %v", found, testCase.want)
 			}
 		})
 	}

@@ -15,21 +15,44 @@ import (
 // rule), so the two compose without arbitration. bubbletea v2.0.8 has no
 // named API for mode 1007; the sequences are built from x/ansi's generic
 // DECMode machinery and delivered through tea.Raw — the supported raw-escape
-// seam — so no renderer change or dependency bump is involved. ADR 21 holds
-// the full decision trail.
+// seam — so no renderer change or dependency bump is involved. x/ansi has no
+// save/restore-mode helpers either (checked against v0.11.7), so the
+// XTSAVE/XTRESTORE sequences below are hand-built literals for the same
+// reason: save captures the terminal's pre-hub 1007 state before we arm it,
+// and restore replays that saved state at exit, so a user whose own terminal
+// config already armed 1007 gets it back instead of losing it to our reset.
+// ADR 21 holds the full decision trail.
 var (
 	setAlternateScroll   = ansi.SetMode(ansi.DECMode(1007))
 	resetAlternateScroll = ansi.ResetMode(ansi.DECMode(1007))
 )
 
-// RestoreAlternateScroll writes the mode reset after the program has
+const (
+	saveAlternateScrollState    = "\x1b[?1007s"
+	restoreAlternateScrollState = "\x1b[?1007r"
+)
+
+// RestoreAlternateScroll writes the mode teardown after the program has
 // returned, whatever the exit path — the one choke point every quit shares.
 // It must run before any re-exec: syscall.Exec replaces the process image,
-// so nothing deferred survives it. No-op when the mode was never set:
-// resetting unconditionally could flip a 1007 the user's own tooling armed.
+// so nothing deferred survives it.
+//
+// The enabled path writes DECRST then XTRESTORE as one string, in that
+// order: DECRST first returns terminals with no XTSAVE/XTRESTORE support to
+// the plain-reset posture (XTRESTORE is simply ignored there, since nothing
+// was ever saved into their state); XTRESTORE then overrides that reset with
+// the saved pre-hub state on terminals that do support the round-trip, so a
+// user's own alternate-scroll preference — armed by their own xterm
+// resource or iTerm2 profile before the hub ever ran — survives the hub
+// instead of being clobbered by an unconditional reset.
+//
+// The disabled path stays a full no-op: when the kill-switch is off we never
+// emitted the paired XTSAVE in Init, so there is nothing of ours to restore,
+// and writing XTRESTORE anyway could stomp a runtime state the user's own
+// tooling armed after we started.
 func RestoreAlternateScroll(w io.Writer, enabled bool) {
 	if !enabled {
 		return
 	}
-	_, _ = io.WriteString(w, resetAlternateScroll)
+	_, _ = io.WriteString(w, resetAlternateScroll+restoreAlternateScrollState)
 }

@@ -51,21 +51,29 @@ setting that defaults on.
   (`internal/cli/dashboard/altscroll.go`), so no renderer change or dependency
   addition is involved.
 - **Delivered through `tea.Raw`.** The sequences reach the terminal through
-  bubbletea's supported raw-escape seam — `tea.Raw(setAlternateScroll)` is
-  batched into the model's `Init`, so the mode is armed once as the program
-  starts.
+  bubbletea's supported raw-escape seam —
+  `tea.Raw(saveAlternateScrollState+setAlternateScroll)` is batched into the
+  model's `Init` as a single payload, so the mode is armed once as the
+  program starts.
 - **Config-gated, default-on.** Every set and the teardown are guarded by
   `settings.Dashboard.AlternateScroll` (`internal/config/settings.go`,
   `toml:"alternate_scroll"`, default `true`).
   `dashboard.alternate_scroll = false` restores the terminal's raw wheel and
   skips the reset entirely.
-- **Reset on every exit path.** The wheel must not keep translating to arrows
-  for the shell after the hub quits. `RestoreAlternateScroll` (`altscroll.go`)
-  writes the reset from the one choke point every quit shares — the CLI command
-  runs it right after `program.Run()` returns, whatever the exit path. It is an
-  **explicit** call, not a `defer`: the self-update handoff below it may
-  `syscall.Exec`, which replaces the process image before any deferred cleanup
-  could run.
+- **Reset-then-restore on every exit path.** The wheel must not keep
+  translating to arrows for the shell after the hub quits — and a user whose
+  own terminal config (an xterm `alternateScroll` resource, an iTerm2
+  profile toggle) already had 1007 armed before the hub ever started should
+  not lose that preference either. `RestoreAlternateScroll` (`altscroll.go`)
+  writes `DECRST` followed by `XTRESTORE` from the one choke point every quit
+  shares — the CLI command runs it right after `program.Run()` returns,
+  whatever the exit path — paired with the `XTSAVE` issued alongside the set
+  in `Init`. Terminals that support the XTSAVE/XTRESTORE round-trip recover
+  the user's pre-hub state on exit; every other terminal has nothing saved to
+  restore, so `XTRESTORE` is silently ignored there and the plain `DECRST`
+  alone stands. It is an **explicit** call, not a `defer`: the self-update
+  handoff below it may `syscall.Exec`, which replaces the process image
+  before any deferred cleanup could run.
 - **Re-assert after the editor handoff.** The in-terminal `$EDITOR` handoff
   (ADR 20 decision 2) hands the terminal to a child process that may reset
   private modes. On the editor's return, the `editorFinishedMsg` handler
@@ -161,13 +169,20 @@ terminal the mode *breaks*, only ones it does not help.
   alternate buffer is active, and a killed hub leaves the shell in the primary
   buffer where 1007 has no effect. The leak is invisible, so we accept it
   rather than add signal handlers that cannot fire on SIGKILL anyway.
+- **XTSAVE/XTRESTORE round-trips gracefully.** Terminals that support saving
+  and restoring DEC private mode state recover the user's own pre-hub 1007
+  preference on exit; every other terminal has nothing saved to restore, so
+  `XTRESTORE` is a no-op there and the plain `DECRST` stands alone.
 - **One irreducible manual smoke cell.** No unit test has a real tty, so the
   wheel/selection behavior is verified by hand across the cross-OS matrix:
   wheel scrolls the reading view on iTerm2 with the setting on; wheel still
   hover-scrolls the browser preview; drag-select works in the reading view
   *without* modifier keys on 1007-honoring terminals; `alternate_scroll =
-  false` restores the old wheel; quitting leaves the shell's wheel normal; and
-  the xterm.js/Cursor cell is checked explicitly.
+  false` restores the old wheel; quitting leaves the shell's wheel normal; a
+  terminal-level alternate-scroll preference armed before launching the hub
+  (e.g. iTerm2's profile toggle) still holds after quitting, on
+  XTSAVE/XTRESTORE-supporting terminals; and the xterm.js/Cursor cell is
+  checked explicitly.
 - **DECRQM support detection is deliberately absent.** Nothing branches on
   whether the terminal implements 1007; set-and-forget is strictly simpler and
   equally safe, since unsupported terminals ignore the sequence.

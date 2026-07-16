@@ -170,6 +170,12 @@ func TestEditUnchangedIsCancelled(t *testing.T) {
 // itself — not the land outcome — which is why it re-asserts even when nothing
 // changed. Table covers both setting states so the config gate is proven
 // load-bearing here too, not only at Init.
+//
+// The expected payload is the hand-typed literal "\x1b[?1007h" — no save
+// prefix — checked by exact equality rather than a prefix/substring match.
+// This is a negative pin: re-saving mid-session would capture our own
+// already-armed state instead of the user's pre-hub preference, so an exact
+// match is what turns red the moment a regression re-adds the save here.
 func TestEditorFinishReassertsAlternateScroll(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
@@ -199,7 +205,10 @@ func TestEditorFinishReassertsAlternateScroll(t *testing.T) {
 
 			found := false
 			for _, message := range drain(cmd) {
-				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == setAlternateScroll {
+				// Hand-typed literal, not setAlternateScroll — see the doc
+				// comment above for why this pin must not be built from the
+				// same constant the production code emits.
+				if raw, ok := message.(tea.RawMsg); ok && fmt.Sprint(raw.Msg) == "\x1b[?1007h" {
 					found = true
 				}
 			}

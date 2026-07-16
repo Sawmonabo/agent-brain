@@ -519,8 +519,13 @@ func (m Model) Init() tea.Cmd {
 		// Set once for the whole session; the terminal keeps the mode across
 		// the editor handoff's altscreen exit/re-entry (it is dormant outside
 		// the alternate screen), and editorFinishedMsg re-asserts it in case
-		// the child editor reset it.
-		cmds = append(cmds, tea.Raw(setAlternateScroll))
+		// the child editor reset it. Save and set travel as one Raw payload,
+		// save first: tea.Batch gives no ordering guarantee between separate
+		// commands, and the save must reach the terminal before the set arms
+		// the mode — reversed or split across two commands, we would risk
+		// saving our own just-armed 1007 instead of whatever the terminal
+		// held before the hub started.
+		cmds = append(cmds, tea.Raw(saveAlternateScrollState+setAlternateScroll))
 	}
 	return tea.Batch(cmds...)
 }
@@ -941,7 +946,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// modes, so the mode is set again here. Keyed off the exit itself,
 			// not the land outcome — idempotent when the child left it alone
 			// (4 bytes), and harmless on the GUI path, which never released the
-			// terminal.
+			// terminal. Set only, deliberately no paired save: by now 1007 is
+			// our own armed state, not the user's pre-hub preference, so
+			// there is nothing of theirs left to capture.
 			return updated, tea.Raw(setAlternateScroll)
 		}
 		return updated, nil
@@ -1501,9 +1508,11 @@ func (m Model) forwardToStack(msg tea.Msg) (Model, tea.Cmd) {
 // one blank line from the "\n\n" join, the breadcrumb, and its blank join line.
 // Built from the same strings View joins (statusHeader/toastLine/breadcrumb) so
 // the offset and the pixels cannot drift; mouse reporting is only ever armed on
-// the stack-top browser frame (View's MouseMode gate), so the default branch's
-// shape — header, breadcrumb, screen, footer — is the only one a mouse event can
-// arrive under.
+// the stack-top browser frame (View's MouseMode gate), so mouse events are
+// generated under the default branch's shape — header, breadcrumb, screen,
+// footer. An event already in flight when an overlay opens can still land one
+// message cycle late, translated against this same default-branch prefix —
+// benign, worst case an invisible cursor move under the overlay.
 func (m Model) mousePrefixLines() int {
 	header := m.statusHeader()
 	if toastLine := m.toastLine(); toastLine != "" {
