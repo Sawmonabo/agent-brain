@@ -21,11 +21,12 @@ import (
 // through to running the whole suite again, and with no -test.timeout
 // (only `go test` injects that — a git-spawned subprocess bypasses it
 // entirely), each nested run reinstalls filters pointing at itself and
-// recurses without bound. That is what happened to internal/daemon on
-// 2026-07-08: ~70GB of nested `go test` processes and a hard reboot
-// (CLAUDE.md's fork-bomb rule, commit 8624631). testBinaryPath removes
-// the cause; TestMain's tripwire below is the backstop that turns any
-// recurrence into one loud, immediate failure instead of a repeat.
+// recurses without bound. This exact recursion once ran an internal/daemon
+// test fixture to ~70GB of nested `go test` processes and forced a hard
+// reboot — CLAUDE.md's fork-bomb rule guards against exactly this.
+// testBinaryPath removes the cause; TestMain's tripwire below is the
+// backstop that turns any recurrence into one loud, immediate failure
+// instead of a repeat.
 var testBinaryPath string
 
 // TestMain's FIRST action, before the testing package's own flag parsing or

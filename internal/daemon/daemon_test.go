@@ -35,8 +35,8 @@ import (
 // error; it falls through to running the whole suite again, and with no
 // -test.timeout (only `go test` injects that — a git-spawned subprocess
 // bypasses it entirely), each nested run reinstalls filters pointing at
-// itself and recurses without bound. That is what happened on 2026-07-08:
-// ~70GB of nested `go test` processes and a hard reboot. testBinaryPath
+// itself and recurses without bound. This exact recursion once ran nested
+// `go test` processes to ~70GB and forced a hard reboot. testBinaryPath
 // removes the cause; TestMain's tripwire below is the backstop that turns
 // any recurrence into one loud, immediate failure instead of a repeat.
 var testBinaryPath string

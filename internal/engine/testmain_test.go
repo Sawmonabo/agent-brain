@@ -25,9 +25,9 @@ const magicPrefix = "agb1\x00"
 // engine.test; git executing it as a clean/smudge/merge driver falls through
 // to re-running the whole engine suite, and with no -test.timeout on a
 // git-spawned child each nested run rewires filters at itself and recurses
-// without bound (CLAUDE.md's fork-bomb rule; the 2026-07-08 incident that
-// OOM-rebooted a dev machine). TestMain's tripwire below turns any recurrence
-// into one loud, immediate failure instead of a repeat.
+// without bound — this exact recursion has OOM-rebooted a dev machine
+// before (CLAUDE.md's fork-bomb rule). TestMain's tripwire below turns any
+// recurrence into one loud, immediate failure instead of a repeat.
 var engineBinaryPath string
 
 // TestMain's FIRST action, before the testing package's flag parsing or

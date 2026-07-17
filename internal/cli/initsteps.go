@@ -99,9 +99,8 @@ type initState struct {
 // os.Executable() — the same seam buildDoctorDeps uses, and for the
 // identical reason: inside a test process os.Executable() is the
 // compiled cli.test binary, and wiring a git filter at it re-invokes
-// the whole suite as a "clean"/"smudge" driver (the 2026-07-08
-// fork-bomb incident; see testBinaryPath's doc comment,
-// testmain_test.go).
+// the whole suite as a "clean"/"smudge" driver, recursing without bound
+// (see testBinaryPath's doc comment, testmain_test.go).
 func stepIdentity(_ context.Context, state *initState) error {
 	binaryPath := os.Getenv(testBinaryPathEnv)
 	if binaryPath == "" {

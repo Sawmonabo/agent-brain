@@ -19,9 +19,11 @@ import (
 
 // testBinaryPathEnv lets a test point doctor's filter/credential-helper
 // wiring checks at a real built binary instead of os.Executable() — which,
-// inside a test process, IS the compiled cli.test binary itself, the exact
-// anti-pattern CLAUDE.md's fork-bomb rule (commit 8624631) forbids. There
-// is no per-invocation parameter to thread this through:
+// inside a test process, IS the compiled cli.test binary itself. Wiring a
+// git filter at that binary makes git invoke cli.test as its own
+// clean/smudge driver, which recurses the whole suite without bound
+// (CLAUDE.md's fork-bomb rule forbids exactly this). There is no
+// per-invocation parameter to thread this through:
 // newDoctorCmd is built once, argument-less, inside root.go's Root() — the
 // same Root() every cli test drives via runCmd (filter_test.go) — so
 // changing buildDoctorDeps' signature alone cannot reach a test; an env var

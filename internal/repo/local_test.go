@@ -240,10 +240,10 @@ func TestUnitRepoSubdirRoundtripAndOmitsWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestLoadLocalRegistryPhase2FileLoadsUnchanged pins backward
+// TestLoadLocalRegistryFileWithoutRepoSubdirLoadsUnchanged pins backward
 // compatibility: a registry file written before RepoSubdir existed (no
 // repo_subdir key at all) must still load, defaulting the field to "".
-func TestLoadLocalRegistryPhase2FileLoadsUnchanged(t *testing.T) {
+func TestLoadLocalRegistryFileWithoutRepoSubdirLoadsUnchanged(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "phase2.toml")
 	content := `version = 1
