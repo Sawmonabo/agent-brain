@@ -1502,6 +1502,35 @@ func TestPushToastCollapsesEmbeddedNewlinesToOneHeaderLine(t *testing.T) {
 	}
 }
 
+// TestSanitizeToastTextCollapsesCRLFToOneSpace pins sanitizeToastText's
+// NewReplacer argument order directly: "\r\n" must be tried before the lone
+// "\r"/"\n" rules, so a Windows-style line ending collapses to exactly ONE
+// space at the junction, not two. TestPushToastCollapsesEmbeddedNewlinesTo
+// OneHeaderLine already proves the header-height consequence at scale, but
+// its payloads only ever use bare "\n" — this pins the CRLF junction itself,
+// which that test never exercises.
+func TestSanitizeToastTextCollapsesCRLFToOneSpace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "CRLF", text: "a\r\nb", want: "a b"},
+		{name: "bare CR", text: "a\rb", want: "a b"},
+		{name: "bare LF", text: "a\nb", want: "a b"},
+		{name: "mixed", text: "a\r\nb\nc\rd", want: "a b c d"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if got := sanitizeToastText(testCase.text); got != testCase.want {
+				t.Errorf("sanitizeToastText(%q) = %q, want %q", testCase.text, got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestStickyToastPersistsAcrossTicks pins the sticky slot's defining
 // property: an error/action-required toast outlives the info TTL. Both slots
 // are pushed, then ticks are driven well past toastTTL — the info line
