@@ -1,6 +1,6 @@
 package e2e
 
-// The six alternate-scroll wire scenarios. Each spawns a hub on its own pty
+// The alternate-scroll wire scenarios. Each spawns a hub on its own pty
 // against the shared daemon (ptyharness_test.go), drives it with terminal-real
 // input bytes, and asserts on the raw render stream (byte order) or the vt10x
 // screen (rendered state) — the two things no unit test can reach. Navigation
