@@ -21,6 +21,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/views"
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
+	"github.com/Sawmonabo/agent-brain/internal/ghx"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/claude"
 	"github.com/Sawmonabo/agent-brain/internal/repo"
@@ -137,6 +138,14 @@ func launchHub(cmd *cobra.Command) error {
 			return runDoctorFixWithQuiesce(ctx, true, io.Discard)
 		},
 		Scan: hubScanRunner(),
+		// The gh-auth attention remedy (Task 7): the Doctor tab's f hands the
+		// terminal to the interactive `gh auth login -h github.com` when gh auth is
+		// invalid (GitHub's device/browser flow — no daemon may re-mint a token),
+		// then re-probes with a `gh auth status`. Both resolve gh at call time so a
+		// gh installed or re-authed since launch is seen; no token enters this
+		// process (ADR 08).
+		ReauthGH:    hubReauthGHCommand,
+		ProbeGHAuth: hubProbeGHAuth,
 		// The start offer only appears on the daemon-down screen. A
 		// service that probes as already running there means a daemon
 		// that is up-but-unresponsive or crash-looping — starting
@@ -265,6 +274,37 @@ func hubScanRunner() func(context.Context, string) ([]views.ScanFinding, error) 
 		}
 		return hits, nil
 	}
+}
+
+// hubReauthGHCommand builds the interactive `gh auth login -h github.com` the
+// Doctor tab's f hands the terminal to when gh auth is invalid — GitHub's
+// device/browser flow, which needs the real terminal and a human, run through
+// the SAME tea.ExecProcess suspend/resume seam the $EDITOR handoff uses. gh is
+// resolved at call time so a gh installed since launch is found; a missing gh
+// leaves the bare name for exec's own PATH lookup, whose failure surfaces
+// loudly through the handoff's toast rather than silently. Stdio is left to
+// tea.ExecProcess (it wires the program's tty); the ambient environment carries
+// through so gh's browser/keyring integration works.
+func hubReauthGHCommand() *exec.Cmd {
+	ghPath := "gh"
+	if resolved, err := exec.LookPath("gh"); err == nil {
+		ghPath = resolved
+	}
+	return exec.Command(ghPath, "auth", "login", "-h", "github.com")
+}
+
+// hubProbeGHAuth re-checks gh auth after the re-auth handoff returns — a
+// `gh auth status` through ghx.Client.AuthOK, the same probe doctor's gh row
+// runs. Built per call (like offlineDoctorRunner) so a gh installed or re-authed
+// since launch is seen; a missing gh is itself a probe failure that keeps the
+// attention armed. No token enters this process: AuthOK reads gh's exit status
+// only, never a credential (ADR 08).
+func hubProbeGHAuth(ctx context.Context) error {
+	client, err := ghx.NewClient()
+	if err != nil {
+		return err
+	}
+	return client.AuthOK(ctx)
 }
 
 // isInteractiveTTY reports whether the command's stdin AND stdout are real

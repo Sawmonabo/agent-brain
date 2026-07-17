@@ -178,7 +178,11 @@ func (c *Client) ListReleases(ctx context.Context, ownerRepo string, limit int) 
 		return nil, err
 	}
 	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("gh release list --repo %s: %s", ownerRepo, strings.TrimSpace(result.Stderr))
+		// classifyFailure wraps ErrAuthInvalid when gh's stderr is a dead-token
+		// signature, so the hub's update-check (which rides this exact call) can
+		// detect it with errors.Is and arm its attention state; a 404/5xx keeps
+		// the plain message this call always surfaced.
+		return nil, classifyFailure("gh release list --repo "+ownerRepo, result)
 	}
 	var releases []ReleaseInfo
 	if err := json.Unmarshal([]byte(result.Stdout), &releases); err != nil {

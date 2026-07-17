@@ -29,7 +29,7 @@ this document for the hub era.
 
 ```
 Root ─ tab bar: [Projects] [Conflicts] [Activity] [Doctor]
-  │    status bar: daemon state · version · update banner · toasts
+  │    status bar: daemon state · version · update banner · toasts · gh-auth alert
   │    overlays (any view): / global search · ctrl+k palette · ? help
   │
   ├─ Projects tab (table of tracked units; a add · m migrate · u untrack · s sync)
@@ -208,9 +208,21 @@ Badges on browser rows; detail in the insights view. Never blocks anything
 - `U` → confirm modal → runs the ADR 18 self-update (checksum, atomic swap,
   service restart) with progress in a modal; on success the hub offers `R`
   to re-exec itself on the new binary (fallback message: restart manually).
+- gh-auth alert: any gh call that classifies as auth-invalid (the update check
+  above, or the Doctor gh row) arms a loud, sticky status-bar segment
+  `gh auth invalid — Doctor tab: f re-authenticates`. Sticky by design — an
+  invalid OAuth token stays invalid until a human re-auths, so only a gh probe
+  that succeeds (a passing Doctor gh row, or the re-auth handoff below) clears
+  it, never mere time. A dead token silently breaks only the gh-dependent
+  features (the SSH memories remote keeps syncing), so this is the one loud
+  signal the product owes; a silent re-mint is impossible (GitHub's flow is
+  interactive).
 - Doctor tab: `r` re-runs checks; `f` on a fixable failure runs the
-  quiesce-aware `doctor --fix` path and re-renders; `s` runs the gitleaks
-  scan (advisory §12).
+  quiesce-aware `doctor --fix` path and re-renders — except when gh auth is the
+  invalid piece, where `f` instead hands the terminal to interactive
+  `gh auth login -h github.com` (the same suspend/resume seam the `$EDITOR`
+  handoff uses, ADR 21's 1007 re-assert included), re-probes on return, and
+  clears the alert on success; `s` runs the gitleaks scan (advisory §12).
 
 ## 12. Scan integration
 

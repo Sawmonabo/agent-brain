@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/config"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
+	"github.com/Sawmonabo/agent-brain/internal/ghx"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 )
 
@@ -228,6 +230,18 @@ type Config struct {
 	// joins SafetyGate. nil disables the action. Its return type is a views type
 	// (like Discover's TrackCandidate) because the Doctor view renders it.
 	Scan func(ctx context.Context, folder string) ([]views.ScanFinding, error)
+
+	// ReauthGH and ProbeGHAuth are the gh-auth attention remedy (Task 7), injected
+	// by the cli root because gh binary resolution lives outside this package's
+	// import allowlist. ReauthGH builds the interactive `gh auth login -h
+	// github.com` command the Doctor tab's f hands the terminal to when gh auth is
+	// the invalid piece — an *exec.Cmd so it rides the SAME tea.ExecProcess
+	// suspend/resume seam the $EDITOR flow uses. ProbeGHAuth re-checks auth after
+	// that handoff (a `gh auth status`); nil on either disables the handoff (the f
+	// key falls back to the standard doctor --fix). No token ever enters this
+	// process: gh owns its own credential storage (ADR 08).
+	ReauthGH    func() *exec.Cmd
+	ProbeGHAuth func(context.Context) error
 }
 
 // Model is the root bubbletea model: a tab bar over four views, all refreshed
@@ -364,6 +378,18 @@ type Model struct {
 	runDoctorFix func(context.Context) (doctor.Report, error)
 	scan         func(ctx context.Context, folder string) ([]views.ScanFinding, error)
 
+	// gh-auth attention (Task 7, ghauth.go). authInvalid is the sticky flag the
+	// status header renders loudly when any gh call classifies as auth-invalid
+	// (the update-check's ErrAuthInvalid, or the doctor gh row): STICKY by design
+	// — cleared only by a gh probe that succeeds (a passing doctor gh row, or the
+	// re-auth handoff's re-probe), never by time, since an invalid token stays
+	// invalid until a human re-auths. reauthGH/probeGHAuth are the Config closures
+	// the Doctor tab's f uses to run the handoff and re-probe; nil disables the
+	// handoff (f then runs the standard doctor --fix for every failure).
+	authInvalid bool
+	reauthGH    func() *exec.Cmd
+	probeGHAuth func(context.Context) error
+
 	quitting bool
 }
 
@@ -389,6 +415,8 @@ func New(cfg Config) Model {
 		applyUpdate:  cfg.ApplyUpdate,
 		runDoctorFix: cfg.RunDoctorFix,
 		scan:         cfg.Scan,
+		reauthGH:     cfg.ReauthGH,
+		probeGHAuth:  cfg.ProbeGHAuth,
 		getenv:       os.Getenv,
 		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
@@ -781,6 +809,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case doctorMsg:
 		m.doctor.Set(msg.report, msg.err)
+		// The gh row is a live probe: a passing row clears the sticky attention,
+		// an auth-invalid one arms it — so visiting the Doctor tab both surfaces
+		// and resolves the state, through the same ghx classifier the update-check
+		// feeds (ghauth.go).
+		m.applyGHAuthSignal(msg.report)
 		return m, nil
 
 	case doctorFixedMsg:
@@ -788,6 +821,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// view; only a clean fix earns the info toast — immediate feedback with
 		// the re-rendered battery right there, so INFO, not sticky (spec §11).
 		m.doctor.SetFixResult(msg.report, msg.err)
+		// A standard fix re-runs the battery, so its fresh gh row updates the
+		// attention the same way a plain doctor poll does.
+		m.applyGHAuthSignal(msg.report)
 		if msg.err == nil {
 			m.pushToast("fix applied — re-checked")
 		}
@@ -980,18 +1016,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case editorFinishedMsg:
 		updated := m.finishEdit(msg)
-		if m.settings.Dashboard.AlternateScroll {
-			// Re-assert 1007 on the editor's exit: the in-terminal $EDITOR
-			// handoff hands the terminal to a child that may reset private
-			// modes, so the mode is set again here. Keyed off the exit itself,
-			// not the land outcome — idempotent when the child left it alone
-			// (4 bytes), and harmless on the GUI path, which never released the
-			// terminal. Set only, deliberately no paired save: by now 1007 is
-			// our own armed state, not the user's pre-hub preference, so
-			// there is nothing of theirs left to capture.
-			return updated, tea.Raw(setAlternateScroll)
-		}
-		return updated, nil
+		// Re-assert 1007 on the editor's exit: the in-terminal $EDITOR handoff
+		// hands the terminal to a child that may reset private modes, so the mode
+		// is set again here. Keyed off the exit itself, not the land outcome —
+		// idempotent when the child left it alone (4 bytes), and harmless on the
+		// GUI path, which never released the terminal. reassertAlternateScrollCmd
+		// is the shared seam the gh re-auth handoff also returns through (set only,
+		// no paired save — see its doc).
+		return updated, updated.reassertAlternateScrollCmd()
 
 	case views.PaletteChoiceMsg:
 		return m, m.dispatch(msg.ID)
@@ -1016,6 +1048,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.statusCmd() // re-poll to see whether it came up
 
 	case updateCheckedMsg:
+		// A check that failed because the gh token is dead is exactly the silent
+		// gap this task closes: today the banner simply never appears (the user's
+		// live symptom). Classify the error at this one seam and arm the sticky
+		// attention instead of dropping it. This rides the existing at-most-once
+		// check cadence — no new timer, and no retry, since an invalid token stays
+		// invalid until a human re-auths (the daemon must never storm gh).
+		if errors.Is(msg.err, ghx.ErrAuthInvalid) {
+			m.authInvalid = true
+		}
 		// Best-effort (spec §11): a failed check or an "already current" (empty
 		// tag) result surfaces nothing — no banner, no toast. Only a newer tag
 		// opens the offer, and only from idle (the check fires once, so this
@@ -1038,6 +1079,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.updatePhase = updateInstalled
+		return m, nil
+
+	case ghAuthFinishedMsg:
+		// The interactive `gh auth login` child exited and the terminal is ours
+		// again. Re-assert 1007 exactly like the editor return (ADR 21). gh's own
+		// exit code is not authoritative — a user may abandon the device flow yet
+		// have fixed it in the browser, or vice versa — so a clean exit fires the
+		// re-probe (the sole truth about whether the token is live). A launch
+		// failure keeps the attention and names the manual path: there was nothing
+		// to re-probe.
+		reassert := m.reassertAlternateScrollCmd()
+		if msg.err != nil {
+			m.pushStickyToast("gh auth login did not run: " + msg.err.Error() + " — run `gh auth login -h github.com` manually")
+			return m, reassert
+		}
+		return m, tea.Batch(reassert, m.probeGHAuthCmd())
+
+	case ghAuthProbedMsg:
+		if msg.err == nil {
+			// The token is live again — clear the sticky attention and confirm.
+			m.authInvalid = false
+			m.pushToast("gh authentication restored")
+			return m, nil
+		}
+		// Still invalid (or the probe itself failed): the attention stays and the
+		// toast names the one command that fixes it, so the user is never stranded.
+		m.pushStickyToast("gh auth still invalid — run `gh auth login -h github.com`")
 		return m, nil
 
 	case tea.MouseWheelMsg, tea.MouseClickMsg:
@@ -2228,6 +2296,14 @@ func (m *Model) runners() map[string]func() tea.Cmd {
 		// so a direct f/s key and a palette choice run the identical path.
 		"doctor-fix": func() tea.Cmd {
 			m.active = tabDoctor
+			// When gh auth is the invalid piece, f re-authenticates through the
+			// interactive handoff the header directs the user to (ghauth.go) — the
+			// quiesce-aware `doctor --fix` cannot re-mint a token, since GitHub's
+			// device/browser flow needs the human. Every other fixable failure runs
+			// the standard fix.
+			if m.authInvalid && m.reauthGH != nil {
+				return ghReauthCmd(m.reauthGH())
+			}
 			m.doctor.SetFixing()
 			return m.doctorFixCmd()
 		},
@@ -2504,19 +2580,28 @@ func (m Model) activeScope() actions.Scope {
 // keeps only what is fleet-wide and cannot be broken down per unit (daemon
 // state, quiesce, the last fleet cycle), never repeated down every identical row.
 func (m Model) statusHeader() string {
-	base := m.statusHeaderBase()
-	banner := m.updateBanner()
-	if banner == "" {
-		return base
+	header := m.statusHeaderBase()
+	// Both the gh-auth attention and the update banner are status-bar segments
+	// (spec §2: "daemon state · version · update banner · toasts · gh-auth
+	// attention"): appended on the SAME line, so they add no header row and every
+	// frame budget that measures the header (headerBlockHeight and its callers
+	// frameChromeLines/mousePrefixLines) or reserves for it (ProjectsView height−14)
+	// stays put — the invariant Task 1's exact-fill frames depend on. Both render
+	// even when the base is the status-error placeholder, so the "installing…" line
+	// holds through the self-managed daemon restart an apply performs, and the
+	// attention persists when the daemon itself is unreachable.
+	//
+	// The attention leads the banner because it is the louder, action-required
+	// signal; in practice the two never coexist (an invalid token is why the
+	// update check failed, so no banner was ever offered), but the order is
+	// defined rather than incidental.
+	if m.authInvalid {
+		header += m.styles.Dim.Render(" · ") + m.authAttentionSegment()
 	}
-	// The update banner is a status-bar segment adjacent to the version (spec
-	// §2: "daemon state · version · update banner · toasts"): appended on the
-	// SAME line, so it adds no header row and every frame budget that measures
-	// the header (stackBodyHeight/tabBodyHeight's frameChromeLines) or reserves
-	// for it (ProjectsView height−14) stays put. It renders even when the base
-	// is the status-error placeholder, so the "installing…" line holds through
-	// the self-managed daemon restart an apply performs.
-	return base + m.styles.Dim.Render(" · ") + banner
+	if banner := m.updateBanner(); banner != "" {
+		header += m.styles.Dim.Render(" · ") + banner
+	}
+	return header
 }
 
 // statusHeaderBase renders the fleet-level daemon facts (spec §7) — everything
