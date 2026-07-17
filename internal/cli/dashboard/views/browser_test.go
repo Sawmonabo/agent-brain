@@ -2066,11 +2066,11 @@ func TestBrowserPreviewAlignsWithListFirstRow(t *testing.T) {
 
 	got := plain(browser.View(150, 30))
 	lineIndexOf := func(substr string) int {
-		idx := strings.Index(got, substr)
-		if idx == -1 {
+		before, _, found := strings.Cut(got, substr)
+		if !found {
 			t.Fatalf("view missing %q; got:\n%s", substr, got)
 		}
-		return strings.Count(got[:idx], "\n")
+		return strings.Count(before, "\n")
 	}
 
 	rowLine := lineIndexOf("Solo Memory")
