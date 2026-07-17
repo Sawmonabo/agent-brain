@@ -2112,6 +2112,144 @@ func TestProjectsTabFrameExactFillWithFleetHeader(t *testing.T) {
 	}
 }
 
+// tallFleet builds n enrolled units whose folders are unique zero-padded
+// "proj-NN" tokens, taller than any tab budget in these tests so the table's
+// visible window — not the row count — is always the binding constraint.
+func tallFleet(n int) []api.UnitInfo {
+	units := make([]api.UnitInfo, n)
+	for i := range units {
+		units[i] = api.UnitInfo{Provider: "claude", Folder: fmt.Sprintf("proj-%02d", i), LocalDir: fmt.Sprintf("/l/%02d", i), WatchState: "watching"}
+	}
+	return units
+}
+
+// visibleFleetRows reports how many enrolled-fleet rows a composed frame shows.
+// It counts the provider cell "claude" — rendered once per visible table row and
+// nowhere else in the frame: not in the status header, the fleet header, the tab
+// bar, the footer, or the action notice (which names a "proj-NN" folder, so a
+// folder-token count would be inflated by one). A tallFleet unit's own folder is
+// still the precise per-row identity a Contains check uses.
+func visibleFleetRows(frame string) int {
+	return strings.Count(frame, "claude")
+}
+
+// TestProjectsTableReflowsWithToastOccupancy pins this task: the Projects table
+// reflows with the status header's ACTUAL toast occupancy, growing back into the
+// rows a cleared toast frees rather than reserving a toast-blind worst case. The
+// header grows one line per populated toast slot plus the blank that joins two
+// (headerBlockHeight: 1 bare, 3 one toast, 5 two), so the table gives back 2
+// rows for one toast and 4 for two.
+//
+// A frame-height check alone cannot catch the defect: the composed frame is
+// exactly `height` at every occupancy regardless (the root's fitAndFillHeight
+// pads any gap), so the old static reservation passed that check while quietly
+// showing the SAME rows at every occupancy and leaving a blank band above the
+// footer. These visible-window assertions are what make the reflow observable.
+func TestProjectsTableReflowsWithToastOccupancy(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	units := tallFleet(40)
+	build := func(t *testing.T, sticky, info string) Model {
+		t.Helper()
+		m := newTestModel(&fakeData{status: readyStatus(), syncResp: api.SyncResponse{Status: "completed"}})
+		m.version = "vtest"
+		m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+		m.status = readyStatus()
+		m.projects.SetUnits(units)
+		m, _ = step(m, key("s")) // an action notice on the reservation's last chrome row
+		if sticky != "" {
+			m.pushStickyToast(sticky)
+		}
+		if info != "" {
+			m.pushToast(info)
+		}
+		return m
+	}
+
+	zero := build(t, "", "")
+	one := build(t, "", "path: /home/u/x.md")
+	two := build(t, "save failed — kept at /scratch/x.md", "path: /home/u/x.md")
+
+	v0 := visibleFleetRows(plain(zero.View().Content))
+	v1 := visibleFleetRows(plain(one.View().Content))
+	v2 := visibleFleetRows(plain(two.View().Content))
+
+	if v0 <= v2 {
+		t.Fatalf("table did not reflow: %d rows visible toast-free, %d with two toasts — want strictly more toast-free", v0, v2)
+	}
+	if got := v0 - v1; got != 2 {
+		t.Errorf("one toast freed %d table rows, want 2 (headerBlockHeight 1→3)", got)
+	}
+	if got := v0 - v2; got != 4 {
+		t.Errorf("two toasts freed %d table rows, want 4 (headerBlockHeight 1→5)", got)
+	}
+
+	// The toast-free window clears the old static height-14 reservation: at height
+	// 40 that showed 25 rows (proj-00…proj-24), hiding proj-28. The dynamic budget
+	// lifts it into view — so a restored static 14 fails right here.
+	if body := plain(zero.View().Content); !strings.Contains(body, "proj-28") {
+		t.Errorf("toast-free window missing proj-28 — table did not grow past the old static reservation:\n%s", body)
+	}
+
+	// At every occupancy the frame fills the terminal exactly and keeps both the
+	// footer and the action notice on screen: were the table blind to a newly
+	// arrived toast, the root's fitAndFillHeight would eat the notice — the body's
+	// last line — from the bottom.
+	for _, testCase := range []struct {
+		name  string
+		model Model
+	}{{"zero", zero}, {"one", one}, {"two", two}} {
+		body := plain(testCase.model.View().Content)
+		if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+			t.Errorf("%s toasts: frame is %d lines, want exactly %d", testCase.name, gotLines, height)
+		}
+		if footer := plain(testCase.model.footer()); footer == "" || !strings.Contains(body, footer) {
+			t.Errorf("%s toasts: footer missing from the composed frame:\n%s", testCase.name, body)
+		}
+		if !strings.Contains(body, "syncing") {
+			t.Errorf("%s toasts: action notice clamped off the bottom — table did not reflow to fit it:\n%s", testCase.name, body)
+		}
+	}
+
+	// Dismissing the sticky (esc) drops back to one toast; the table grows by the
+	// freed row — the same reflow in the clearing direction, so the root must
+	// re-size on the dismiss transition, not only on push.
+	twoDismissed, _ := step(two, key("esc"))
+	if twoDismissed.stickyToast != nil {
+		t.Fatal("setup: esc did not dismiss the sticky toast")
+	}
+	if got := visibleFleetRows(plain(twoDismissed.View().Content)); got != v1 {
+		t.Errorf("after dismissing the sticky, %d rows visible, want %d (back to one-toast occupancy)", got, v1)
+	}
+}
+
+// TestProjectsTableGrowsWhenToastExpires pins the expiry half of the reflow
+// wiring: a toast shrinks the table, and once it expires on a poll tick the
+// table grows back into the freed row. The root re-sizes Projects on the expiry
+// transition (advanceToasts), not only on push — without it the table would stay
+// short after the toast cleared, the same blank-band defect in the other
+// direction.
+func TestProjectsTableGrowsWhenToastExpires(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+	m.status = readyStatus()
+	m.projects.SetUnits(tallFleet(40))
+	start := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	m.now = start
+	m.pushToast("path: /x")
+	withToast := visibleFleetRows(plain(m.View().Content))
+
+	m, _ = step(m, tickMsg(start.Add(6*time.Second))) // past the 5s TTL
+	if m.toast != nil {
+		t.Fatal("setup: toast did not expire on the post-TTL tick")
+	}
+	if got := visibleFleetRows(plain(m.View().Content)); got != withToast+2 {
+		t.Errorf("table did not grow back on toast expiry: %d rows with the toast, %d after — want +2", withToast, got)
+	}
+}
+
 // TestHelpOpensAndAnyKeyCloses pins the ? overlay's own tiny lifecycle: it
 // replaces the whole body while open, and any key — not just esc — closes
 // it, per spec §14's "any-key closes".

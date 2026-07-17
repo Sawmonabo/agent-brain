@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -475,6 +476,43 @@ func TestProjectsResizeAcrossWideBoundary(t *testing.T) {
 	}
 	if sel, ok := view.SelectedUnit(); !ok || sel.Folder != units[1].Folder {
 		t.Errorf("selection after the round trip = %q (ok=%v), want %q still preserved", sel.Folder, ok, units[1].Folder)
+	}
+}
+
+// TestProjectsViewTableFillsBodyBudget pins SetSize's reservation directly: the
+// table sizes itself to the tab body budget it is handed minus the fixed chrome
+// the Projects view draws around it — the section title, its trailing blank
+// line, the fleet header one row above the table, and the action-notice row one
+// row below — plus the table's own column-header row. A taller budget therefore
+// shows strictly more rows, and the rendered body never exceeds the budget, so
+// the root's fitAndFillHeight never has to clip a real row. This is the per-view
+// half of the reflow; the root wires the budget to the live toast occupancy
+// (dashboard_test.go's reflow pins).
+func TestProjectsViewTableFillsBodyBudget(t *testing.T) {
+	t.Parallel()
+	// A fleet taller than any budget below, so the visible window — never the row
+	// count — is the binding constraint and the count reads back the reservation.
+	units := make([]api.UnitInfo, 40)
+	for i := range units {
+		units[i] = api.UnitInfo{Provider: "claude", Folder: fmt.Sprintf("proj-%02d", i), LocalDir: fmt.Sprintf("/l/%02d", i), WatchState: "watching"}
+	}
+	view := NewProjectsView()
+	view.SetUnits(units)
+
+	for _, budget := range []int{18, 24, 30} {
+		view.SetSize(110, budget)
+		body := plain(view.View("40 units"))
+		// tableChromeLines (4) of chrome plus the table's own header row leave
+		// budget-5 data rows visible; a static, budget-blind reservation would show
+		// the same small count at every budget.
+		if got, want := strings.Count(body, "proj-"), budget-5; got != want {
+			t.Errorf("budget %d: %d table rows visible, want %d", budget, got, want)
+		}
+		// The rendered body fits inside the budget it was sized to: a body taller
+		// than its budget is exactly what the root's fitAndFillHeight would clip.
+		if got := strings.Count(body, "\n") + 1; got > budget {
+			t.Errorf("budget %d: body is %d lines, want <= budget", budget, got)
+		}
 	}
 }
 

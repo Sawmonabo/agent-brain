@@ -156,8 +156,30 @@ func (v *ProjectsView) SetLoadErr(err error) {
 	v.loadErr = err
 }
 
-// SetSize adjusts the table to the terminal's current dimensions.
-func (v *ProjectsView) SetSize(width, height int) {
+// tableChromeLines is the fixed vertical overhead the Projects tab renders
+// around the table, all of it OUTSIDE table.View(): the section title, its
+// trailing blank line, the fleet header one row above the table, and the
+// action-notice row one row below it. SetSize subtracts it from the tab body
+// budget so the table plus this chrome fills that budget exactly. The table's
+// own column-header row lives inside table.View() and is not counted here.
+const tableChromeLines = 4
+
+// SetSize adjusts the table to the terminal width and the tab body's current
+// vertical budget. bodyHeight is the root's tabBodyHeight (dashboard.go): the
+// space left after the status header AT ITS ACTUAL TOAST OCCUPANCY, the tab bar,
+// the footer, and their separators. Deriving the table height from that measured
+// budget — rather than a toast-blind worst case — is what lets the table reflow,
+// growing back into the rows a cleared toast frees, exactly like Conflicts,
+// Activity, and Doctor already do from the same budget. The root re-invokes this
+// on every window resize AND every toast transition (resizeProjects), the two
+// events that move the budget.
+//
+// Rows and columns must change atomically or bubbles panics (setColumns' doc):
+// a width change that crosses the LOCAL DIR boundary routes through setColumns,
+// which swaps rows and columns together. A pure height change — the toast path,
+// where width is unchanged — never touches the column set, so SetHeight alone is
+// safe: the live rows and the column count still agree.
+func (v *ProjectsView) SetSize(width, bodyHeight int) {
 	if width > 0 {
 		v.table.SetWidth(width)
 		// The five essential columns need ~58 cols and always fit; LOCAL DIR (48)
@@ -170,22 +192,8 @@ func (v *ProjectsView) SetSize(width, height int) {
 			v.setColumns(wide)
 		}
 	}
-	// Reserve every non-table line the composed Projects frame carries at full
-	// chrome, so the space-filled table never pushes a real row off the bottom
-	// (spec §9): 8 content lines — the status header, both toast slots (sticky +
-	// info), the tab bar, this tab's section title, the fleet header (one row
-	// above the table), the action notice, and the footer — plus the 6 blank
-	// separators between those blocks. 14 total; the fleet header is the row
-	// that took it from 13 to 14. This reservation is fixed at the two-toast
-	// maximum regardless of actual toast occupancy — unlike tabBodyHeight's
-	// frameChromeLines (dashboard.go), which measures the header's real height
-	// every frame. Fewer toasts than the maximum leave the TABLE short of the
-	// room actually available, not the composed frame: the root's
-	// fitAndFillHeight pads any such gap out to the terminal's exact height
-	// regardless (dashboard.go's own doc), so the footer still lands on the
-	// last row — the table itself just does not grow to use the freed space.
-	if bodyHeight := height - 14; bodyHeight > 3 {
-		v.table.SetHeight(bodyHeight)
+	if tableHeight := bodyHeight - tableChromeLines; tableHeight > 3 {
+		v.table.SetHeight(tableHeight)
 	}
 }
 

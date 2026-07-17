@@ -747,7 +747,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.projects.SetSize(msg.Width, msg.Height)
+		m.resizeProjects()
 		return m, nil
 
 	case tea.BackgroundColorMsg:
@@ -1297,6 +1297,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// informs, it never traps.
 		if m.stickyToast != nil {
 			m.stickyToast = nil
+			// The sticky's header line cleared, freeing a tab body row — grow the
+			// Projects table back into it (resizeProjects' doc).
+			m.resizeProjects()
 			return m, nil
 		}
 		m.quitPrompt = true
@@ -1450,6 +1453,10 @@ func (m *Model) refuseIfQuiesced(action actions.Action) bool {
 // in as one field write, not a value threaded back out and reassigned.
 func (m *Model) pushToast(text string) {
 	m.toast = &toast{text: sanitizeToastText(text), visibleSince: m.visibilityStamp()}
+	// The info slot now occupies a header line it may not have before, shrinking
+	// the tab body budget — reflow the Projects table so its own frame stays
+	// exact (resizeProjects' doc).
+	m.resizeProjects()
 }
 
 // pushStickyToast replaces the STICKY (error / action-required) slot; the
@@ -1460,6 +1467,9 @@ func (m *Model) pushToast(text string) {
 // clears only on esc (handleKey) or when a newer sticky replaces it.
 func (m *Model) pushStickyToast(text string) {
 	m.stickyToast = &toast{text: sanitizeToastText(text), visibleSince: m.visibilityStamp()}
+	// A newly populated sticky slot grows the header the same way the info slot
+	// does, so the Projects table reflows to the shrunk budget (resizeProjects' doc).
+	m.resizeProjects()
 }
 
 // sanitizeToastText collapses any embedded line breaks in text to single
@@ -1518,6 +1528,10 @@ func (m *Model) advanceToasts() {
 	}
 	if m.toast.expired(m.now) {
 		m.toast = nil
+		// The info slot's header line just cleared, freeing a tab body row — grow
+		// the Projects table back into it (resizeProjects' doc), the reflow in the
+		// clearing direction.
+		m.resizeProjects()
 	}
 }
 
@@ -1858,6 +1872,20 @@ func (m Model) stackBodyHeight() int {
 // though both cost exactly one line today.
 func (m Model) tabBodyHeight() int {
 	return bodyHeightFloor(m.height - m.frameChromeLines(m.tabBar()))
+}
+
+// resizeProjects re-sizes the Projects table to the tab body's CURRENT budget
+// (tabBodyHeight, which measures the status header at its actual toast
+// occupancy). The Projects table is the one tab body that holds persistent
+// bubbles viewport state, so — unlike Conflicts/Activity/Doctor, which re-derive
+// their window from tabBodyHeight on every value-receiver View — it must be
+// re-sized explicitly at each seam that moves the budget: the window resize and
+// every toast push/expiry. Without the toast-transition calls the table would
+// stay sized for whatever occupancy the last WindowSizeMsg saw, leaving a blank
+// band above the footer whenever fewer toasts are up than it reserved for (the
+// live-hub defect this closes), or clipping a real row when more are.
+func (m *Model) resizeProjects() {
+	m.projects.SetSize(m.width, m.tabBodyHeight())
 }
 
 // fitAndFillHeight clamps body to at most exact lines, keeping the FIRST
