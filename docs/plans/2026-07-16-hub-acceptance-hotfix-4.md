@@ -173,6 +173,29 @@ what the product owes the user is instant loud detection and a one-keypress reme
 - [ ] **Step 5: Green + mutations** — (a) misroute auth-invalid to offline: classification RED; (b) drop the sticky render: surfacing RED; (c) fake-gh handoff test proves the child ran and the re-probe fired (marker file from the fake script). Restore all.
 - [ ] **Step 6: Package runs + commit** — `feat(dashboard): loud gh-auth attention state with one-key re-auth handoff`
 
+### Task 8: Projects table reflows with toast occupancy (full-parity polish)
+
+**Why this task exists:** Task 1b made every frame fill the terminal exactly, but
+`ProjectsView.SetSize` (`views/projects.go`) keeps its own static height-14 reservation, set only
+on WindowSizeMsg and blind to toast occupancy — proven safe (the dynamic budget is pointwise >=
+the old ceiling, root padding covers the gap), yet the table renders up to 4 rows shorter than a
+toast-free budget allows: once enough projects exist, that is a blank band above the footer where
+rows could be. Full parity = the table reflows with actual occupancy like Browser/Reading/Conflicts
+now do.
+
+**Files:**
+- Modify: `internal/cli/dashboard/views/projects.go` (SetSize reservation → dynamic, passed or derived), `internal/cli/dashboard/dashboard.go` (re-size the Projects view when toast occupancy changes — the same seam WindowSizeMsg uses today, extended to the toast push/expiry transitions)
+- Test: `internal/cli/dashboard/views/projects_test.go`, occupancy rows in the frame exact-fill table
+
+**Known hazard (name it in the code comment):** the bubbles table resize-crash class — rows and
+columns must change atomically (`setColumns` capture/restore pattern from the resize-crash fix in
+`projects.go`); any resize call landing while wide rows are live must go through that pattern.
+
+- [ ] **Step 1: Failing test** — toast-free: the Projects table's visible window equals the dynamic budget (taller than the old static reservation allows); one/two toasts: the window shrinks by the same lines; footer remains on the last row at every occupancy (extend the existing exact-fill occupancy table).
+- [ ] **Step 2: Implement** — thread the actual body budget into SetSize (or a new resize entry point) and invoke it on toast transitions; all row/column mutations go through the atomic pattern.
+- [ ] **Step 3: Green + mutation** — restore the static 14: Step-1 RED. Restore.
+- [ ] **Step 4: Package + battery runs; commit** — `fix(dashboard): projects table reflows with toast occupancy`
+
 ---
 
 ## Verification (whole-branch, before merge)
