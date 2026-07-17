@@ -1316,23 +1316,40 @@ func (m *Model) refuseIfQuiesced(action actions.Action) bool {
 }
 
 // pushToast surfaces text in the INFO slot of the status area for toastTTL of
-// on-screen visibility. visibleSince is stamped now only if the status area
-// is currently clear; pushed under chrome it stays zero and the tick handler
-// stamps it once the chrome closes, so the TTL measures visibility rather
-// than age. pointer receiver: every caller already holds an addressable
-// *Model mid-mutation (dispatch, quiesceGate) and folds this in as one field
-// write, not a value threaded back out and reassigned.
+// on-screen visibility. Text is sanitized to a single line (sanitizeToastText)
+// before storing — see its doc for why. visibleSince is stamped now only if
+// the status area is currently clear; pushed under chrome it stays zero and
+// the tick handler stamps it once the chrome closes, so the TTL measures
+// visibility rather than age. pointer receiver: every caller already holds
+// an addressable *Model mid-mutation (dispatch, quiesceGate) and folds this
+// in as one field write, not a value threaded back out and reassigned.
 func (m *Model) pushToast(text string) {
-	m.toast = &toast{text: text, visibleSince: m.visibilityStamp()}
+	m.toast = &toast{text: sanitizeToastText(text), visibleSince: m.visibilityStamp()}
 }
 
 // pushStickyToast replaces the STICKY (error / action-required) slot; the
-// newest sticky wins. It carries the same visibility stamp as pushToast so a
-// future visibility-gated behaviour reads a truthful value, but the sticky
-// slot never expires on time regardless — it clears only on esc (handleKey)
-// or when a newer sticky replaces it.
+// newest sticky wins. Text is sanitized to a single line (sanitizeToastText)
+// before storing, the same as pushToast. It carries the same visibility
+// stamp as pushToast so a future visibility-gated behaviour reads a
+// truthful value, but the sticky slot never expires on time regardless — it
+// clears only on esc (handleKey) or when a newer sticky replaces it.
 func (m *Model) pushStickyToast(text string) {
-	m.stickyToast = &toast{text: text, visibleSince: m.visibilityStamp()}
+	m.stickyToast = &toast{text: sanitizeToastText(text), visibleSince: m.visibilityStamp()}
+}
+
+// sanitizeToastText collapses any embedded line breaks in text to single
+// spaces, enforcing the toast slots' single-line-per-toast contract:
+// headerBlockHeight counts exactly one rendered line per populated slot, and
+// frameChromeLines' monotonicity guarantee (stackBodyHeight/tabBodyHeight
+// never reserving less than the old two-toast-maximum constant) depends on
+// that count being true. An un-sanitized multi-line payload — e.g. a raw
+// err.Error() with embedded newlines passed straight to pushToast — would
+// make one toast occupy more than its one accounted-for header line,
+// inflating the reservation and reintroducing the clamp/overflow risk the
+// monotonicity argument rules out for a well-behaved toast. "\r\n" collapses
+// to one space, not two, so a Windows-style line ending does not double-count.
+func sanitizeToastText(text string) string {
+	return strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(text)
 }
 
 // visibilityStamp is m.now when the status area is currently clear, else the

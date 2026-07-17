@@ -175,9 +175,15 @@ func (v *ProjectsView) SetSize(width, height int) {
 	// (spec §9): 8 content lines — the status header, both toast slots (sticky +
 	// info), the tab bar, this tab's section title, the fleet header (one row
 	// above the table), the action notice, and the footer — plus the 6 blank
-	// separators between those blocks. 14 total; the fleet header is the row that
-	// took it from 13 to 14. Fewer toasts (or no notice) simply leave the frame
-	// short, never over it.
+	// separators between those blocks. 14 total; the fleet header is the row
+	// that took it from 13 to 14. This reservation is fixed at the two-toast
+	// maximum regardless of actual toast occupancy — unlike tabBodyHeight's
+	// frameChromeLines (dashboard.go), which measures the header's real height
+	// every frame. Fewer toasts than the maximum leave the TABLE short of the
+	// room actually available, not the composed frame: the root's
+	// fitAndFillHeight pads any such gap out to the terminal's exact height
+	// regardless (dashboard.go's own doc), so the footer still lands on the
+	// last row — the table itself just does not grow to use the freed space.
 	if bodyHeight := height - 14; bodyHeight > 3 {
 		v.table.SetHeight(bodyHeight)
 	}

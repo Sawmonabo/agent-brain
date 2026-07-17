@@ -1450,6 +1450,58 @@ func TestToastRendersInStatusHeaderRegion(t *testing.T) {
 	}
 }
 
+// TestPushToastCollapsesEmbeddedNewlinesToOneHeaderLine pins the toast
+// slots' single-line contract: pushToast/pushStickyToast collapse any
+// embedded newlines in the pushed text to spaces before storing it, so a
+// multi-line payload (e.g. a raw err.Error() with embedded newlines) still
+// occupies exactly the one header line headerBlockHeight already counts for
+// it. frameChromeLines' monotonicity guarantee (stackBodyHeight/
+// tabBodyHeight never reserving less than the old two-toast-maximum
+// constant, T1b) depends on that being true: an un-sanitized multi-line
+// toast inflates the header well past its accounted-for height, dips the
+// body budget, and can overflow the composed frame past the terminal —
+// reintroducing the clamp/overflow risk the monotonicity argument rules out
+// for a well-behaved (single-line) toast.
+//
+// 30 embedded newlines in the sticky slot is a deliberately generous margin:
+// unsanitized, that alone inflates headerBlockHeight from 5 to 37 and
+// frameChromeLines from 10 to 42 — already past height (40), so the frame
+// would overflow rather than merely shrink, proving the danger is real and
+// not a boundary artifact of this particular height.
+func TestPushToastCollapsesEmbeddedNewlinesToOneHeaderLine(t *testing.T) {
+	t.Parallel()
+	const height = 40
+	rawSticky := strings.Repeat("save failed\n", 30) + "kept at /scratch/x.md"
+	rawInfo := "path:\n/home/u/x.md\n(2 links)"
+	m := newTestModel(&fakeData{status: readyStatus()})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+	m.status = readyStatus()
+	m = m.pushScreen(fixedHeightScreen{title: "stub"})
+	m.pushStickyToast(rawSticky)
+	m.pushToast(rawInfo)
+
+	if got := m.headerBlockHeight(); got != 5 {
+		t.Fatalf("headerBlockHeight() = %d, want 5 — a multi-line toast occupied more than its one accounted-for header line", got)
+	}
+
+	body := plain(m.View().Content)
+	if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+		t.Errorf("frame is %d lines, want exactly %d — a multi-line toast broke the exact-fill invariant", gotLines, height)
+	}
+	if want := plain(m.footer()); want == "" || !strings.Contains(body, want) {
+		t.Errorf("footer missing from the composed frame:\n%s", body)
+	}
+	if strings.Contains(body, "save failed\nsave failed") || strings.Contains(body, "path:\n/home") {
+		t.Error("toast text still contains an embedded newline; want it collapsed to a space")
+	}
+	if !strings.Contains(body, "save failed save failed") || !strings.Contains(body, "save failed kept at /scratch/x.md") {
+		t.Errorf("sticky toast text not rendered with embedded newlines collapsed to single spaces:\n%s", body)
+	}
+	if !strings.Contains(body, "path: /home/u/x.md (2 links)") {
+		t.Errorf("info toast text not rendered with embedded newlines collapsed to single spaces:\n%s", body)
+	}
+}
+
 // TestStickyToastPersistsAcrossTicks pins the sticky slot's defining
 // property: an error/action-required toast outlives the info TTL. Both slots
 // are pushed, then ticks are driven well past toastTTL — the info line
