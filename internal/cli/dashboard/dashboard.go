@@ -2615,8 +2615,10 @@ func (m Model) statusHeader() string {
 	// (spec §2: "daemon state · version · gh-auth alert · update banner ·
 	// toasts"): appended on the SAME line, so they add no header row and every
 	// frame budget that measures the header (headerBlockHeight and its callers
-	// frameChromeLines/mousePrefixLines) or reserves for it (ProjectsView height−14)
-	// stays put — the invariant the exact-fill frames depend on. Both render
+	// frameChromeLines/mousePrefixLines) or derives its own budget from it
+	// (ProjectsView sizes its table from tabBodyHeight minus the view's named
+	// chrome, not the old static reservation) stays put — the invariant the
+	// exact-fill frames depend on. Both render
 	// even when the base is the status-error placeholder, so the "installing…" line
 	// holds through the self-managed daemon restart an apply performs, and the
 	// attention persists when the daemon itself is unreachable.

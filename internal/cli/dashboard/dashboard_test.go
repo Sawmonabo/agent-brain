@@ -2054,13 +2054,11 @@ func TestFleetHeaderLine(t *testing.T) {
 // chrome reservation EXACTLY, at every toast occupancy, now that the fleet
 // header (spec §9) adds one row above the table. tabBodyHeight reserves the
 // header's ACTUAL current height (not the two-toast maximum) plus the tab
-// bar, the footer, and their separators; ProjectsView's own table sizing
-// stays a separate, worst-case-always reservation (its own doc), so the
-// table itself does not grow as toasts clear — the root's fitAndFillHeight
-// pads the gap instead (its own doc: "the Projects table self-fills its
-// configured height... without padding here a tab with little content would
-// leave the same short-frame, floating-footer symptom"). Either way the
-// composed frame reaches exactly height. Asserting == at every occupancy
+// bar, the footer, and their separators; ProjectsView sizes its table from
+// that same budget, so the table reflows with occupancy (the reflow pins
+// below prove it) — and whether the table grows into a cleared toast's freed
+// rows or the root's fitAndFillHeight pads a still-short body, the composed
+// frame reaches exactly height either way. Asserting == at every occupancy
 // makes BOTH an under-reservation (a real row shoved off the bottom) and an
 // over-reservation (the frame falling short even toast-free) fail here.
 func TestProjectsTabFrameExactFillWithFleetHeader(t *testing.T) {
@@ -2133,8 +2131,9 @@ func visibleFleetRows(frame string) int {
 	return strings.Count(frame, "claude")
 }
 
-// TestProjectsTableReflowsWithToastOccupancy pins this task: the Projects table
-// reflows with the status header's ACTUAL toast occupancy, growing back into the
+// TestProjectsTableReflowsWithToastOccupancy pins the reflow contract: the
+// Projects table reflows with the status header's ACTUAL toast occupancy,
+// growing back into the
 // rows a cleared toast frees rather than reserving a toast-blind worst case. The
 // header grows one line per populated toast slot plus the blank that joins two
 // (headerBlockHeight: 1 bare, 3 one toast, 5 two), so the table gives back 2
@@ -2169,19 +2168,32 @@ func TestProjectsTableReflowsWithToastOccupancy(t *testing.T) {
 	zero := build(t, "", "")
 	one := build(t, "", "path: /home/u/x.md")
 	two := build(t, "save failed — kept at /scratch/x.md", "path: /home/u/x.md")
+	// A sticky ERROR arriving alone is the designed error path — no companion info
+	// toast whose own reflow would mask a stale table. It is the one occupancy that
+	// pins pushStickyToast's reflow by itself.
+	stickyOnly := build(t, "save failed — kept at /scratch/x.md", "")
 
-	v0 := visibleFleetRows(plain(zero.View().Content))
-	v1 := visibleFleetRows(plain(one.View().Content))
-	v2 := visibleFleetRows(plain(two.View().Content))
+	rowsToastFree := visibleFleetRows(plain(zero.View().Content))
+	rowsOneToast := visibleFleetRows(plain(one.View().Content))
+	rowsTwoToasts := visibleFleetRows(plain(two.View().Content))
+	rowsStickyOnly := visibleFleetRows(plain(stickyOnly.View().Content))
 
-	if v0 <= v2 {
-		t.Fatalf("table did not reflow: %d rows visible toast-free, %d with two toasts — want strictly more toast-free", v0, v2)
+	if rowsToastFree <= rowsTwoToasts {
+		t.Fatalf("table did not reflow: %d rows visible toast-free, %d with two toasts — want strictly more toast-free", rowsToastFree, rowsTwoToasts)
 	}
-	if got := v0 - v1; got != 2 {
+	if got := rowsToastFree - rowsOneToast; got != 2 {
 		t.Errorf("one toast freed %d table rows, want 2 (headerBlockHeight 1→3)", got)
 	}
-	if got := v0 - v2; got != 4 {
+	if got := rowsToastFree - rowsTwoToasts; got != 4 {
 		t.Errorf("two toasts freed %d table rows, want 4 (headerBlockHeight 1→5)", got)
+	}
+	// A sticky error alone occupies one header slot exactly as an info toast does,
+	// so it must free the same 2 rows. This is the pin a combined sticky+info push
+	// cannot supply: only pushStickyToast's own reflow keeps the table honest here,
+	// and if it is skipped the stale table overflows and the root clamps the notice
+	// off the bottom (asserted below).
+	if got := rowsToastFree - rowsStickyOnly; got != 2 {
+		t.Errorf("a sticky error alone freed %d table rows, want 2 (its lone header slot, headerBlockHeight 1→3)", got)
 	}
 
 	// The toast-free window clears the old static height-14 reservation: at height
@@ -2198,7 +2210,7 @@ func TestProjectsTableReflowsWithToastOccupancy(t *testing.T) {
 	for _, testCase := range []struct {
 		name  string
 		model Model
-	}{{"zero", zero}, {"one", one}, {"two", two}} {
+	}{{"zero", zero}, {"one", one}, {"two", two}, {"sticky only", stickyOnly}} {
 		body := plain(testCase.model.View().Content)
 		if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
 			t.Errorf("%s toasts: frame is %d lines, want exactly %d", testCase.name, gotLines, height)
@@ -2218,8 +2230,8 @@ func TestProjectsTableReflowsWithToastOccupancy(t *testing.T) {
 	if twoDismissed.stickyToast != nil {
 		t.Fatal("setup: esc did not dismiss the sticky toast")
 	}
-	if got := visibleFleetRows(plain(twoDismissed.View().Content)); got != v1 {
-		t.Errorf("after dismissing the sticky, %d rows visible, want %d (back to one-toast occupancy)", got, v1)
+	if got := visibleFleetRows(plain(twoDismissed.View().Content)); got != rowsOneToast {
+		t.Errorf("after dismissing the sticky, %d rows visible, want %d (back to one-toast occupancy)", got, rowsOneToast)
 	}
 }
 

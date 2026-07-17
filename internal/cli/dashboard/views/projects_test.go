@@ -498,6 +498,11 @@ func TestProjectsViewTableFillsBodyBudget(t *testing.T) {
 	}
 	view := NewProjectsView()
 	view.SetUnits(units)
+	// A populated action notice: the notice row renders only when non-empty (View's
+	// notice case), so without it the fixture's body reads one line short and the
+	// exact-fill check below cannot see downward tableChromeLines drift. The text
+	// must avoid the "proj-" row token so it does not inflate the row count.
+	view.notice = "action pending"
 
 	for _, budget := range []int{18, 24, 30} {
 		view.SetSize(110, budget)
@@ -508,10 +513,14 @@ func TestProjectsViewTableFillsBodyBudget(t *testing.T) {
 		if got, want := strings.Count(body, "proj-"), budget-5; got != want {
 			t.Errorf("budget %d: %d table rows visible, want %d", budget, got, want)
 		}
-		// The rendered body fits inside the budget it was sized to: a body taller
-		// than its budget is exactly what the root's fitAndFillHeight would clip.
-		if got := strings.Count(body, "\n") + 1; got > budget {
-			t.Errorf("budget %d: body is %d lines, want <= budget", budget, got)
+		// The rendered body fills the budget EXACTLY: the four chrome lines
+		// (tableChromeLines — title, blank, fleet header, action notice) plus the
+		// table sized to budget-tableChromeLines. A body one short would let the
+		// root pad a blank band above the footer; one long would force
+		// fitAndFillHeight to clip a real row. Either way tableChromeLines no longer
+		// matches the chrome the view draws — which a `> budget` ceiling misses.
+		if got := strings.Count(body, "\n") + 1; got != budget {
+			t.Errorf("budget %d: body is %d lines, want exactly %d", budget, got, budget)
 		}
 	}
 }
