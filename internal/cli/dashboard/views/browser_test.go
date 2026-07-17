@@ -11,8 +11,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/google/go-cmp/cmp"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/lint"
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/memoryfs"
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 	"github.com/Sawmonabo/agent-brain/internal/provider"
 	"github.com/Sawmonabo/agent-brain/internal/provider/providertest"
@@ -1934,6 +1937,227 @@ func TestBrowserPreviewScrolls(t *testing.T) {
 				t.Errorf("the up key did not bring the top of the body back; got:\n%s", after)
 			}
 		})
+	}
+}
+
+// TestBrowserPreviewHeaderLines pins previewHeaderLines' own contract in
+// isolation (its wiring into renderPreviewPane is covered by the View-level
+// tests below): a memory with no lint issues gets exactly the one
+// unconditional alignment blank and nothing else, while a flagged memory gets
+// that same blank followed by one Warn-styled "⚠ <Rule>: <Detail>" line per
+// issue. lintIssues is poked directly after construction, the same
+// no-relint-can-rebuild-it precedent TestBrowserRenderListFitsPaneWidthDirectly
+// already uses for lintFlags.
+func TestBrowserPreviewHeaderLines(t *testing.T) {
+	t.Parallel()
+	styles := theme.Default(true)
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(nil),
+		List:     func() ([]memoryfs.Memory, error) { return nil, nil },
+		Styles:   styles,
+	})
+	browser.lintIssues = map[string][]lint.Issue{
+		"claude/flagged.md": {{Rule: "dangling-link", Detail: "[[Ghost]] resolves to no memory in this project"}},
+	}
+
+	testCases := []struct {
+		name     string
+		repoPath string
+		want     []string
+	}{
+		{
+			name:     "unflagged memory pads without any warn line",
+			repoPath: "claude/clean.md",
+			want:     []string{""},
+		},
+		{
+			name:     "flagged memory carries a warn-styled reason after the padding",
+			repoPath: "claude/flagged.md",
+			want: []string{
+				"",
+				styles.Warn.Render("⚠ dangling-link: [[Ghost]] resolves to no memory in this project"),
+			},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := browser.previewHeaderLines(memoryfs.Memory{RepoPath: testCase.repoPath}, 80)
+			if diff := cmp.Diff(testCase.want, got); diff != "" {
+				t.Errorf("previewHeaderLines(%q) mismatch (-want +got):\n%s", testCase.repoPath, diff)
+			}
+		})
+	}
+}
+
+// TestBrowserPreviewShowsLintReasonAboveBody pins the full wiring — refresh's
+// real lint.Check output, carried through renderPreviewPane — not just
+// previewHeaderLines in isolation: a hovered memory with a real lint finding
+// shows the issue's Detail sentence, Warn-styled, above the rendered body.
+// This is the live-hub complaint verbatim: a ⚠ badge with no way to learn what
+// it meant.
+func TestBrowserPreviewShowsLintReasonAboveBody(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "flagged.md", "---\nname: Flagged\ndescription: a memory with a dangling reference\n---\n", time.Now())
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	styles := theme.Default(true)
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		Styles:   styles,
+		ReadBody: fakeReadBody(map[string]string{"claude/flagged.md": "see [[Ghost]] for details\n"}),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Render:   func(md string, _ int) string { return "BODYSTART:" + md },
+	})
+
+	const width, height = 150, 30
+	raw := browser.View(width, height)
+	got := plain(raw)
+
+	const wantDetail = "[[Ghost]] resolves to no memory in this project"
+	if !strings.Contains(got, wantDetail) {
+		t.Fatalf("preview pane missing the lint issue's Detail sentence; got:\n%s", got)
+	}
+	wantStyled := styles.Warn.Render("⚠ dangling-link: " + wantDetail)
+	if !strings.Contains(raw, wantStyled) {
+		t.Errorf("lint reason is not Warn-styled; want substring %q in raw view:\n%s", wantStyled, raw)
+	}
+
+	reasonIdx := strings.Index(got, wantDetail)
+	bodyIdx := strings.Index(got, "BODYSTART:")
+	if bodyIdx == -1 {
+		t.Fatalf("preview pane never rendered the body; got:\n%s", got)
+	}
+	if reasonIdx > bodyIdx {
+		t.Errorf("lint reason (offset %d) renders below the body (offset %d), want above; got:\n%s", reasonIdx, bodyIdx, got)
+	}
+}
+
+// TestBrowserPreviewAlignsWithListFirstRow pins the live-hub alignment
+// complaint directly: at fixed geometry, the preview pane's first body line
+// and the list column's first row must land on the very same rendered line.
+// renderList's window always opens on a provider-header line, never a memory
+// row, so the preview's own unconditional blank (previewHeaderLines) is what
+// keeps the two columns level rather than the preview starting one row higher
+// than the list's first actual memory.
+func TestBrowserPreviewAlignsWithListFirstRow(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "solo.md", "---\nname: Solo Memory\ndescription: nothing wrong here\n---\n", time.Now())
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(map[string]string{"claude/solo.md": "a clean body, no links\n"}),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+		Render:   func(md string, _ int) string { return "BODYMARK\n" + md },
+	})
+
+	got := plain(browser.View(150, 30))
+	lineIndexOf := func(substr string) int {
+		idx := strings.Index(got, substr)
+		if idx == -1 {
+			t.Fatalf("view missing %q; got:\n%s", substr, got)
+		}
+		return strings.Count(got[:idx], "\n")
+	}
+
+	rowLine := lineIndexOf("Solo Memory")
+	bodyLine := lineIndexOf("BODYMARK")
+	if rowLine != bodyLine {
+		t.Errorf("preview body starts on line %d but the list's first row is on line %d (not aligned); got:\n%s", bodyLine, rowLine, got)
+	}
+}
+
+// TestBrowserPreviewHeaderRespectsHeightBudgetWithIssues pins the budget
+// contract with the header zone actually populated: a hovered memory with
+// three real lint issues AND an adversarially long body must still fit the
+// view inside its height budget, with the overflow hint still reachable — the
+// header zone's own line count has to come out of the same budget the
+// viewport is bounded to, not be layered on top of it (see renderPreviewPane's
+// doc for why chromeLines and the header zone are subtracted separately).
+func TestBrowserPreviewHeaderRespectsHeightBudgetWithIssues(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	// An empty (but present) frontmatter block yields two issues on its own —
+	// missing name, missing description — isolating the third (dangling-link)
+	// from any accidental frontmatter interaction, exactly like
+	// TestBrowserLintBadge isolates its own single rule.
+	writeBrowserFile(t, dir, "tall.md", "---\n---\n", base)
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(map[string]string{"claude/tall.md": numberedRows("") + "see [[Ghost]] for details\n"}),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	const width, height = 150, 30
+	got := plain(browser.View(width, height))
+	if lines := strings.Count(got, "\n") + 1; lines > height {
+		t.Errorf("view rendered %d lines with 3 header issues present, want <= %d; the header zone must be subtracted from the pane's own budget:\n%s", lines, height, got)
+	}
+	if !strings.Contains(got, "ctrl+d/u pgup/pgdn scroll") {
+		t.Errorf("overflowing preview lost its scroll hint under the header zone; got:\n%s", got)
+	}
+	for _, want := range []string{
+		"⚠ frontmatter: frontmatter missing name",
+		"⚠ frontmatter: frontmatter missing description",
+		"⚠ dangling-link: [[Ghost]] resolves to no memory in this project",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("view missing issue line %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "more") {
+		t.Errorf("exactly 3 issues must not trigger the overflow line; got:\n%s", got)
+	}
+}
+
+// TestBrowserPreviewHeaderCapsIssuesWithOverflowLine pins the Produces
+// contract's overflow shape: a memory with more than three lint issues shows
+// only the first three as named reason lines, collapsing the rest into one
+// "⚠ +N more" line rather than growing the header zone — and the height
+// budget it eats into — without bound.
+func TestBrowserPreviewHeaderCapsIssuesWithOverflowLine(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "many.md", "---\nname: Many Issues\ndescription: a memory with four dangling references\n---\n", time.Now())
+
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	body := "see [[Ghost1]], [[Ghost2]], [[Ghost3]] and [[Ghost4]] for details\n"
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(map[string]string{"claude/many.md": body}),
+		List:     func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	got := plain(browser.View(150, 30))
+	if gotCount, want := strings.Count(got, "⚠ dangling-link:"), 3; gotCount != want {
+		t.Errorf("got %d named dangling-link reason lines, want exactly %d (the rest must collapse into an overflow line); view:\n%s", gotCount, want, got)
+	}
+	if !strings.Contains(got, "⚠ +1 more") {
+		t.Errorf("view missing the overflow line for the 4th issue; got:\n%s", got)
 	}
 }
 

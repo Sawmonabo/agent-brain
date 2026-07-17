@@ -142,6 +142,13 @@ type Browser struct {
 	// per rule from it (spec §9), handed the browser's current results rather
 	// than re-scanning. Refreshed on the same fingerprint gate as lintFlags.
 	lintResults []lint.Result
+	// lintIssues indexes lintResults by RepoPath so the preview pane's header
+	// zone (previewHeaderLines) can look up the hovered memory's own issues
+	// without a linear scan over lintResults on every render. Built in the
+	// same loop, over the same results slice, as lintFlags — so the ⚠ badge
+	// and the reasons displayed for it can never disagree about which
+	// memories are flagged.
+	lintIssues map[string][]lint.Issue
 
 	// preview gates the glamour render feeding previewViewport: View runs on
 	// every keypress and every RefreshMsg (roughly every 2s while idle), and
@@ -356,8 +363,10 @@ func (b *Browser) refresh() {
 		results := lint.Check(memories, b.index, b.deps.ReadBody, b.deps.StaleAfterDays, b.now)
 		b.lintResults = results
 		b.lintFlags = make(map[string]bool, len(results))
+		b.lintIssues = make(map[string][]lint.Issue, len(results))
 		for _, result := range results {
 			b.lintFlags[result.Memory.RepoPath] = true
+			b.lintIssues[result.Memory.RepoPath] = result.Issues
 		}
 		b.lintFingerprint = fingerprint
 	}
@@ -1217,7 +1226,11 @@ func countDistinctProviders(rows []memoryfs.Memory) int {
 // it from the height the root passes, so the two panes share one definition of
 // the chrome above them — the split's height contract, chromeLines + max(list,
 // preview) <= height, then holds by construction rather than by two call sites
-// happening to subtract the same number.
+// happening to subtract the same number. The preview pane's own header zone
+// (previewHeaderLines — a leading alignment blank, plus any lint-issue lines)
+// is additional overhead on top of this, subtracted separately by
+// renderPreviewPane alone: it is local to the pane's own content and, unlike
+// this shared chrome, never shrinks the list's row budget.
 func (b *Browser) chromeLines() int {
 	chrome := 2 // title line + its trailing blank
 	if b.filtering || b.filter.Value() != "" {
@@ -1298,22 +1311,35 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 }
 
 // renderPreviewPane renders the selected memory into the height-bounded,
-// scrollable preview viewport and returns the pane's lines. A body that
-// fits sizes the viewport to its own content, so a short preview lets the list
-// drive the joined height and an empty one adds nothing; a body taller than the
-// pane is bounded to the height budget and scrolls in place, its bottom line
-// spent on an overflow hint. Bounding the pane is the whole fix: without it a
-// long memory grew the JoinHorizontal block past height and shoved the root's
-// footer — the option keys — off the terminal, hiding both the keys and the
-// text past the fold (the exact defect live-hub testing surfaced).
+// scrollable preview viewport and returns the pane's lines, prefixed by a
+// header zone (previewHeaderLines): an unconditional leading blank line,
+// keeping the pane's first body line level with the list column's first row
+// — renderList's own top-of-window provider header always claims the list's
+// row 0, so the preview needs the same one-line offset for the two columns to
+// align — followed by one Warn-styled reason line per lint issue on the
+// hovered memory, if any. A body that fits sizes the viewport to its own
+// content, so a short preview lets the list drive the joined height and an
+// empty one adds nothing; a body taller than the pane is bounded to the
+// height budget and scrolls in place, its bottom line spent on an overflow
+// hint. Bounding the pane is the whole fix: without it a long memory grew the
+// JoinHorizontal block past height and shoved the root's footer — the option
+// keys — off the terminal, hiding both the keys and the text past the fold
+// (the exact defect live-hub testing surfaced).
 //
-// width is the preview column's width (the glamour render/wrap width); height
-// is the whole browser-body budget the root passed, from which the chrome above
-// the split (chromeLines) is subtracted for the pane's own height.
+// width is the preview column's width (the glamour render/wrap width, and the
+// header zone's own truncation width); height is the whole browser-body
+// budget the root passed, from which the chrome above the split (chromeLines)
+// AND the header zone's own line count are both subtracted for the pane's
+// remaining viewport height — the header renders unconditionally, so it must
+// come out of the same budget the viewport is bounded to, never sit on top of
+// it.
 func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int) string {
-	paneHeight := max(height-b.chromeLines(), 1)
+	header := b.previewHeaderLines(selected, width)
+	paneHeight := max(height-b.chromeLines()-len(header), 1)
 	b.previewViewport.SetWidth(width)
 	b.syncPreview(selected, width)
+
+	headerBlock := strings.Join(header, "\n")
 
 	total := b.previewViewport.TotalLineCount()
 	if total <= paneHeight {
@@ -1322,7 +1348,7 @@ func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int)
 		// which would strand a one-row list beside a wall of blank preview and
 		// let the empty pane, not the list, set the joined height.
 		b.previewViewport.SetHeight(total)
-		return b.previewViewport.View()
+		return headerBlock + "\n" + b.previewViewport.View()
 	}
 	// The body overflows: bound the viewport to the budget so it scrolls within
 	// the pane instead of growing the frame past height. Reserve the bottom line
@@ -1331,10 +1357,48 @@ func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int)
 	// content rather than showing only an affordance.
 	if paneHeight < 2 {
 		b.previewViewport.SetHeight(paneHeight)
-		return b.previewViewport.View()
+		return headerBlock + "\n" + b.previewViewport.View()
 	}
 	b.previewViewport.SetHeight(paneHeight - 1)
-	return b.previewViewport.View() + "\n" + b.previewScrollHint(width)
+	return headerBlock + "\n" + b.previewViewport.View() + "\n" + b.previewScrollHint(width)
+}
+
+// previewHeaderLines composes the preview pane's header zone: an
+// unconditional leading blank line — rendered whether or not selected has any
+// issues, because it is alignment padding, not a warning — so the pane's
+// first body line always sits one row below the pane's top, level with the
+// list column's first row (always a provider-header line; see renderList's
+// own doc). One Warn-styled "⚠ <Rule>: <Detail>" line then follows per lint
+// issue recorded against selected (b.lintIssues, keyed by RepoPath), each
+// measured and ansi-truncated to width as PLAIN text before styling — exactly
+// fitListRow's rule for its own badge — so a long Detail sentence can never
+// wrap the pane. More than three issues collapse the remainder into one
+// trailing "⚠ +N more" line rather than growing the header zone without
+// bound, which would crowd the body entirely out of a short pane.
+//
+// Returned as a slice, not pre-joined, so renderPreviewPane can both render it
+// and size the viewport's remaining budget off its exact line count (len) —
+// the two can never disagree — and so a later line added to this zone is one
+// more slice entry, not a change to the height arithmetic.
+func (b *Browser) previewHeaderLines(selected memoryfs.Memory, width int) []string {
+	const maxShownIssues = 3
+	lines := []string{""}
+	issues := b.lintIssues[selected.RepoPath]
+	if len(issues) == 0 {
+		return lines
+	}
+	shown, overflow := issues, 0
+	if len(issues) > maxShownIssues {
+		shown, overflow = issues[:maxShownIssues], len(issues)-maxShownIssues
+	}
+	for _, issue := range shown {
+		reason := fitWidth(fmt.Sprintf("⚠ %s: %s", issue.Rule, issue.Detail), width)
+		lines = append(lines, b.deps.Styles.Warn.Render(reason))
+	}
+	if overflow > 0 {
+		lines = append(lines, b.deps.Styles.Warn.Render(fitWidth(fmt.Sprintf("⚠ +%d more", overflow), width)))
+	}
+	return lines
 }
 
 // syncPreview brings the preview viewport's content up to date with the
