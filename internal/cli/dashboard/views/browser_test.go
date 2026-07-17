@@ -2293,8 +2293,8 @@ func TestBrowserFilteringOwnsKeysOverPreviewScroll(t *testing.T) {
 	}
 }
 
-// TestBrowserFilterTypesMouseKeyNotToggle pins the browser-side half of F1's
-// routing: while the filter owns input, m types into the query like every other
+// TestBrowserFilterTypesMouseKeyNotToggle pins the browser-side half of the
+// mouse-key-as-query-letter routing: while the filter owns input, m types into the query like every other
 // letter action, never routing to the mouse-capture toggle. updateKey reaches
 // the normal-mode m match only AFTER the filtering branch has returned, so the
 // query keeps its m. A regression that hoisted the m match ahead of the

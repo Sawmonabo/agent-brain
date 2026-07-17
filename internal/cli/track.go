@@ -241,7 +241,7 @@ func resolveTrackPath(ctx context.Context, registry *provider.Registry, home, ab
 // engine goroutine) the enrollment's mirror-in and push have usually
 // already happened — this cycle finding nothing left is the SUCCESS
 // shape, and printing its zeros as if they were the enrollment's result
-// misreads success as a no-op (Phase-3 smoke finding). An all-quiet
+// misreads success as a no-op. An all-quiet
 // summary is therefore reported as up-to-date instead of itemized.
 func syncAfterTrack(ctx context.Context, client *api.Client, out io.Writer) error {
 	response, err := client.Sync(ctx, "")

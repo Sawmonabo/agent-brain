@@ -36,7 +36,7 @@ func TestCheckGitMetaHealthyCheckout(t *testing.T) {
 }
 
 // TestCheckGitMetaWarnsOnResidentPoison pins the observability half of the
-// F1 defense: doctor NAMES folder-level poison a fresh clone materialized,
+// git-meta poison defense: doctor NAMES folder-level poison a fresh clone materialized,
 // at every depth and shape (file above the unit dir, file inside it, and a
 // meta-named tree), while leaving the root file alone.
 func TestCheckGitMetaWarnsOnResidentPoison(t *testing.T) {

@@ -58,8 +58,8 @@ func fakeGhOnPath(t *testing.T) {
 //
 // Filter wiring points at testBinaryPath (testmain_test.go), a REAL built
 // binary — never os.Executable(), which inside this test process is the
-// cli.test binary itself (Q3 gate finding I1; see testBinaryPath's doc
-// comment for the incident this avoids). AGENT_BRAIN_TEST_BINARY_PATH
+// cli.test binary itself (see testBinaryPath's doc comment for the
+// incident this avoids). AGENT_BRAIN_TEST_BINARY_PATH
 // mirrors that same value into the doctor COMMAND's own resolution
 // (buildDoctorDeps, doctor.go) so checkFilters' containment comparison —
 // exercised when tests below run `doctor` via runCmd, not by calling
@@ -289,7 +289,7 @@ func startFakeDaemonQuiesceFails(t *testing.T) {
 	})
 }
 
-// TestDoctorFixNotesFailedQuiesce absorbs T2's residual Minor: doctor --fix
+// TestDoctorFixNotesFailedQuiesce closes a gap: doctor --fix
 // silently ignored a failed daemon Quiesce while init's identical situation
 // (stepRepoState, initsteps.go) prints a note — both correctly proceed
 // either way, but only one of them told the operator why. This pins

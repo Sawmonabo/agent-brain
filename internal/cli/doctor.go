@@ -20,8 +20,8 @@ import (
 // testBinaryPathEnv lets a test point doctor's filter/credential-helper
 // wiring checks at a real built binary instead of os.Executable() — which,
 // inside a test process, IS the compiled cli.test binary itself, the exact
-// anti-pattern CLAUDE.md's fork-bomb rule (commit 8624631) forbids (Q3 gate
-// finding I1). There is no per-invocation parameter to thread this through:
+// anti-pattern CLAUDE.md's fork-bomb rule (commit 8624631) forbids. There
+// is no per-invocation parameter to thread this through:
 // newDoctorCmd is built once, argument-less, inside root.go's Root() — the
 // same Root() every cli test drives via runCmd (filter_test.go) — so
 // changing buildDoctorDeps' signature alone cannot reach a test; an env var
@@ -94,7 +94,7 @@ func newDoctorCmd() *cobra.Command {
 // re-check that follows is. binaryPath comes from testBinaryPathEnv, the same
 // fork-bomb guard buildDoctorDeps applies everywhere. --fix re-wires the
 // checkout's git config and rewrites .gitattributes; a resident daemon's cycle
-// racing that surgery contends on git locks (the same Phase-3 F2 hazard init
+// racing that surgery contends on git locks (the same hazard init
 // closes), so its cycles are held best-effort. A daemon that is down or refuses
 // the hold is the status quo, never a reason to fail the repair — a refusal
 // gets an operator-visible note on stderr (which the command routes to its real
@@ -130,9 +130,9 @@ func runDoctorFixWithQuiesce(ctx context.Context, offline bool, stderr io.Writer
 // binaryPath mirrors daemon.Config.BinaryPath's empty-means-default
 // convention: "" resolves os.Executable() here, same as production always
 // did; a non-empty value (RunE passes testBinaryPathEnv's value) is used
-// as-is, letting a test inject a real built binary instead (Q3 gate finding
-// I1) — never os.Executable(), which inside a test process is the compiled
-// cli.test binary itself.
+// as-is, letting a test inject a real built binary instead — never
+// os.Executable(), which inside a test process is the compiled cli.test
+// binary itself.
 func buildDoctorDeps(offline bool, binaryPath string) (doctor.Deps, error) {
 	paths, err := config.DefaultPaths()
 	if err != nil {

@@ -734,8 +734,8 @@ func TestRunUntrackReportsNotEnrolledHonestly(t *testing.T) {
 // basename is always "memory" (…/projects/<slug>/memory), and the
 // prefill is what an empty answer accepts (an interactive Enter or an
 // EOF'd headless run, see isAccessible's contract), so a wrong hint
-// becomes a wrong enrollment. Phase-3 smoke finding: a headless track
-// enrolled a real project under the folder "memory".
+// becomes a wrong enrollment: a headless track once enrolled a real
+// project under the folder "memory" this way.
 func TestRunTrackPathRemotelessHintIsPreferredFolder(t *testing.T) {
 	fp := &fakeProvider{
 		name: "fakeproj", scope: provider.ScopePerProject,

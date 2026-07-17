@@ -127,7 +127,7 @@ func (e *Engine) scrubIntegrated(ctx context.Context) ([]string, error) {
 // (scrubIntegrated), committing that heal on the spot so no later `git add`
 // in this operation consults hostile worktree attributes.
 //
-// SECURITY (spec §5, absolute invariant; F1, Phase-3 final review): the
+// SECURITY (spec §5, absolute invariant): the
 // post-integrate scrubIntegrated only guarantees a poison-free tree at a
 // cycle's END — it relies on the PREVIOUS cycle having scrubbed. That
 // premise fails at exactly two commit-creating boundaries, both of which

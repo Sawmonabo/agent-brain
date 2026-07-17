@@ -26,8 +26,8 @@ import (
 // InactiveTab render the tab bar. Toast renders the status-area info toast
 // and ToastSticky its sticky error/action-required sibling (error-red, so it
 // reads as a failure that needs attention rather than transient feedback).
-// Badge/Selected are consumed by later screens in the dashboard-hub wave
-// (spec plan Phase 5) — they carry a palette-derived color today so that
+// Badge/Selected are consumed by later screens in the dashboard-hub wave —
+// they carry a palette-derived color today so that
 // wave's screens inherit the swap for free instead of inventing their own
 // colors later.
 type Styles struct {

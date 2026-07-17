@@ -7,7 +7,7 @@ import (
 )
 
 // TestVersionOutput exercises the fang.WithVersion(cli.Version) wiring through
-// the built binary — the end-to-end proof the Q1 review asked for (the flag was
+// the built binary as the end-to-end proof that was missing (the flag was
 // previously only checked by a manual run). cli.Version defaults to "dev"
 // (release builds override it via -ldflags), so an un-stamped binary prints
 // fang's "agent-brain version dev" line. Asserting the "version dev" substring

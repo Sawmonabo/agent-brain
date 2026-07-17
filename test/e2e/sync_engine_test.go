@@ -15,7 +15,7 @@ import (
 )
 
 // syncRegistry is the provider table these engine tests run under; the
-// real claude/codex tables arrive in Phase 3.
+// real claude/codex tables arrive later.
 func syncRegistry(t *testing.T) *provider.Registry {
 	t.Helper()
 	fake := providertest.New("claude", provider.ScopePerProject, []provider.Pattern{
@@ -67,7 +67,7 @@ func newSyncMachine(t *testing.T, host, bare string, seed bool) *syncMachine {
 
 // newTwoMachines is the full spec §3/§5 shape: one bare remote, the
 // suite's shared keyset, machine A seeding the repo skeleton (as
-// Phase-3 init will) and machine B cloning it.
+// init will) and machine B cloning it.
 func newTwoMachines(t *testing.T) (a, b *syncMachine, bare string) {
 	t.Helper()
 	bare = newBareRepo(t)
@@ -116,7 +116,7 @@ func TestTwoMachineConvergenceWithCiphertextOnTheWire(t *testing.T) {
 		t.Fatalf("A did not push: %+v", reportA)
 	}
 
-	// Wire check BEFORE B ever sees it: the blob must carry the Phase-1
+	// Wire check BEFORE B ever sees it: the blob must carry the
 	// ciphertext magic (magicPrefix — package-level const in
 	// roundtrip_test.go, same package) and must not leak plaintext.
 	blob := remoteBlob(t, bare, "alpha/claude/memories/testing-style.md")

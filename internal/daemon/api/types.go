@@ -35,8 +35,8 @@ type SyncSummary struct {
 // StatusResponse answers GET /v0/status. State is "ready" when the
 // memories checkout exists and cycles run, "uninitialized" when the
 // daemon is up but the repo hasn't been provisioned yet (init is a
-// Phase-3 command; the Phase-2 daemon must be honest about that state,
-// not crash-loop on it). StateDetail names the specific broken axis (e.g.
+// separate command; the daemon must be honest about that state, not
+// crash-loop on it). StateDetail names the specific broken axis (e.g.
 // "doctor: keyset: ...") when State is "uninitialized" — empty when ready.
 type StatusResponse struct {
 	Version     string       `json:"version"`
@@ -56,7 +56,7 @@ type StatusResponse struct {
 // window (POST /v0/quiesce). Seconds is clamped server-side to [1, 600]; the
 // hold auto-releases at the deadline, so a crashed caller can never wedge the
 // daemon permanently. init and doctor --fix use it to keep the engine off the
-// checkout during their git surgery (Phase-4 F2).
+// checkout during their git surgery.
 type QuiesceRequest struct {
 	Seconds int `json:"seconds"`
 }

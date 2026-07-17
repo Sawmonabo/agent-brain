@@ -219,7 +219,7 @@ func Fix(ctx context.Context, deps Deps) (Report, error) {
 			report.Results[i].Fixed = true
 		case "attributes":
 			// WriteAttributes only ran above when deps.Registry != nil —
-			// Fixed must follow that same condition (Q3 gate finding M2),
+			// Fixed must follow that same condition,
 			// exactly as credential-helper's Fixed already follows
 			// deps.GH != nil below.
 			report.Results[i].Fixed = deps.Registry != nil

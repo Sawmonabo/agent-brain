@@ -271,9 +271,9 @@ func TestDaemonWatchesSyncsAndReports(t *testing.T) {
 		t.Fatalf("status = %+v, want ready/test", status)
 	}
 
-	// Run exports the conflict-log path process-wide so the Phase-1 merge
-	// driver (a git child of integrate) records retain-both events for the
-	// Phase-3 conflicts view (spec §4). Daemon tests are serial (newDaemonEnv
+	// Run exports the conflict-log path process-wide so the merge driver (a
+	// git child of integrate) records retain-both events for the conflicts
+	// view (spec §4). Daemon tests are serial (newDaemonEnv
 	// uses t.Setenv), so the live daemon's value is deterministic here.
 	if got := os.Getenv("AGENT_BRAIN_CONFLICT_LOG"); got != paths.ConflictLogFile() {
 		t.Fatalf("AGENT_BRAIN_CONFLICT_LOG = %q, want %q", got, paths.ConflictLogFile())
@@ -807,7 +807,7 @@ func TestSyncProjectFilterScopesCycleAndRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestDaemonQuiesceClampsTTL pins the clamp bounds (Phase-4 F2): a requested
+// TestDaemonQuiesceClampsTTL pins the clamp bounds: a requested
 // TTL below the 1s floor, above the 600s ceiling, or in range yields a
 // deadline of exactly the clamped duration from "now". The daemon has no
 // injected clock, so the assertion brackets Until between before+want and

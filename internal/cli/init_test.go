@@ -796,7 +796,7 @@ func TestStepRepoStateFirstMachineWritesSkeletonCommitsAndPushes(t *testing.T) {
 	}
 }
 
-// TestStepRepoStateQuiescesLiveDaemonDuringSurgery pins the Phase-3 F2 fix:
+// TestStepRepoStateQuiescesLiveDaemonDuringSurgery pins the fix:
 // when a daemon is already resident (a prior init installed the service), the
 // repo-state step holds its cycles for the checkout surgery and releases them
 // after. The recording fake daemon (which sets AGENT_BRAIN_RUNTIME_DIR) proves
@@ -1065,7 +1065,7 @@ func TestStepConfigFileWritesTemplateWhenMissing(t *testing.T) {
 	if string(got) != configTemplate {
 		t.Fatalf("config.toml does not match the template:\ngot:\n%s\nwant:\n%s", got, configTemplate)
 	}
-	// T3 review gap: the template must document EVERY settings group,
+	// The template must document EVERY settings group,
 	// including [migrate] — otherwise config.MigrateSettings.
 	// PreflightTimeout is only discoverable by reading source.
 	for _, want := range []string{"[migrate]", "preflight_timeout"} {

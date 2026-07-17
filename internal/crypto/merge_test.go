@@ -82,8 +82,8 @@ func TestMergeFactCanceledContextPreservesCurrent(t *testing.T) {
 	}
 }
 
-// TestMergeFactSignalKilledPreservesCurrent covers the third error branch — the
-// one the final review's Important #1 closed. A signal-killed git merge-file
+// TestMergeFactSignalKilledPreservesCurrent covers the third error branch. A
+// signal-killed git merge-file
 // (crash, OOM, external SIGKILL) exits -1; gitx.RunStatus must surface that as
 // an error rather than the "0 conflicts" count a leaked -1 would read as. If it
 // slipped through, MergeFact would encrypt an EMPTY merge over %A and lose the

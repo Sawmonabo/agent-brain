@@ -204,7 +204,7 @@ func TestUnitRepoSubdirValidation(t *testing.T) {
 
 // TestUnitRepoSubdirRoundtripAndOmitsWhenEmpty pins the TOML shape: the
 // key is `omitempty`, so a unit with no RepoSubdir serializes exactly
-// like a Phase-2 unit (no repo_subdir line at all) and a mixed registry
+// like a unit predating RepoSubdir (no repo_subdir line at all) and a mixed registry
 // round-trips losslessly.
 func TestUnitRepoSubdirRoundtripAndOmitsWhenEmpty(t *testing.T) {
 	t.Parallel()

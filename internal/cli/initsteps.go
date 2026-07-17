@@ -356,7 +356,7 @@ func ensureRepoIdentity(ctx context.Context, memories string) error {
 func stepRepoState(ctx context.Context, state *initState) error {
 	// A daemon already resident on this machine (a prior init installed the
 	// service) runs cycles that would race this step's commit/push on git
-	// locks (Phase-3 F2). Hold its automatic cycles for the surgery, best
+	// locks. Hold its automatic cycles for the surgery, best
 	// effort: a daemon that is down, mid-shutdown, or refuses is the
 	// pre-quiesce status quo — the transient-error fallback — never a reason
 	// to fail init. The daemon's TTL auto-releases even if this process dies.
@@ -509,7 +509,7 @@ func stepConfigFile(_ context.Context, state *initState) error {
 // branches (service.ErrAlreadyInstalled and
 // service.ErrAlreadyRunning, both errors.Is), the WSL2 linger warning,
 // and the linger advisory line live in exactly one place
-// rather than being duplicated here (T3 review fix). The start branch is
+// rather than being duplicated here. The start branch is
 // what makes re-running init against a healthy daemon a no-op instead of
 // dying on launchd's already-loaded EIO.
 func stepService(_ context.Context, state *initState) error {

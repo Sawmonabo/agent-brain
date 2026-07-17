@@ -159,9 +159,8 @@ type scanFinding struct {
 // directly against the real 8.30.1 binary, 2026-07-09 — before that report
 // ever reaches this process. Every other field (RuleID, File, StartLine,
 // Fingerprint, ...) survives untouched, which is all `agent-brain scan`
-// needs to locate and rotate a finding. This is the Q2 review's binding
-// adjudication on the flagged judgment call (p4-task-5-review.md): a
-// scan command's own `--json` output is exactly the kind of persistent sink
+// needs to locate and rotate a finding. A scan command's own `--json`
+// output is exactly the kind of persistent sink
 // (redirected file, CI log, terminal scrollback) this feature exists to
 // keep secrets out of, so redaction is the default, gated off only by the
 // explicit `--reveal-secrets` flag (newScanCmd). Passing `--redact` at the
@@ -292,10 +291,9 @@ func newScanCmd() *cobra.Command {
 				}
 			}
 			if len(units) == 0 {
-				// Honor --json even on this empty-state path (Q2 review,
-				// Minor finding): a scripted consumer that unconditionally
-				// decodes stdout as JSON must not hit a parse error just
-				// because nothing happens to be enrolled yet.
+				// Honor --json even on this empty-state path: a scripted consumer
+				// that unconditionally decodes stdout as JSON must not hit a parse
+				// error just because nothing happens to be enrolled yet.
 				if jsonOut {
 					return printJSON(cmd, []scanFinding{})
 				}

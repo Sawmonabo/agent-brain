@@ -142,7 +142,7 @@ func enrollOne(ctx context.Context, target enrollTarget, client *api.Client, p p
 			// NOT Base(d.LocalDir): for claude that basename is always
 			// "memory" (…/projects/<slug>/memory), and the prefill is what
 			// an empty answer accepts — both an interactive Enter and an
-			// EOF'd accessible run (Phase-3 smoke finding: a headless track
+			// EOF'd accessible run (a headless track once
 			// enrolled a project under the folder "memory").
 			folderName, err := target.nameRemotelessFolder(identity.PreferredFolder)
 			if err != nil {

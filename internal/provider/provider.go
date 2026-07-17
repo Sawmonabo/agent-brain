@@ -1,8 +1,7 @@
 // Package provider defines the contract every memory-provider adapter
 // implements, plus the class/pattern model driving merge policy and
-// .gitattributes generation (spec §6; ADRs 02/03). Phase 2 shipped the
-// contract and a test fake; Phase 3 shipped the claude/codex adapters
-// and added Discover/Identify (spec §6) alongside enrollment, their
+// .gitattributes generation (spec §6; ADRs 02/03). The claude/codex
+// adapters added Discover/Identify (spec §6) alongside enrollment, their
 // first consumer.
 package provider
 
@@ -125,7 +124,7 @@ type Identity struct {
 	PreferredFolder string
 }
 
-// Provider is the Phase-2 adapter contract. Implementations must be
+// Provider is the adapter contract. Implementations must be
 // safe for concurrent use by multiple goroutines (the daemon reads them
 // from its API server while the engine syncs).
 type Provider interface {

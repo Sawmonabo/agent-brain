@@ -5061,7 +5061,7 @@ func TestMouseCaptureToggleFooterRowLit(t *testing.T) {
 	}
 }
 
-// TestFilterTypingKeepsMouseKeyAsQueryLetter is the F1 regression pin: while the
+// TestFilterTypingKeepsMouseKeyAsQueryLetter is the regression pin: while the
 // in-browser filter owns input, m must type into the query, never flip mouse
 // capture. The earlier build intercepted m at the root before forwarding, so an
 // m anywhere in a typed query was swallowed AND flipped capture — the reviewer's
@@ -5139,7 +5139,7 @@ func TestMouseCaptureToggleFlipsInDeletedList(t *testing.T) {
 // TestMouseCaptureToggleFlipsWhilePreviewFocused pins the toggle while the
 // preview pane holds keyboard focus (the reviewer's routing trap 2): the focused
 // block routes unmatched keys into the viewport, so without its own m match the
-// key would scroll-or-nothing instead of flipping capture, and F3's focused
+// key would scroll-or-nothing instead of flipping capture, and the focused
 // "m mouse capture" footer row would advertise a dead key. The setup asserts the
 // pane is actually focused before pressing m, so the pin cannot pass through the
 // list-mode m path.
@@ -5161,7 +5161,7 @@ func TestMouseCaptureToggleFlipsWhilePreviewFocused(t *testing.T) {
 	}
 }
 
-// TestMouseCaptureCueLeadsListFooterWithinWidth is the F2 pin: while capture is
+// TestMouseCaptureCueLeadsListFooterWithinWidth pins that while capture is
 // off, the LIST-scope footer must LEAD with the state cue so it survives the
 // clip at the canonical PTY width. The list footer overflows 120 columns and the
 // v2 compositor clips rather than wraps, so a cue appended last (the earlier

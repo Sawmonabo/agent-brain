@@ -55,7 +55,7 @@ func assertAbsent(t *testing.T, path string) {
 }
 
 // plantResidentPoison commits a git-meta file into the checkout — the state
-// a fresh clone of a poisoned main materializes (F1, Phase-3 final review):
+// a fresh clone of a poisoned main materializes:
 // no earlier cycle of THIS machine has ever scrubbed it.
 func plantResidentPoison(t *testing.T, checkout, rel string) {
 	t.Helper()
@@ -76,7 +76,7 @@ func assertPoisonHealed(t *testing.T, checkout, rel string) {
 	}
 }
 
-// TestAdminOpsScrubResidentGitMetaPoison pins the F1 boundary rule for the
+// TestAdminOpsScrubResidentGitMetaPoison pins the boundary rule for the
 // three standalone admin commits: every busy-guarded engine entry point that
 // can create a commit scrubs resident git-meta poison FIRST, so no `git add`
 // ever consults hostile attributes. The Sync entry point is pinned at the

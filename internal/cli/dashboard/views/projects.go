@@ -7,7 +7,7 @@
 // the types here. Views hold their own render state and mutate it through
 // exported Set*/On* methods the root calls; they never import the root
 // package back (that would cycle) and never perform I/O outside a returned
-// tea.Cmd (model purity, enforced by the Q3 gate).
+// tea.Cmd (model purity).
 package views
 
 import (

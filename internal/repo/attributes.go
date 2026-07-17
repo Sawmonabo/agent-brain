@@ -15,7 +15,7 @@ import (
 // default comes first, per-provider newest-wins overrides follow, and
 // the self/meta exclusions close the file so nothing re-filters them.
 // The default and exclusion lines are byte-identical with the wiring the
-// Phase-1 e2e suite proved.
+// e2e suite proved.
 //
 // Inputs are pre-validated (provider.NewRegistry rejects names and globs
 // that cannot appear in an attributes line), so this function is total.

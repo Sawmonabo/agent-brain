@@ -234,8 +234,8 @@ func TestSyncProjectFlagSendsFilter(t *testing.T) {
 
 // TestStatusRendersStateDetailAndUptime pins the human surface for the two
 // StatusResponse fields the daemon populates: StateDetail (which names the
-// broken axis when the daemon is not ready) and StartedAt (uptime). Before
-// the Phase-3 final review both reached only the daemon log and `--json`, so
+// broken axis when the daemon is not ready) and StartedAt (uptime).
+// Previously both reached only the daemon log and `--json`, so
 // `agent-brain status` said "uninitialized" with no reason.
 func TestStatusRendersStateDetailAndUptime(t *testing.T) {
 	startFakeDaemon(t,

@@ -237,7 +237,7 @@ func TestRestoreWorktreeToHeadPropagatesFailure(t *testing.T) {
 }
 
 // TestIntegrateHealsWorktreeOnHardFailReturn is the deterministic proof for the
-// F1 fix: a NON-degraded (hard-fail, err != nil) integrate return heals a
+// hard-fail heal fix: a NON-degraded (hard-fail, err != nil) integrate return heals a
 // diverged worktree AND preserves the original error. It drives
 // healAfterFailedIntegrate — integrate's deferred-heal body — with the exact
 // shape those returns take (integrateOutcome{} + an error). The full-ladder

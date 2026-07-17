@@ -37,7 +37,7 @@ type Manifest struct {
 	// ImportedFrom records completed migrate seeds on this host: bash-era
 	// slug → repo folder (spec §10 step 5). Presence of a slug makes
 	// SeedProject a no-op. Additive and omitempty — the version stays 1, so
-	// a Phase-2 manifest without the key loads unchanged (nil map).
+	// an older manifest without the key loads unchanged (nil map).
 	ImportedFrom map[string]string `json:"imported_from,omitempty"`
 }
 

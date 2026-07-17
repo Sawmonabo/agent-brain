@@ -27,8 +27,8 @@ import (
 // outside the sync cycle, so each calls prepareCheckout right after the busy
 // guard — recovering a crashed rebase and scrubbing resident git-meta poison
 // before any `git add` of its own. Without it, a machine whose checkout was
-// cloned from a poisoned main would commit the seed layer as plaintext
-// (F1, Phase-3 final review). Their own input-side git-meta refusals (the
+// cloned from a poisoned main would commit the seed layer as plaintext.
+// Their own input-side git-meta refusals (the
 // seed's source-tree scrub below) are a DIFFERENT half of the contract:
 // they keep hostile git-meta out of the repo; prepareCheckout keeps
 // already-resident git-meta from unscoping the filter under them.

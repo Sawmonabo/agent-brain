@@ -254,7 +254,7 @@ func TestInstallFiltersIdempotent(t *testing.T) {
 	}
 }
 
-// TestInstallFiltersQuotesBinPathForSh pins the POSIX-sh quoting (Minor #2). git
+// TestInstallFiltersQuotesBinPathForSh pins the POSIX-sh quoting. git
 // runs filter/merge command lines through `sh -c`, so a binPath carrying sh
 // metacharacters must be single-quoted (embedded quotes escaped the POSIX way),
 // never Go %q — which double-quotes and so diverges from sh on $, backtick, and
@@ -286,8 +286,7 @@ func TestInstallFiltersQuotesBinPathForSh(t *testing.T) {
 	}
 }
 
-// TestRunStatusSignalKilledErrors pins the signal-termination guard (the final
-// review's Important #1). A git terminated by a signal — crash, OOM, an external
+// TestRunStatusSignalKilledErrors pins the signal-termination guard. A git terminated by a signal — crash, OOM, an external
 // SIGKILL, none of them a context cancel — exits with code -1, which is NOT a
 // real exit code and must never reach a caller as data: RunStatus reports the
 // exit code AS data (merge-file's conflict count lives there), so a leaked -1

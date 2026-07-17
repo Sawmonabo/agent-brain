@@ -84,7 +84,7 @@ func testMain(m *testing.M) int {
 // caller sets that env (t.Setenv, hence a non-parallel test) to a PRIVATE dir
 // holding its own keyset, so it can rotate the keyset in isolation from every
 // other test. Shape otherwise mirrors newTestCheckout: a bare remote and a
-// clone seeded the way Phase-3 init seeds it.
+// clone seeded the way init seeds it.
 func newEncryptedCheckout(t *testing.T) (checkout, bare string) {
 	t.Helper()
 	root := t.TempDir()

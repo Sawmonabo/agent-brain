@@ -26,7 +26,7 @@ func TestScrubIntegratedRemovesDeepGitMeta(t *testing.T) {
 
 	// Each level carries `* -filter`, the line that unsets the encryption
 	// clean filter for its subtree. folder-level sits ABOVE the unit dir,
-	// so mirror-in's unit-scoped scrub never sees it (the M1 hole). Listed
+	// so mirror-in's unit-scoped scrub never sees it. Listed
 	// in the lexical order filepath.WalkDir visits them, so this doubles as
 	// the expected `healed` slice.
 	gitMeta := []string{

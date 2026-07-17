@@ -35,7 +35,7 @@ func FuzzRoundtrip(f *testing.F) {
 			t.Fatal("roundtrip mismatch")
 		}
 		// Clean must verify-decrypt genuine ciphertext and pass the exact
-		// bytes through (Q2 verify-decrypt contract): whatever the plaintext,
+		// bytes through (verify-decrypt contract): whatever the plaintext,
 		// its ciphertext decrypts under this keyset, so Clean neither rejects
 		// nor alters it.
 		cleaned, err := codec.Clean(first)

@@ -66,7 +66,7 @@ func (t tab) title() string {
 }
 
 // Messages. Every one is produced by a background Cmd; Update and View never
-// perform I/O directly (model purity, enforced by the Q3 gate). Sync/untrack/
+// perform I/O directly (model purity). Sync/untrack/
 // discover/identify/track results are views.SyncResultMsg etc. — produced by
 // Cmds that live with the Projects view (spec §15) — switched on below
 // alongside these root-owned messages.

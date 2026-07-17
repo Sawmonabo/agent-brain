@@ -74,8 +74,8 @@ func TestRewriteRetainBoth(t *testing.T) {
 	}
 }
 
-// TestRewriteRetainBothSanitizesLabels pins the label-sanitization contract
-// (Q3 mandate): labels are neutralized at this format boundary so a hostile
+// TestRewriteRetainBothSanitizesLabels pins the label-sanitization contract:
+// labels are neutralized at this format boundary so a hostile
 // label cannot forge the block's parse anchors, while well-behaved labels
 // (hostnames, the default "version A"/"version B") pass through byte-for-byte.
 // The chosen replacement is U+FFFD for each of CR, LF, '<', '=', '>'.

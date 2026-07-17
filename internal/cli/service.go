@@ -109,7 +109,7 @@ func newServiceCmd() *cobra.Command {
 // WSL2 linger warning all live here ONCE: runServiceInstall
 // (the standalone `service install` command) and stepService (init's own
 // service step, internal/cli/initsteps.go) both delegate to this rather
-// than hand-rolling the same three branches (T3 review fix). A genuine
+// than hand-rolling the same three branches. A genuine
 // install failure (anything but ErrAlreadyInstalled) is returned
 // unwrapped and prints nothing — callers add their own context prefix.
 func installServiceAndReport(controller service.Controller, out io.Writer) error {
@@ -213,7 +213,7 @@ func runServiceStop(out io.Writer, controller service.Controller) error {
 // systemd user-lingering advisory line — runServiceStatus (the
 // standalone `service status` command) and stepService (init's own
 // service step) both delegate to this rather than hand-rolling the same
-// linger-line branch (T3 review fix). LingerStatus returns "" when there
+// linger-line branch. LingerStatus returns "" when there
 // is nothing to report (non-WSL2, or the query itself failed), so the
 // advisory line is silently omitted rather than printed empty.
 func printServiceStatus(out io.Writer, controller service.Controller) error {
@@ -257,7 +257,7 @@ func runServiceUninstall(out io.Writer, controller service.Controller) error {
 // newServiceLogsCmd is a pure file read over paths.DaemonLogFile() — no
 // controller, no socket. That is deliberate: logs matter most exactly when
 // the daemon is down, so this command must work then too. No follow mode
-// in v1 (spec §7 surface Phase 2 never shipped).
+// in v1 (spec §7 surface, never built).
 func newServiceLogsCmd() *cobra.Command {
 	var lines int
 	cmd := &cobra.Command{

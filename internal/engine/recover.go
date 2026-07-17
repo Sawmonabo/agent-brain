@@ -39,7 +39,7 @@ func (e *Engine) recoverState(ctx context.Context) error {
 	// A crash between a cycle's `git add`/`git rm --cached` and its commit
 	// leaves a staged index the aborts above never touch; the next cycle's
 	// conservative deletion propagation then refuses ("local modifications")
-	// and the folder wedges (Phase-3 final review F3). The index is wholly
+	// and the folder wedges. The index is wholly
 	// derived state — every entry point re-stages what it needs — so clear
 	// residue with a MIXED reset (worktree untouched). Unborn HEAD (a brand
 	// new checkout before its first commit) has nothing to reset or wedge —

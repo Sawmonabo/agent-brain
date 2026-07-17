@@ -79,7 +79,7 @@ func TestSafetyGateNamesTheBrokenAxis(t *testing.T) {
 	}
 }
 
-// TestSafetyGateEmptyBinaryPathFailsClosed pins Q3 gate finding M4 at the
+// TestSafetyGateEmptyBinaryPathFailsClosed pins the empty-BinaryPath guard at the
 // gate level (doctor_test.go's TestRunFiltersEmptyBinaryPathFailsClosed
 // pins it at the checkFilters level): SafetyGate is the exported,
 // daemon-facing entry point, so an empty binaryPath argument — however it

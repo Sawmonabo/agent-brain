@@ -85,7 +85,7 @@ func TestCodec(t *testing.T) {
 	}
 }
 
-// TestCleanFailsClosed pins the Q2-ratified verify-decrypt contract: Clean
+// TestCleanFailsClosed pins the verify-decrypt contract: Clean
 // must reject magic-prefixed input it cannot decrypt rather than pass it
 // through, so plaintext that merely mimics the header never reaches a git
 // object and ciphertext from a foreign keyset is not silently committed.

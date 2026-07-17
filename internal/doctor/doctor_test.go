@@ -247,7 +247,7 @@ func TestRunFiltersMissingMergeEntry(t *testing.T) {
 	}
 }
 
-// TestRunFiltersEmptyBinaryPathFailsClosed pins Q3 gate finding M4:
+// TestRunFiltersEmptyBinaryPathFailsClosed pins the guard:
 // strings.Contains(anything, "") is always true, so an unguarded
 // containment comparison against an empty BinaryPath would report
 // "filters" ok no matter what filter.agentbrain.clean actually holds.
@@ -616,7 +616,7 @@ func TestFixSkipsCredentialHelperWithoutGH(t *testing.T) {
 	}
 }
 
-// TestFixDoesNotClaimAttributesFixedWithNilRegistry pins Q3 gate finding M2:
+// TestFixDoesNotClaimAttributesFixedWithNilRegistry pins the rule:
 // Fix skips repo.WriteAttributes when deps.Registry is nil (nothing to
 // generate canonical content from), so Fixed must follow that same
 // condition — exactly as credential-helper's Fixed already follows

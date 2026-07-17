@@ -145,7 +145,7 @@ func TestCrossKeysetFailsClosed(t *testing.T) {
 // boundary the brief's test skips: empty input is encrypted, and re-cleaning
 // that genuine ciphertext verify-decrypts it and passes the original bytes
 // through byte-identical (idempotent — git may re-clean already-stored
-// content). Under the Q2-ratified verify-decrypt contract (spec §5),
+// content). Under the verify-decrypt contract (spec §5),
 // passthrough is reserved for bytes that prove decryptable; magic-prefixed
 // lookalikes and foreign-keyset ciphertext fail closed instead, pinned by
 // TestCleanFailsClosed.

@@ -522,7 +522,7 @@ func TestKeyRotateHappyPathRotatesAndReencrypts(t *testing.T) {
 	}
 }
 
-// TestKeyRotateReencryptFailureNamesReRotate pins the F2 fix: once the keyset is
+// TestKeyRotateReencryptFailureNamesReRotate pins the fix: once the keyset is
 // rotated but the daemon's re-encrypt fails, the repo is mixed-primary, and the
 // error must direct the user to re-run `agent-brain key rotate` (which reseals) —
 // NOT to `agent-brain sync`, which only touches changed blobs and would leave the

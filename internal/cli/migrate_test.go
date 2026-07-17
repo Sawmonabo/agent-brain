@@ -148,8 +148,8 @@ sleep 30; exit 0`, grandchildPIDPath))
 	}
 }
 
-// TestMigrateCommandRunEHonorsConfiguredPreflightTimeout is a T3-review
-// gap fix: every other preflight-timeout test drives runMigratePreflight
+// TestMigrateCommandRunEHonorsConfiguredPreflightTimeout closes a
+// gap: every other preflight-timeout test drives runMigratePreflight
 // directly, which pins that FUNCTION's behavior but never proves the
 // command's own RunE actually reads config.toml's [migrate] table and
 // threads it through — a regression that hardcoded some other value (or

@@ -13,7 +13,7 @@ import (
 )
 
 // var _ provider.Provider = (*codex.Adapter)(nil) pins the adapter against
-// the full Phase-3 interface at compile time.
+// the full Provider interface at compile time.
 var _ provider.Provider = (*codex.Adapter)(nil)
 
 func TestNewNameAndScope(t *testing.T) {

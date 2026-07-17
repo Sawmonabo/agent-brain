@@ -103,7 +103,7 @@ func TestGitMergeLwwKeepsCurrent(t *testing.T) {
 }
 
 // TestGitMergeFactLabelOverride proves the AGENT_BRAIN_MERGE_LABEL_A/B contract
-// (the Phase 2 engine sets these to host names): the override reaches the
+// (the engine sets these to host names): the override reaches the
 // retain-both block labels `agent-brain conflicts` renders.
 func TestGitMergeFactLabelOverride(t *testing.T) {
 	setupKeyset(t)

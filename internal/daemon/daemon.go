@@ -29,7 +29,7 @@ import (
 var ErrAlreadyRunning = errors.New("agent-brain daemon is already running")
 
 // errNotInitialized is the actionable refusal every mutating endpoint shares
-// when the checkout does not exist yet (init is a Phase-3 command).
+// when the checkout does not exist yet (init is a separate command).
 var errNotInitialized = errors.New("memories repo not initialized on this machine — run `agent-brain init` first")
 
 // syncWaitTimeout bounds how long POST /v0/sync waits for its cycle;
@@ -40,7 +40,7 @@ const (
 	adminWaitTimeout = 60 * time.Second
 )
 
-// quiesceMin and quiesceMax bound a requested quiesce TTL (Phase-4 F2): long
+// quiesceMin and quiesceMax bound a requested quiesce TTL: long
 // enough to cover init/doctor's checkout surgery, short enough that a crashed
 // caller cannot wedge the daemon for long — auto-release at the deadline is
 // the backstop, and the ceiling caps the worst case.
@@ -251,12 +251,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		logger.Warn("raise fd limit failed", "error", err)
 	}
 
-	// The Phase-1 merge driver records retain-both events only when
+	// The merge driver records retain-both events only when
 	// AGENT_BRAIN_CONFLICT_LOG is set (spec §4: the driver "records the
 	// event for the dashboard conflicts view"). Export it process-wide so
 	// every git child spawned during integrate inherits it;
 	// `agent-brain conflicts` reads this file (the dashboard view is
-	// deferred past Phase 3).
+	// deferred).
 	if err := os.Setenv("AGENT_BRAIN_CONFLICT_LOG", d.cfg.Paths.ConflictLogFile()); err != nil {
 		return fmt.Errorf("conflict log env: %w", err)
 	}
@@ -541,7 +541,7 @@ func equalRoots(a, b []string) bool {
 	return true
 }
 
-// runCycle loads units fresh (Phase-3 enrollments apply without a
+// runCycle loads units fresh (enrollments apply without a
 // restart), runs the engine, and records the outcome. It returns the unit
 // set it synced and cycled=true so loop can keep the watcher's roots in
 // step; cycled=false (nil units) means no cycle ran — checkout not ready,
@@ -805,7 +805,7 @@ func (d *Daemon) refuseManualSyncIfQuiesced(request syncRequest, now time.Time) 
 }
 
 // Quiesce holds automatic sync cycles until now+clamp(seconds) and refuses
-// explicit sync + mutations until then (Phase-4 F2). A fresh Quiesce while
+// explicit sync + mutations until then. A fresh Quiesce while
 // already held REPLACES the deadline — last writer wins, so the same CLI
 // retrying simply resets the window rather than stacking holds. Implements
 // controller.

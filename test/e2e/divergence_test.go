@@ -147,7 +147,7 @@ func TestDivergentLwwKeepsUpstream(t *testing.T) {
 // different code path than the driver's Encrypt; it must reach the remote as
 // agent-brain ciphertext (magic header, no plaintext) and smudge back
 // byte-identical on a fresh clone. That is the path a real conflict
-// resolution takes, and Phase 2's engine tests build on it.
+// resolution takes, and the engine tests build on it.
 func TestRetainBothReencryptsThroughResolution(t *testing.T) {
 	t.Parallel()
 	bare, machineA, machineB := seedTwoMachines(t, "fact: original\n")

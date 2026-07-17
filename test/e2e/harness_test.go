@@ -187,9 +187,9 @@ func newBareRepo(t *testing.T) string {
 
 // gitAttributes is the memories-repo wiring (spec §5): everything filtered
 // and binary-safe; `*.lww.md` is this harness's stand-in for the regenerated
-// newest-wins class (spec §4 — Phase 2/3 generate the real per-provider
+// newest-wins class (spec §4 — later code generates the real per-provider
 // patterns); the attributes file and .agent-brain/** metadata are excluded.
-// Phase 2's repo package becomes the canonical home of this content.
+// The repo package becomes the canonical home of this content.
 const gitAttributes = "* filter=agentbrain diff=agentbrain merge=agentbrain -text\n" +
 	"*.lww.md merge=agentbrain-lww\n" +
 	".gitattributes -filter -diff -merge text eol=lf\n" +

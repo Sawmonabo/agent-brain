@@ -59,7 +59,7 @@ func (f *fakeServiceController) Status() (service.Status, error) {
 }
 func (f *fakeServiceController) LingerStatus() string { return f.lingerStatus }
 
-// --- T3 review fix: shared install/status helpers ---
+// --- shared install/status helpers ---
 //
 // installServiceAndReport and printServiceStatus are the ONE place the
 // idempotency branch, warning print, and linger-line logic live —

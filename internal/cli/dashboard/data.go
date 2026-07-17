@@ -7,7 +7,7 @@
 // daemon UDS API (internal/daemon/api), the doctor battery (internal/doctor),
 // and the read-only conflict-log file — and adds ZERO daemon endpoints. Every
 // view refreshes on one shared tick; no view path performs I/O except through
-// a bubbletea Cmd (model purity, enforced by the Q3 gate).
+// a bubbletea Cmd (model purity).
 //
 // The four tab views and their shared keymap live in the views subpackage,
 // and the catppuccin-derived palette lives in theme (spec §15, split ahead of

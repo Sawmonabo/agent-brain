@@ -94,7 +94,7 @@ func TestScopeString(t *testing.T) {
 }
 
 // claudeLikeTable mirrors the spec §6 Claude classification so the contract
-// is exercised against the real Phase-3 shape without shipping the adapter.
+// is exercised against the real classification shape without shipping the adapter.
 func claudeLikeTable() []provider.Pattern {
 	return []provider.Pattern{
 		{Glob: "MEMORY.md", Class: provider.ClassDerivedIndex},

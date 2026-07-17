@@ -153,7 +153,7 @@ func TestManifestImportedFromMarker(t *testing.T) {
 func TestManifestBackwardCompatNoImportedFrom(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "phase2.json")
-	// A Phase-2 manifest predates imported_from; version stays 1, so it must
+	// An older manifest predates imported_from; version stays 1, so it must
 	// load unchanged (additive schema growth, backward compat pinned).
 	payload := `{"version":1,"files":{"alpha/claude/x.md":{"size":1,"mtime_unix_nano":2,"sha256":"x"}}}`
 	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {

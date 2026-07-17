@@ -43,7 +43,7 @@ func mustGit(t *testing.T, dir string, args ...string) gitx.Result {
 }
 
 // newTestCheckout builds the two-repo shape every engine test needs: a
-// bare "remote" and a cloned checkout seeded the way Phase-3 init will
+// bare "remote" and a cloned checkout seeded the way init will
 // seed it (attributes file committed on main, pushed upstream).
 func newTestCheckout(t *testing.T) (checkout, bare string) {
 	t.Helper()

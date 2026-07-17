@@ -267,7 +267,7 @@ func advMagicPrefixMemory(t *testing.T) {
 
 	// A memory file whose PLAINTEXT begins with the ciphertext magic prefix.
 	// The clean filter must fail closed rather than store bytes it could later
-	// mistake for already-encrypted content (a Phase-1 crypto pin, re-asserted
+	// mistake for already-encrypted content (a crypto pin, re-asserted
 	// here at the engine level).
 	a.write(t, "memories/spoof.md", magicPrefix+"pretend-ciphertext-sentinel\n")
 	if _, err := a.engine.Sync(suiteCtx, []repo.Unit{a.unit}); err == nil {
@@ -305,13 +305,13 @@ func advFileBurstSingleCycle(t *testing.T) {
 	assertNoPlaintextOnWire(t, bare, sentinel)
 }
 
-// --- Rows 10, 11: resident poison at the commit boundary (F1, final review) --
+// --- Rows 10, 11: resident poison at the commit boundary ---------------------
 
 func advFreshJoinResidentFolderPoison(t *testing.T) {
 	// Rows 1–5 all poison a machine whose checkout an EARLIER cycle already
 	// scrubbed: the victim integrates the hostile push and the post-integrate
 	// scrub heals before any commit lands beside the poison. This row pins
-	// the window those rows structurally miss (F1, Phase-3 final review):
+	// the window those rows structurally miss:
 	// the poison is ALREADY RESIDENT when the victim's checkout comes into
 	// existence — a fresh machine joins by cloning a poisoned main — and the
 	// victim's FIRST cycle commits new memory beside it. A folder-level

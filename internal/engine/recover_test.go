@@ -54,7 +54,7 @@ func TestRecoverIsNoopOnCleanCheckout(t *testing.T) {
 	}
 }
 
-// TestRecoverStateResetsStagedDeletion reproduces the F3 wedge shape: a
+// TestRecoverStateResetsStagedDeletion reproduces the wedge shape: a
 // crash left a staged deletion (git rm --cached) with the worktree file
 // still present. recoverState must clear the staged entry and leave the
 // worktree file untouched.

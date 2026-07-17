@@ -182,7 +182,7 @@ func TestScanCommandNoProjectsEnrolled(t *testing.T) {
 }
 
 // TestScanCommandNoProjectsEnrolledJSON is the --json row for the
-// zero-enrolled-units path (Q2 review, Minor finding): previously this path
+// zero-enrolled-units path: previously this path
 // ignored --json entirely and always printed the human sentence, which
 // broke a scripted consumer that unconditionally decodes stdout as JSON.
 func TestScanCommandNoProjectsEnrolledJSON(t *testing.T) {
@@ -241,7 +241,7 @@ func TestScanCommandJSONCleanIsEmptyArrayNotNull(t *testing.T) {
 }
 
 // TestScanCommandRedactFlag pins both arg shapes gitleaks is actually
-// invoked with (Q2 review, Important finding): --redact is present by
+// invoked with: --redact is present by
 // default (gitleaks itself then replaces Secret/Match with "REDACTED"
 // before its report ever reaches this process — verified empirically
 // against the real binary; see scanGitleaksArgs' doc comment) and absent
@@ -280,8 +280,7 @@ func TestScanCommandRedactFlag(t *testing.T) {
 	}
 }
 
-// TestScanRevealSecretsWithoutJSONKeepsRedactionAndNotes pins the FINAL review
-// item 6 shape: --reveal-secrets outside --json is a no-op for the table render
+// TestScanRevealSecretsWithoutJSONKeepsRedactionAndNotes pins the shape: --reveal-secrets outside --json is a no-op for the table render
 // (which never reads Secret/Match), so it must NOT drop gitleaks' --redact — raw
 // secret material in the child report and this process's memory would be pure
 // downside for zero benefit. scan keeps redaction ON and prints a stderr note;
@@ -370,7 +369,7 @@ func TestScanUnitRejectsUnexpectedExitCode(t *testing.T) {
 }
 
 // TestScanGitleaksArgsRedactFlag pins scanGitleaksArgs' pure argv contract
-// directly (Q2 review, Important finding), independent of the command-level
+// directly, independent of the command-level
 // TestScanCommandRedactFlag, which pins the same behavior end-to-end through
 // the real exec path.
 func TestScanGitleaksArgsRedactFlag(t *testing.T) {

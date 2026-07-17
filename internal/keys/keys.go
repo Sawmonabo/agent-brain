@@ -21,7 +21,7 @@ import (
 
 // ErrKeysetExists is the sentinel behind both refuse-to-overwrite paths
 // (Generate and Import): losing a keyset loses every memory encrypted under it,
-// so neither ever clobbers an existing one. Phase 2's init / key-import UX
+// so neither ever clobbers an existing one. The init / key-import UX
 // branches on this with errors.Is rather than matching the message string.
 var ErrKeysetExists = errors.New("keyset already exists")
 
