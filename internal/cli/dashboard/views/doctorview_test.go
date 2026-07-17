@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
 
@@ -415,23 +416,85 @@ func TestDoctorViewFitsWithoutHintOrScroll(t *testing.T) {
 // report) must leave the reader where they scrolled, while a genuinely changed
 // report resets to the top. Without the identity guard a refresh would GotoTop
 // every poll and make a long battery impossible to read past the first screen.
+//
+// The held-position assertion inspects the window's CONTENT — check-009 present,
+// check-000 gone — deliberately, not that two renders match: View itself runs
+// the refresh, so a mutant that yanks every refresh to the top makes the before
+// and after renders match AT THE TOP too, passing a render==render check
+// vacuously. Pinning which rows are on screen reds on any yank, the mutant
+// included.
 func TestDoctorViewRefreshKeepsScrollPosition(t *testing.T) {
 	t.Parallel()
 	const height = 12
 	view := NewDoctorView()
 	view.Set(bigDoctorReport(100), nil)
 	view.Scroll(ctrlKey('d'), paneTestWidth, height)
-	scrolled := plain(view.View(paneTestWidth, height))
 
-	// An identical report arriving again (a poll) must not move the window.
+	scrolled := plain(view.View(paneTestWidth, height))
+	if strings.Contains(scrolled, "check-000") || !strings.Contains(scrolled, "check-009") {
+		t.Fatalf("setup: ctrl+d should have scrolled check-000 off and check-009 into view; got:\n%s", scrolled)
+	}
+
+	// An identical report arriving again (a poll or an r re-run) must HOLD the
+	// window: the same later row stays visible, the top row stays gone.
 	view.Set(bigDoctorReport(100), nil)
-	if got := plain(view.View(paneTestWidth, height)); got != scrolled {
-		t.Errorf("an identical re-run yanked the scroll position;\nwas:\n%s\nnow:\n%s", scrolled, got)
+	if held := plain(view.View(paneTestWidth, height)); strings.Contains(held, "check-000") || !strings.Contains(held, "check-009") {
+		t.Errorf("an identical re-run yanked the scroll; want check-009 held and check-000 gone; got:\n%s", held)
 	}
 
 	// A materially different report resets to the top.
 	view.Set(bigDoctorReport(80), nil)
 	if got := plain(view.View(paneTestWidth, height)); !strings.Contains(got, "check-000") {
 		t.Errorf("a changed report did not reset to the top; got:\n%s", got)
+	}
+}
+
+// TestDoctorViewSetSyncsPaneAcrossFlapBack pins that the pane's change tracking
+// is advanced on the DATA path (Set), not only when a scroll key is pressed: a
+// battery that flaps A → B → A with no key in between must land back at the top
+// on the returning A, the way Activity's OnData path already behaves. Without a
+// sync in Set the persistent identity never advances past A, so the returning A
+// is mistaken for the still-scrolled A and resurrects its stale offset — the
+// determinism gap the browser preview does not have because it resets on
+// selection change.
+func TestDoctorViewSetSyncsPaneAcrossFlapBack(t *testing.T) {
+	t.Parallel()
+	const height = 12
+	view := NewDoctorView()
+	view.Set(bigDoctorReport(100), nil)
+	view.Scroll(ctrlKey('d'), paneTestWidth, height)
+	if scrolled := plain(view.View(paneTestWidth, height)); strings.Contains(scrolled, "check-000") {
+		t.Fatalf("setup: ctrl+d should have scrolled check-000 off; got:\n%s", scrolled)
+	}
+
+	// Flap to a different battery and back to the original — no key between.
+	view.Set(bigDoctorReport(80), nil)
+	view.Set(bigDoctorReport(100), nil)
+
+	if back := plain(view.View(paneTestWidth, height)); !strings.Contains(back, "check-000") {
+		t.Errorf("the returning report kept a stale offset — Set did not advance the pane's change key; got:\n%s", back)
+	}
+}
+
+// TestDoctorViewScrollSurvivesThemeFlip pins that the pane's change key is the
+// UNSTYLED body: a palette flip (the tea.BackgroundColorMsg → SetStyles that
+// re-themes the hub) recolours the battery's glyphs but changes none of its text,
+// so a scrolled reader must stay put. Keying identity on the styled render would
+// read the recolour as a new document and yank the scroll to the top once.
+func TestDoctorViewScrollSurvivesThemeFlip(t *testing.T) {
+	t.Parallel()
+	const height = 12
+	view := NewDoctorView()
+	view.SetStyles(theme.Default(true)) // dark palette
+	view.Set(bigDoctorReport(100), nil)
+	view.Scroll(ctrlKey('d'), paneTestWidth, height)
+	if scrolled := plain(view.View(paneTestWidth, height)); strings.Contains(scrolled, "check-000") {
+		t.Fatalf("setup: ctrl+d should have scrolled check-000 off; got:\n%s", scrolled)
+	}
+
+	// Flip to the light palette: identical data, different colour codes.
+	view.SetStyles(theme.Default(false))
+	if held := plain(view.View(paneTestWidth, height)); strings.Contains(held, "check-000") {
+		t.Errorf("a theme flip yanked the scroll to the top — the identity key must ignore styling; got:\n%s", held)
 	}
 }

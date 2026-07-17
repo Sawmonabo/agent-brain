@@ -4224,6 +4224,120 @@ func TestDoctorActionRerunRefetches(t *testing.T) {
 	}
 }
 
+// overflowingDoctorReport builds an n-row passing battery whose rows are
+// individually identifiable (check-000 … check-NNN), so a root scroll test can
+// pin which rows sit in the window at a height too small to show them all.
+func overflowingDoctorReport(n int) doctor.Report {
+	results := make([]doctor.CheckResult, n)
+	for i := range results {
+		results[i] = doctor.CheckResult{Name: fmt.Sprintf("check-%03d", i), Status: doctor.StatusOK, Detail: "ok"}
+	}
+	return doctor.Report{Results: results}
+}
+
+// overflowingStatus builds a ready-daemon status whose last sync lists n
+// identifiable commit subjects (commit-000 … commit-NNN), long enough to overflow
+// a short Activity tab.
+func overflowingStatus(n int) api.StatusResponse {
+	commits := make([]string, n)
+	for i := range commits {
+		commits[i] = fmt.Sprintf("commit-%03d", i)
+	}
+	return api.StatusResponse{
+		State: "ready", Version: "dev", PID: 4242,
+		StartedAt: time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC),
+		LastSync:  &api.SyncSummary{At: time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC), Commits: commits, Pushed: true},
+	}
+}
+
+// TestRootRoutesTabScrollAndAdvertisesIt pins the root wiring for the two
+// scrollable status tabs — the seam a mutation showed wholly uncovered: deleting
+// the tabActivity/tabDoctor scroll dispatch, OR the doctor-scroll/activity-scroll
+// footer rows, left the whole package green. For each tab it seeds an overflowing
+// body at a short height, drives ctrl+d then G THROUGH THE ROOT (not the view
+// directly), and asserts the window moved — a later row shows, the top row is
+// gone, G reaches the last row — AND that the footer names the scroll keys. It is
+// the browser analog of TestStackFooterAdvertisesScopedKeys, extended to prove
+// the keys are also routed, not merely advertised.
+func TestRootRoutesTabScrollAndAdvertisesIt(t *testing.T) {
+	t.Parallel()
+	const height = 20
+	tests := []struct {
+		name      string
+		active    tab
+		seed      func(Model) Model
+		topRow    string // shown only at the top of the body
+		bottomRow string // shown only at the very bottom
+	}{
+		{
+			name:      "Doctor",
+			active:    tabDoctor,
+			seed:      func(m Model) Model { next, _ := step(m, doctorMsg{report: overflowingDoctorReport(100)}); return next },
+			topRow:    "check-000",
+			bottomRow: "check-099",
+		},
+		{
+			name:      "Activity",
+			active:    tabActivity,
+			seed:      func(m Model) Model { next, _ := step(m, statusMsg{resp: overflowingStatus(100)}); return next },
+			topRow:    "daemon: ready",
+			bottomRow: "commit-099",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
+			m.active = testCase.active
+			m = testCase.seed(m)
+
+			if top := plain(m.activeBody()); !strings.Contains(top, testCase.topRow) {
+				t.Fatalf("setup: the top row %q is not shown before scrolling; got:\n%s", testCase.topRow, top)
+			}
+
+			// ctrl+d must reach the pane and advance the window off the top row.
+			m, _ = step(m, key("ctrl+d"))
+			if advanced := plain(m.activeBody()); strings.Contains(advanced, testCase.topRow) {
+				t.Errorf("ctrl+d did not route to the %s pane — the top row %q is still visible; got:\n%s", testCase.name, testCase.topRow, advanced)
+			}
+
+			// G must reach the pane and jump to the bottom row.
+			m, _ = step(m, key("G"))
+			if bottom := plain(m.activeBody()); !strings.Contains(bottom, testCase.bottomRow) {
+				t.Errorf("G did not route to the %s pane — the bottom row %q is not visible; got:\n%s", testCase.name, testCase.bottomRow, bottom)
+			}
+
+			// The footer must name the tab's scroll keys, or a long body's tail
+			// reads as unreachable (spec §14 honesty).
+			if footer := plain(m.footer()); !strings.Contains(footer, "ctrl+d/u scroll") {
+				t.Errorf("%s footer does not advertise the scroll keys; got:\n%s", testCase.name, footer)
+			}
+		})
+	}
+}
+
+// TestRootDoctorScrollGateFallsThroughToRerun pins the OTHER side of the Doctor
+// tab's Scroll-first key ordering: a non-scroll key (r) must fall through the
+// scroll gate to the tab's own handler and still re-run the battery. Together
+// with TestRootRoutesTabScrollAndAdvertisesIt (the consume side) it fixes the
+// ordering from both directions — Scroll must claim ctrl+d/G yet yield r.
+func TestRootDoctorScrollGateFallsThroughToRerun(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{report: doctorReport(doctor.StatusOK, "")})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: 20})
+	m.active = tabDoctor
+	m, _ = step(m, doctorMsg{report: overflowingDoctorReport(100)})
+
+	_, cmd := step(m, key("r"))
+	if cmd == nil {
+		t.Fatal("r on the Doctor tab produced no Cmd; the scroll gate swallowed the re-run instead of falling through")
+	}
+	if msgs := drain(cmd); !containsMsg[doctorMsg](msgs) {
+		t.Fatalf("r did not fall through to a battery refetch; msgs = %#v", msgs)
+	}
+}
+
 // TestDoctorActionFixInvokesClosureRendersReportAndInfoToast pins the full f
 // flow (spec §11): the fixing state latches, the injected RunDoctorFix runs
 // once, the re-checked report re-renders, and an INFO toast confirms it.

@@ -125,7 +125,7 @@ var registry = []Action{
 	{ID: "doctor-rerun", Title: "re-run", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeDoctor},
 	{ID: "doctor-fix", Title: "fix", Keys: []string{"f"}, KeyHint: "f", Scope: ScopeDoctor, Mutates: true},
 	{ID: "scan", Title: "scan", Keys: []string{"s"}, KeyHint: "s", Scope: ScopeDoctor},
-	// doctor-scroll / activity-scroll (this wave): the two status tabs render
+	// doctor-scroll / activity-scroll: the two status tabs render
 	// their bodies — the Doctor battery, the Activity snapshot — through a
 	// height-bounded viewport, so a long body scrolls in place instead of being
 	// clipped by the root frame. Matched by the pane's own restricted keymap in

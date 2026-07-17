@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
@@ -91,10 +92,18 @@ func (v *DoctorView) SetStyles(styles theme.Styles) {
 // Set installs a freshly-run doctor report (the r re-run and the tab poll).
 // It leaves the fix/scan overlays untouched — a background poll landing mid-fix
 // must not clear the "fixing…" indicator; only the fix's own result does.
+//
+// It syncs the scroll pane here, on the data path, so the reset-on-change
+// tracking PERSISTS (View runs on a value copy and cannot) — the role Activity's
+// OnData plays. Without a sync here a flap-back (report A scrolled → B → A with no
+// key between) resurrects A's stale offset, because the persistent identity never
+// advanced past A; syncing every Set keeps it tracking the latest report, so a
+// returning report resets to the top deterministically, as Activity's does.
 func (v *DoctorView) Set(report doctor.Report, err error) {
 	v.report = report
 	v.err = err
 	v.loaded = true
+	v.syncPane()
 }
 
 // CanFix reports whether the last battery is in the state `f` is offered on
@@ -177,13 +186,22 @@ func (v *DoctorView) Scroll(msg tea.KeyPressMsg, width, height int) bool {
 }
 
 // syncPane installs the current battery body in the scroll pane, resetting the
-// scroll to the top only when the rendered body changed — a re-run producing an
+// scroll to the top only when the body's CONTENT changed — a re-run producing an
 // identical report, or an unchanged 2s poll, leaves the reader where they are; a
-// genuinely different battery starts at the top. The body carries no
-// now-relative text, so it IS its own change key.
+// genuinely different battery starts at the top.
+//
+// The change key is the body with its styling STRIPPED, not the styled render:
+// the battery carries theme-dependent colour (the status glyphs, the dim
+// placeholders), so keying identity on the styled body would make a palette flip
+// (a tea.BackgroundColorMsg → SetStyles) read as a new document and yank a
+// scrolled reader once. Stripping the SGR leaves a key that depends only on the
+// text, stable across a theme change with unchanged data. The battery carries no
+// now-relative text, so the plain render is a complete key (unlike Activity,
+// which must also neutralize its live uptime); the strip runs per refresh, the
+// same per-render cost Activity's second body render already pays.
 func (v *DoctorView) syncPane() {
 	body := v.body()
-	v.pane.refresh(body, body)
+	v.pane.refresh(body, ansi.Strip(body))
 }
 
 // body renders everything BELOW the section title — the battery, its summary,
