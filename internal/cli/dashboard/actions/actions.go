@@ -205,7 +205,7 @@ var registry = []Action{
 	// situational (dashboard.go's available()).
 	{ID: "browser-focus-preview", Title: "focus preview", Keys: []string{"tab"}, KeyHint: "tab", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
-	// ScopeBrowserPreviewFocused rows (this wave): while the preview pane holds
+	// ScopeBrowserPreviewFocused rows: while the preview pane holds
 	// keyboard focus (tab, or a click into it) the browser swaps its footer to
 	// THIS set — exactly the keys that do something in that mode — so a focused
 	// pane is never a silent dead-key state (the live-hub "freeze" where every

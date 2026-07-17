@@ -2734,6 +2734,118 @@ func TestStackFooterSwapsToPreviewFocusedSet(t *testing.T) {
 	}
 }
 
+// TestStackFooterRendersFocusedPreviewSetLit pins the available()-whitelist half
+// of the focused-footer wiring. TestStackFooterSwapsToPreviewFocusedSet reads
+// plain(footer), which strips SGR and so cannot tell a lit row from one struck as
+// "advertised dead" — yet a focused footer whose six rows are the ONLY working
+// keys while all render dim+struck is the worst version of the freeze this wave
+// fixes. Every focused row is runner-less and unconditionally available, so all
+// six must render lit; dropping any browser-preview-* ID from available()'s
+// whitelist makes that row render struck (its contiguous lit render vanishes),
+// which this catches at the raw-SGR level across the whole set.
+func TestStackFooterRendersFocusedPreviewSetLit(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "a short body\n", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", RepoPath: "claude/short.md", Name: "short", Class: provider.ClassFact, ModTime: base}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+	// Render once at preview-split width so the browser records previewShown =
+	// true; only then can tab arm focus and the footer swap to the focused set.
+	_ = m.View()
+	m, _ = step(m, key("tab"))
+	if !browser.PreviewFocused() {
+		t.Fatal("tab did not focus the preview pane")
+	}
+
+	raw := m.footer()
+	// Each row's footer segment is KeyHint + " " + Title, exactly as
+	// stackFooterLine composes it. A row missing from available()'s whitelist
+	// renders struck, so its contiguous m.styles.Dim.Render(segment) is absent.
+	rows := []struct {
+		id      string
+		segment string
+	}{
+		{"browser-preview-list", "esc/tab list"},
+		{"browser-preview-scroll", "j/k scroll"},
+		{"browser-preview-half-page", "ctrl+d/u half page"},
+		{"browser-preview-page", "pgup/pgdn page"},
+		{"browser-preview-ends", "g/G ends"},
+		{"browser-preview-copy", "y copy"},
+	}
+	for _, row := range rows {
+		if !m.available(row.id) {
+			t.Errorf("available(%s) = false; the focused footer would render it struck (spec §14 honesty)", row.id)
+		}
+		if !strings.Contains(plain(raw), row.segment) {
+			t.Errorf("focused footer does not advertise %q at all; got:\n%s", row.segment, plain(raw))
+			continue
+		}
+		if struck := m.styles.Dim.Strikethrough(true).Render(row.segment); strings.Contains(raw, struck) {
+			t.Errorf("%q renders struck in the focused footer — its available() whitelist entry regressed", row.segment)
+		}
+		if lit := m.styles.Dim.Render(row.segment); !strings.Contains(raw, lit) {
+			t.Errorf("%q does not render lit in the focused footer; got:\n%q", row.segment, raw)
+		}
+	}
+}
+
+// TestStackFooterRevertsWhenPreviewFocusStrandedByResize pins the previewShown
+// conjunct of Browser.PreviewFocused() at the footer — the consumer that would
+// otherwise lie. Focus the pane, then narrow-resize below previewMinWidth: the
+// pane is gone but previewFocused lingers, so a PreviewFocused() that dropped the
+// previewShown conjunct would keep the footer on the focused set while the keys
+// actually route to the list (updateKey gates on previewShown) and esc pops the
+// browser. The footer must revert to the browser scope, matching where the keys
+// go.
+func TestStackFooterRevertsWhenPreviewFocusStrandedByResize(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "a short body\n", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", RepoPath: "claude/short.md", Name: "short", Class: provider.ClassFact, ModTime: base}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+	_ = m.View() // preview-split width: previewShown = true so tab can arm focus
+	m, _ = step(m, key("tab"))
+	if !browser.PreviewFocused() {
+		t.Fatal("setup: tab did not focus the preview pane")
+	}
+
+	// A resize below previewMinWidth (100) drops the preview. previewFocused
+	// lingers, but the pane is off screen, so the effective focus is false.
+	m, _ = step(m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	_ = m.View() // re-render narrow so the browser records previewShown = false
+
+	reverted := plain(m.footer())
+	for _, want := range []string{"o order", "h history"} {
+		if !strings.Contains(reverted, want) {
+			t.Errorf("stranded focus did not revert the footer to the browser scope; missing %q:\n%s", want, reverted)
+		}
+	}
+	for _, absent := range []string{"esc/tab list", "j/k scroll", "g/G ends"} {
+		if strings.Contains(reverted, absent) {
+			t.Errorf("footer still advertises the focused-only key %q after the pane was resized away:\n%s", absent, reverted)
+		}
+	}
+	if browser.PreviewFocused() {
+		t.Error("PreviewFocused() true after the pane was resized away; the previewShown conjunct must gate it")
+	}
+}
+
 // TestStackFooterRendersBrowserCopyLit pins that browser-copy renders LIT, not
 // struck, in the browser stack footer — the same honesty guard
 // TestStackFooterRendersFocusPreviewLit applies to focus-preview. A runner-less
