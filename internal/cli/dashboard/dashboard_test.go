@@ -5196,12 +5196,25 @@ func TestMouseCaptureCueLeadsListFooterWithinWidth(t *testing.T) {
 	}
 }
 
+// dropRows builds droppable footer segments (the common case) from plain texts.
+func dropRows(texts ...string) []footerSegment {
+	out := make([]footerSegment, len(texts))
+	for i, text := range texts {
+		out[i] = footerSegment{text: text}
+	}
+	return out
+}
+
+// keepRow builds one protected (never-drop) footer segment — an exit affordance.
+func keepRow(text string) footerSegment { return footerSegment{text: text, protected: true} }
+
 // TestFitFooterSegments pins the width-aware fitting algorithm in isolation: with
 // plain (unstyled) inputs the exact composed line is predictable, so every
 // invariant is asserted positively against the actual output rather than an
-// absence of error. It covers the whole contract — whole rows drop from the TAIL
-// (registry order is priority), the "… ?" marker renders only when something was
-// dropped, the leading cue is never dropped even below its own width, and a
+// absence of error. It covers the whole contract — unprotected rows drop from the
+// TAIL (registry order is priority), protected rows (exit affordances) and the
+// leading cue are never dropped, the "… ?" marker renders at the ELISION POINT
+// where the dropped run was (before a protected suffix, never after it), and a
 // width of 0 means "size unknown, do not fit."
 func TestFitFooterSegments(t *testing.T) {
 	t.Parallel()
@@ -5212,7 +5225,7 @@ func TestFitFooterSegments(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
 		cue        string
-		segments   []string
+		segments   []footerSegment
 		width      int
 		want       string
 		wantMarker bool
@@ -5220,19 +5233,19 @@ func TestFitFooterSegments(t *testing.T) {
 		{
 			name:     "width zero returns the full line unfit",
 			cue:      "CUE",
-			segments: []string{"aa", "bb", "cc"},
+			segments: dropRows("aa", "bb", "cc"),
 			width:    0,
 			want:     "CUE · aa · bb · cc",
 		},
 		{
 			name:     "wide width keeps every row with no marker",
-			segments: []string{"aa", "bb", "cc"},
+			segments: dropRows("aa", "bb", "cc"),
 			width:    100,
 			want:     "aa · bb · cc",
 		},
 		{
 			name:       "drops whole rows from the tail behind the marker",
-			segments:   []string{"aaaa", "bbbb", "cccc", "dddd"},
+			segments:   dropRows("aaaa", "bbbb", "cccc", "dddd"),
 			width:      18,
 			want:       "aaaa · bbbb · … ?",
 			wantMarker: true,
@@ -5240,16 +5253,44 @@ func TestFitFooterSegments(t *testing.T) {
 		{
 			name:       "cue leads and is never dropped even below its own width",
 			cue:        "CUE",
-			segments:   []string{"aaaa", "bbbb"},
+			segments:   dropRows("aaaa", "bbbb"),
 			width:      4,
 			want:       "CUE · … ?",
 			wantMarker: true,
 		},
 		{
 			name:     "an exactly fitting line keeps the last row and drops the marker",
-			segments: []string{"aaaa", "bbbb"},
+			segments: dropRows("aaaa", "bbbb"),
 			width:    11, // "aaaa · bbbb" is exactly 11 columns
 			want:     "aaaa · bbbb",
+		},
+		{
+			// A protected tail row survives while the unprotected middle rows drop, and
+			// the marker lands at the elision point BEFORE it — never "… ?" after ZZ.
+			name:       "protected row survives with the marker at the elision point",
+			segments:   append(dropRows("aaaa", "bbbb", "cccc"), keepRow("ZZ")),
+			width:      15, // fits "aaaa · … ? · ZZ" (15) but not "aaaa · bbbb · … ? · ZZ" (22)
+			want:       "aaaa · … ? · ZZ",
+			wantMarker: true,
+		},
+		{
+			// A protected row interspersed among droppable rows keeps its display
+			// position; the marker marks where the LATER dropped rows were.
+			name:       "protected row keeps its interspersed position",
+			segments:   []footerSegment{{text: "aaaa"}, keepRow("ZZ"), {text: "bbbb"}, {text: "cccc"}},
+			width:      16, // fits "aaaa · ZZ · … ?" (15) but not "aaaa · ZZ · bbbb · … ?" (22)
+			want:       "aaaa · ZZ · … ?",
+			wantMarker: true,
+		},
+		{
+			// Degenerate floor: even the protected row plus the marker exceed the
+			// width, but hiding the exit affordance would be the worse lie, so the
+			// line is kept over-width (Decision 10).
+			name:       "protected row and marker survive below their own width",
+			segments:   append(dropRows("aaaa"), keepRow("ZZ")),
+			width:      1,
+			want:       "… ? · ZZ",
+			wantMarker: true,
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -5258,9 +5299,9 @@ func TestFitFooterSegments(t *testing.T) {
 			// The exact composed line fully encodes the fit at these plain widths —
 			// which rows survived, their order, and where the marker landed — so a
 			// diff match subsumes the printable-width bound (the integration seams
-			// assert that bound against the real, styled footer). The one deliberate
-			// over-width case is "CUE · … ?" at width 4: the cue is never dropped even
-			// when it cannot fit, so the exact match is the only correct assertion.
+			// assert that bound against the real, styled footer). The deliberate
+			// over-width cases are the cue and the protected row below their own width:
+			// neither is ever dropped, so the exact match is the only correct assertion.
 			if diff := cmp.Diff(testCase.want, got); diff != "" {
 				t.Errorf("fitFooterSegments mismatch (-want +got):\n%s", diff)
 			}
@@ -5275,19 +5316,26 @@ func TestFitFooterSegments(t *testing.T) {
 // a ScopeBrowser row, in registry order — the units the stack seam drops from the
 // tail. Kept here so the width assertions below name real, contiguous rows.
 const (
-	browserFirstRow  = "enter read" // registry-first: always kept
-	browserLastRow   = "esc back"   // registry-last: first to drop
-	browserMidRow    = "i insights" // the last row kept at width 120 (armed, no cue)
-	browserNarrowMid = "d delete"   // the last row kept at width 80
+	browserFirstRow = "enter read" // registry-first droppable row: always kept
+	browserExitRow  = "esc back"   // the protected exit affordance: kept at every width
+
+	// Last droppable row kept at each width once the exit affordance is protected
+	// (probe-measured). Protecting "esc back" spends width the raw registry tail
+	// would have given to a middle row, so the drop boundary sits one or two rows
+	// earlier than the unprotected fitter left it.
+	browserStack120Last = "x show deleted" // last kept at width 120 (armed, no cue)
+	browserStack80Last  = "r rename"       // last kept at width 80 (armed) and at width 120 with the cue leading
+	browserCue80Last    = "o order"        // last kept at width 80 with the cue leading
 )
 
 // TestFooterFitsStackSeamToWidth pins the STACK footer seam: a pushed browser's
 // list-scope footer overflows the canonical width (188 columns armed), and the
 // fitter must trim it to fit by dropping whole trailing rows behind the "… ?"
-// marker, never a mid-row clip. Deleting the fit at the stack seam leaves the
-// 120/80 lines over-wide, reddening the printable-width assertion here (and no
-// tab-seam test), which is the per-seam pin. Mouse capture stays armed so no cue
-// participates — this isolates pure row fitting.
+// marker, never a mid-row clip. The protected exit affordance ("esc back") stays
+// visible at every width — only unprotected rows drop. Deleting the fit at the
+// stack seam leaves the 120/80 lines over-wide, reddening the printable-width
+// assertion here (and no tab-seam test), which is the per-seam pin. Mouse capture
+// stays armed so no cue participates — this isolates pure row fitting.
 func TestFooterFitsStackSeamToWidth(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -5300,21 +5348,23 @@ func TestFooterFitsStackSeamToWidth(t *testing.T) {
 		{
 			name:        "wide width keeps every row",
 			width:       200,
-			wantPresent: []string{browserFirstRow, "m mouse capture", browserLastRow},
+			wantPresent: []string{browserFirstRow, "m mouse capture", browserExitRow},
 			wantMarker:  false,
 		},
 		{
-			name:        "canonical width drops the tail",
+			// esc back is protected, so it is present at 120 though it is registry-last;
+			// the unprotected tail ("i insights" onward) drops behind the marker.
+			name:        "canonical width drops the unprotected tail, keeps the exit",
 			width:       120,
-			wantPresent: []string{browserFirstRow, browserMidRow},
-			wantAbsent:  []string{"y copy", browserLastRow},
+			wantPresent: []string{browserFirstRow, browserStack120Last, browserExitRow},
+			wantAbsent:  []string{"i insights", "y copy"},
 			wantMarker:  true,
 		},
 		{
-			name:        "narrow width drops more of the tail",
+			name:        "narrow width drops more of the tail, still keeps the exit",
 			width:       80,
-			wantPresent: []string{browserFirstRow, browserNarrowMid},
-			wantAbsent:  []string{"h history", browserLastRow},
+			wantPresent: []string{browserFirstRow, browserStack80Last, browserExitRow},
+			wantAbsent:  []string{"d delete", "h history"},
 			wantMarker:  true,
 		},
 	} {
@@ -5353,10 +5403,12 @@ func TestFooterFitsTabSeamToWidth(t *testing.T) {
 			wantMarker:  false,
 		},
 		{
-			name:        "narrow width drops the tail",
+			// q quit is the tab footer's protected exit, so it stays at 40 while the
+			// unprotected middle rows (help, palette, …) drop behind the marker.
+			name:        "narrow width drops the tail, keeps the exit",
 			width:       40,
-			wantPresent: []string{"tab/1–4 switch"},
-			wantAbsent:  []string{"q quit"},
+			wantPresent: []string{"tab/1–4 switch", "q quit"},
+			wantAbsent:  []string{"? help", "ctrl+k palette"},
 			wantMarker:  true,
 		},
 	} {
@@ -5395,15 +5447,15 @@ func TestFooterKeepsMouseCueAndFitsRowsBothScopes(t *testing.T) {
 		{
 			name:        "list scope canonical width",
 			width:       120,
-			wantPresent: []string{browserFirstRow, browserNarrowMid},
-			wantAbsent:  []string{"h history"},
+			wantPresent: []string{browserFirstRow, browserStack80Last},
+			wantAbsent:  []string{"d delete"},
 			wantMarker:  true,
 		},
 		{
 			name:        "list scope narrow width",
 			width:       80,
-			wantPresent: []string{browserFirstRow, "/ filter"},
-			wantAbsent:  []string{"e edit"},
+			wantPresent: []string{browserFirstRow, browserCue80Last},
+			wantAbsent:  []string{"/ filter"},
 			wantMarker:  true,
 		},
 		{
@@ -5450,6 +5502,105 @@ func TestFooterKeepsMouseCueAndFitsRowsBothScopes(t *testing.T) {
 			}
 			assertFooterFits(t, raw, testCase.width, testCase.wantPresent, testCase.wantAbsent, testCase.wantMarker)
 		})
+	}
+}
+
+// TestFooterProtectsExitAffordances pins the never-drop contract: an exit
+// affordance (a scope's esc/back row, q quit) carries the registry NeverDrop flag,
+// so the width fitter keeps it at EVERY width and drops only unprotected rows from
+// the tail — the "… ?" marker landing at the ELISION POINT (where the dropped rows
+// were, immediately before the protected suffix), never shoved past the exit.
+// These rows sit registry-last for reading order, so the pre-flag fitter dropped
+// them FIRST: at 120 the browser lost "esc back", at a narrow Projects tab it lost
+// "q quit". Each sub-case asserts the exit row visible at a width that dropped it
+// before, so the test fails against that earlier drop-the-tail behaviour.
+func TestFooterProtectsExitAffordances(t *testing.T) {
+	t.Parallel()
+
+	t.Run("browser esc back survives at the canonical width, marker at the elision point", func(t *testing.T) {
+		t.Parallel()
+		m := newTestModel(&fakeData{})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+		m = m.pushScreen(mouseBrowser(t))
+		_ = m.View() // armed (no cue) isolates pure row fitting from the state cue
+		printable := plain(m.footer())
+
+		// The registry-last exit row is visible though the pre-flag fitter dropped it
+		// first at 120 (it kept through "i insights" and elided everything after).
+		if !strings.Contains(printable, browserExitRow) {
+			t.Errorf("browser footer dropped the exit affordance %q at width 120; it must never drop\nfooter: %s", browserExitRow, printable)
+		}
+		// The marker stands at the elision point: the line ends with the literal
+		// "… ? · esc back", never "esc back · … ?" (marker past the exit). Asserting the
+		// LITERAL text — not footerOverflowMarker — also pins the marker's spelling, so
+		// regressing the const to "…" (losing the "?" full-truth handoff) reds here (F3).
+		if !strings.Contains(printable, "… ? · "+browserExitRow) {
+			t.Errorf("want the literal \"… ?\" at the elision point before the exit; want %q in\nfooter: %s", "… ? · "+browserExitRow, printable)
+		}
+		// Everything kept holds registry (display) order, the exit row last: the fitter
+		// kept through "x show deleted" at 120, then the elision marker, then "esc back".
+		assertAscendingOrder(t, printable,
+			browserFirstRow, "o order", "/ filter", "e edit", "n new", "r rename",
+			"d delete", "h history", browserStack120Last, footerOverflowMarker, browserExitRow)
+		// The rows past the fit boundary are genuinely gone (non-vacuous elision).
+		for _, absent := range []string{"i insights", "y copy", "m mouse capture"} {
+			if strings.Contains(printable, absent) {
+				t.Errorf("footer still shows unprotected row %q at width 120\nfooter: %s", absent, printable)
+			}
+		}
+		if got := lipgloss.Width(m.footer()); got > 120 {
+			t.Errorf("footer is %d columns wide, exceeds 120\nfooter: %s", got, printable)
+		}
+	})
+
+	t.Run("projects q quit survives at a width that dropped it before", func(t *testing.T) {
+		t.Parallel()
+		m := newTestModel(&fakeData{})
+		m, _ = step(m, tea.WindowSizeMsg{Width: 80, Height: 40})
+		m.active = tabProjects
+		printable := plain(m.footer())
+
+		// q quit is the tab footer's exit affordance; the pre-flag fitter dropped it
+		// at 80 (it kept through "/ search"). Now it is protected and stays.
+		if !strings.Contains(printable, "q quit") {
+			t.Errorf("Projects footer dropped the exit affordance \"q quit\" at width 80; it must never drop\nfooter: %s", printable)
+		}
+		// The literal "… ?" (not footerOverflowMarker) pins the marker text at this seam
+		// too, so a const regression to "…" reds here as well (F3).
+		if !strings.Contains(printable, "… ? · q quit") {
+			t.Errorf("want the literal \"… ?\" at the elision point before \"q quit\"; want %q in\nfooter: %s", "… ? · q quit", printable)
+		}
+		// The "? help" ROW is droppable — help discovery rides the marker's own "?" —
+		// so at 80 it drops while the protected quit row stays.
+		for _, absent := range []string{"? help", "ctrl+k palette", "/ search"} {
+			if strings.Contains(printable, absent) {
+				t.Errorf("Projects footer still shows droppable row %q at width 80\nfooter: %s", absent, printable)
+			}
+		}
+		if got := lipgloss.Width(m.footer()); got > 80 {
+			t.Errorf("footer is %d columns wide, exceeds 80\nfooter: %s", got, printable)
+		}
+	})
+}
+
+// assertAscendingOrder fails unless every token appears in printable at a strictly
+// greater index than the one before it — the display order the fitted footer must
+// preserve (kept rows in registry order, the elision marker where rows were
+// dropped, the protected exit affordance last).
+func assertAscendingOrder(t *testing.T, printable string, tokens ...string) {
+	t.Helper()
+	prev := -1
+	for _, token := range tokens {
+		at := strings.Index(printable, token)
+		if at < 0 {
+			t.Errorf("footer missing %q in the display-order chain\nfooter: %s", token, printable)
+			return
+		}
+		if at <= prev {
+			t.Errorf("token %q is out of registry order (index %d not after %d)\nfooter: %s", token, at, prev, printable)
+			return
+		}
+		prev = at
 	}
 }
 

@@ -1933,26 +1933,29 @@ func fitAndFillHeight(body string, exact int) string {
 
 // stackFooterRow is one advertised key on a pushed screen's footer.
 // disabled marks a row whose action cannot run right now — it renders
-// visibly struck rather than vanishing (stackFooterLine), the crush-style
+// visibly struck rather than vanishing (stackFooterSegments), the crush-style
 // honesty rule: the user must see that e exists and learn why it is dead
 // (the toast on pressing it says), never wonder whether the key exists at
-// all. Contrast footerBindings, which HIDES an unavailable row: at tab
-// level "unavailable" means not-built-yet (search until Task 15) or
-// unwired (add without closures) — surfaces where a struck row would
-// advertise something that may never work on this build — while a stack
-// row's gates (editor resolution, selection class, an active handoff,
+// all. Contrast the tab footer (footerBindingSegments), which HIDES an
+// unavailable row: at tab level "unavailable" means not-built-yet (search
+// until Task 15) or unwired (add without closures) — surfaces where a struck
+// row would advertise something that may never work on this build — while a
+// stack row's gates (editor resolution, selection class, an active handoff,
 // quiesce) are all live, momentary state worth explaining.
+// protected mirrors the action's registry NeverDrop flag: an exit affordance
+// (this scope's esc/back row) the width fitter keeps at every terminal width.
 type stackFooterRow struct {
-	binding  keybinding.Binding
-	disabled bool
+	binding   keybinding.Binding
+	disabled  bool
+	protected bool
 }
 
 // stackFooterRows lists the top stack screen's own scope, in registry
 // order, every row with a real key — available or not (see stackFooterRow).
 // A Mutates row additionally greys while the daemon is quiesced (spec §15's
 // grey-out, matching the refusal its request handler would answer with).
-// Unlike footerBindings, ScopeGlobal is deliberately NOT included: a pushed
-// Screen intercepts every key before the global dispatch loop ever runs
+// Unlike the tab footer (footerBindingSegments), ScopeGlobal is deliberately NOT
+// included: a pushed Screen intercepts every key before the global dispatch loop ever runs
 // (handleKey — the same modal-priority rule ProjectsView's own confirm/add
 // flow already establishes), so a global hint here would name a key the
 // active surface actually ignores.
@@ -1980,31 +1983,43 @@ func (m Model) stackFooterRows() []stackFooterRow {
 			continue
 		}
 		disabled := !m.available(action.ID) || (action.Mutates && m.quiesced())
-		rows = append(rows, stackFooterRow{binding: actions.Binding(action), disabled: disabled})
+		rows = append(rows, stackFooterRow{binding: actions.Binding(action), disabled: disabled, protected: action.NeverDrop})
 	}
 	return rows
+}
+
+// footerSegment is one styled footer row plus whether the width fitter may drop
+// it. A protected segment is an exit affordance (a scope's esc/back row, q quit)
+// flagged NeverDrop in the registry: the user must always be able to see how to
+// leave the surface, so fitFooterSegments keeps every protected segment at any
+// width and drops only unprotected rows from the tail.
+type footerSegment struct {
+	text      string
+	protected bool
 }
 
 // stackFooterSegments renders stackFooterRows as individually styled "key desc"
 // segments in registry (priority) order: enabled rows dim (the whole footer's
 // usual treatment), disabled rows dim + struck through — the visible half of the
-// availability gate. It returns the segments still separable rather than a
-// pre-joined line because the width-aware footer fitter (fitFooterLine) drops
-// WHOLE trailing rows to fit the terminal, so it must see the row boundaries.
-// Styling is per segment because lipgloss terminates each Render with a reset, so
-// one outer Dim.Render over a line holding an inner strikethrough render would
-// lose the dim for everything after that inner reset.
-func (m Model) stackFooterSegments() []string {
+// availability gate. Each segment carries its protected flag so the fitter can
+// keep exit affordances at any width. It returns the segments still separable
+// rather than a pre-joined line because the width-aware footer fitter
+// (fitFooterLine) drops WHOLE rows to fit the terminal, so it must see the row
+// boundaries. Styling is per segment because lipgloss terminates each Render with
+// a reset, so one outer Dim.Render over a line holding an inner strikethrough
+// render would lose the dim for everything after that inner reset.
+func (m Model) stackFooterSegments() []footerSegment {
 	rows := m.stackFooterRows()
-	segments := make([]string, len(rows))
+	segments := make([]footerSegment, len(rows))
 	for i, row := range rows {
 		help := row.binding.Help()
-		segment := help.Key + " " + help.Desc
+		text := help.Key + " " + help.Desc
 		if row.disabled {
-			segments[i] = m.styles.Dim.Strikethrough(true).Render(segment)
+			text = m.styles.Dim.Strikethrough(true).Render(text)
 		} else {
-			segments[i] = m.styles.Dim.Render(segment)
+			text = m.styles.Dim.Render(text)
 		}
+		segments[i] = footerSegment{text: text, protected: row.protected}
 	}
 	return segments
 }
@@ -2028,7 +2043,7 @@ const (
 // the footer's dim separator and, only when it must drop trailing rows to fit
 // m.width, the dim "… ?" marker. The separator and marker are styled here so
 // fitFooterSegments stays a pure width computation.
-func (m Model) fitFooterLine(cue string, segments []string) string {
+func (m Model) fitFooterLine(cue string, segments []footerSegment) string {
 	return fitFooterSegments(
 		cue,
 		segments,
@@ -2038,46 +2053,76 @@ func (m Model) fitFooterLine(cue string, segments []string) string {
 	)
 }
 
-// fitFooterSegments composes cue + segments into one footer line fitting within
-// width, dropping WHOLE segments from the TAIL — the registry order they arrive
-// in IS their priority (earlier rows matter more), so the least important rows go
-// first — and rendering marker in place of whatever it dropped. There is no
-// wrapping and no mid-row truncation: a row is kept whole or dropped whole, so a
-// key hint is never cut into an unreadable fragment. The cue always LEADS and is
-// never a droppable segment (Decision 8 — the disclosed state must survive at
-// narrow widths); an empty cue contributes no leading segment. Width is measured
-// ANSI-aware (lipgloss.Width) so the styling woven through the segments,
-// separator, and marker never inflates the count. width <= 0 means the terminal
-// size is not known yet (no WindowSizeMsg has arrived, or a width-agnostic
+// fitFooterSegments composes cue + segments into one footer line that fits within
+// width. Unprotected segments are dropped WHOLE from the TAIL — the registry order
+// they arrive in IS their priority (earlier rows matter more), so the least
+// important rows go first — while protected segments (exit affordances) and the
+// cue are never dropped. Display order is preserved for everything kept, and the
+// marker renders at the ELISION POINT, standing in for the run of dropped rows
+// right where they were: a protected suffix reads e.g.
+// "enter read · o order · … ? · esc back", the marker BEFORE the exit, never after
+// it. There is no wrapping and no mid-row truncation: a row is kept whole or
+// dropped whole, so a key hint is never cut into an unreadable fragment. The cue
+// always LEADS and is never a droppable segment (Decision 8 — the disclosed state
+// must survive at narrow widths); an empty cue contributes no leading segment.
+// Width is measured ANSI-aware (lipgloss.Width) so the styling woven through the
+// segments, separator, and marker never inflates the count. width <= 0 means the
+// terminal size is not known yet (no WindowSizeMsg has arrived, or a width-agnostic
 // caller) — the full line is returned rather than collapsed, since fitting to a
-// zero width would drop everything. Whenever width > 0 and the cue itself fits,
-// the returned line's printable width is <= width.
-func fitFooterSegments(cue string, segments []string, separator, marker string, width int) string {
-	kept := make([]string, 0, len(segments)+2)
-	if cue != "" {
-		kept = append(kept, cue)
+// zero width would drop everything. The fitter drops rows until the line fits OR
+// only the never-drop content remains (the cue, the protected segments, and the
+// marker); at that degenerate floor the line may exceed width, because hiding a
+// state cue or an exit affordance to satisfy a sub-40-column terminal — out of the
+// design envelope — would be the worse lie (Decision 10).
+func fitFooterSegments(cue string, segments []footerSegment, separator, marker string, width int) string {
+	droppable := 0
+	for _, segment := range segments {
+		if !segment.protected {
+			droppable++
+		}
 	}
+
+	// assemble builds the candidate line keeping the first keptDroppable unprotected
+	// segments (registry order) plus every protected segment, and — when any
+	// unprotected segment was dropped — the marker once at the elision point, the
+	// position where the first dropped segment was. The cue always leads.
+	assemble := func(keptDroppable int) string {
+		parts := make([]string, 0, len(segments)+2)
+		if cue != "" {
+			parts = append(parts, cue)
+		}
+		seenDroppable := 0
+		markerPlaced := false
+		dropping := keptDroppable < droppable
+		for _, segment := range segments {
+			switch {
+			case segment.protected:
+				parts = append(parts, segment.text)
+			case seenDroppable < keptDroppable:
+				parts = append(parts, segment.text)
+				seenDroppable++
+			case dropping && !markerPlaced:
+				parts = append(parts, marker)
+				markerPlaced = true
+			}
+		}
+		return strings.Join(parts, separator)
+	}
+
 	if width <= 0 {
-		return strings.Join(append(kept, segments...), separator)
+		return assemble(droppable)
 	}
-	placed := 0
-	for i, segment := range segments {
-		trial := append(slices.Clone(kept), segment)
-		if i+1 < len(segments) {
-			// More rows follow this candidate, so the marker will render; it must
-			// fit alongside the candidate or the candidate itself cannot be kept.
-			trial = append(trial, marker)
+	// Protected segments and the cue are always kept, so the only choice is how many
+	// leading unprotected rows survive. Descending returns the widest line that
+	// fits — the most rows shown.
+	for keptDroppable := droppable; keptDroppable >= 0; keptDroppable-- {
+		line := assemble(keptDroppable)
+		if lipgloss.Width(line) <= width {
+			return line
 		}
-		if lipgloss.Width(strings.Join(trial, separator)) > width {
-			break
-		}
-		kept = append(kept, segment)
-		placed = i + 1
 	}
-	if placed < len(segments) {
-		kept = append(kept, marker)
-	}
-	return strings.Join(kept, separator)
+	// Degenerate floor: even the cue + protected segments + marker exceed the width.
+	return assemble(0)
 }
 
 // buildBrowserDeps assembles a views.BrowserDeps for folder from the root's
@@ -2216,7 +2261,7 @@ func (m *Model) openSearchOverlay() {
 }
 
 // available reports whether action id can actually do something right now.
-// It drives the footer (footerBindings, stackFooterRows) and dispatch's
+// It drives the footer (footerBindingSegments, stackFooterRows) and dispatch's
 // own pre-run gate — NOT the palette, which uses the stricter
 // paletteAvailable below. switch-tabs and select are structural navigation
 // handled by dedicated key-routing paths in handleKey rather than a runner
@@ -2622,19 +2667,25 @@ func (m Model) mouseCaptureDisclosure() string {
 	return m.styles.Dim.Render("mouse: native select (m re-arms)")
 }
 
-// footerBindings renders the active scope's live keys straight from the
-// action registry, in registry order: every global action plus the active
-// tab's own scope, filtered to rows that both have a real key to advertise
-// (sync-fleet does not — palette/help only) and are actually available right
-// now via the same available() the footer has always used. This
-// deliberately differs from the palette's own listing
-// (paletteAvailable): switch-tabs and select stay advertised here because
-// the active view's own key-routing honors them directly, even though
-// neither is ever reachable through dispatch — which is exactly why the
-// palette, unlike the footer, must hide both.
-func (m Model) footerBindings() []keybinding.Binding {
+// footerBindingSegments renders the active tab scope's live footer rows as
+// individually dim-styled "key desc" segments — the bare-tab seam's per-row unit
+// the width-aware fitter (fitFooterLine) drops from the tail, each carrying its
+// protected flag so an exit affordance (q quit) is kept at any width. Rows come
+// straight from the action registry in registry order: every global action plus
+// the active tab's own scope, filtered to rows that both have a real key to
+// advertise (sync-fleet does not — palette/help only) and are actually available
+// right now via the same available() the footer has always used. This deliberately
+// differs from the palette's own listing (paletteAvailable): switch-tabs and select
+// stay advertised here because the active view's own key-routing honors them
+// directly, even though neither is ever reachable through dispatch — which is
+// exactly why the palette, unlike the footer, must hide both. Rendered a row at a
+// time rather than through one views.HelpLine join because the fitter needs the
+// rows separable to drop whole trailing ones; every segment is dim (no per-row
+// strikethrough like the stack footer carries), so the individual renders read
+// identically to one outer Dim over the joined line.
+func (m Model) footerBindingSegments() []footerSegment {
 	scope := m.activeScope()
-	var bindings []keybinding.Binding
+	var segments []footerSegment
 	for _, action := range actions.Registry() {
 		if len(action.Keys) == 0 {
 			continue
@@ -2645,24 +2696,11 @@ func (m Model) footerBindings() []keybinding.Binding {
 		if !m.available(action.ID) {
 			continue
 		}
-		bindings = append(bindings, actions.Binding(action))
-	}
-	return bindings
-}
-
-// footerBindingSegments renders the active tab scope's live bindings as
-// individually dim-styled "key desc" segments — the bare-tab seam's per-row unit
-// the width-aware fitter (fitFooterLine) drops from the tail. It is footerBindings
-// rendered a row at a time rather than through one views.HelpLine join, because
-// the fitter needs the rows separable to drop whole trailing ones; every segment
-// is dim (no per-row strikethrough like the stack footer carries), so the
-// individual renders read identically to one outer Dim over the joined line.
-func (m Model) footerBindingSegments() []string {
-	bindings := m.footerBindings()
-	segments := make([]string, len(bindings))
-	for i, binding := range bindings {
-		help := binding.Help()
-		segments[i] = m.styles.Dim.Render(help.Key + " " + help.Desc)
+		help := actions.Binding(action).Help()
+		segments = append(segments, footerSegment{
+			text:      m.styles.Dim.Render(help.Key + " " + help.Desc),
+			protected: action.NeverDrop,
+		})
 	}
 	return segments
 }

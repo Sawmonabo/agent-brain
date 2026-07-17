@@ -584,10 +584,11 @@ func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 // footer's own row, never a coincidence in the previewed markdown. It has to
 // be the first hint, not a later one: the full browser footer is wider than
 // this session's 120-column width, so the hub's width-aware fitter drops whole
-// trailing rows behind a "… ?" marker to make the line fit — a hint late in
-// registry order (e.g. "esc back") is dropped and never reaches the visible
-// grid, while the first hint is the highest-priority row the fitter always
-// keeps.
+// unprotected trailing rows behind a "… ?" marker to make the line fit — a hint
+// late in registry order (e.g. "m mouse capture") is dropped and never reaches
+// the visible grid, while the first hint is the highest-priority row the fitter
+// always keeps. (Registry-last "esc back" is a protected exit affordance kept at
+// every width, so it would be the wrong probe for the opposite reason.)
 //
 // The row is asserted against the LITERAL last row of the 40-row session (39,
 // 0-indexed) rather than a row derived from the first captured frame:

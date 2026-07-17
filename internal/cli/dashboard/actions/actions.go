@@ -89,6 +89,14 @@ type Action struct {
 	KeyHint string // footer/help key column ("s")
 	Scope   Scope
 	Mutates bool // greyed in the palette + refused while the daemon is quiesced (spec §15)
+	// NeverDrop marks an exit affordance — a scope's esc/back row, or q quit —
+	// that the footer's width fitter must keep at EVERY terminal width, dropping
+	// only unflagged rows from the tail (dashboard.go's fitFooterSegments). The
+	// registry orders rows for reading (back/quit anchor the end), which would
+	// otherwise make the exit the first row to clip on a narrow terminal and leave
+	// the user unable to see how to leave the surface; this flag separates drop
+	// eligibility from display order so the exit always shows.
+	NeverDrop bool
 }
 
 // registry is the full static table, in the order every surface renders it.
@@ -139,7 +147,7 @@ var registry = []Action{
 	{ID: "search", Title: "search", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeGlobal},
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},
 	{ID: "help", Title: "help", Keys: []string{"?"}, KeyHint: "?", Scope: ScopeGlobal},
-	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal},
+	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal, NeverDrop: true},
 	// update-agent-brain (Task 18, spec §11) surfaces the one-key self-update
 	// when a newer release is available. NOT Mutates — a binary swap is not a
 	// daemon mutation, so quiesce never refuses it; its live availability is
@@ -218,7 +226,7 @@ var registry = []Action{
 	// ScopeBrowser; migrate binds m too but under ScopeProjects, and cross-scope
 	// reuse is legal (only one scope is ever the matched footer scope at a time).
 	{ID: "mouse-capture-toggle", Title: "mouse capture", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeBrowser},
-	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
+	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser, NeverDrop: true},
 	// ScopeBrowserPreviewFocused rows: while the preview pane holds
 	// keyboard focus (tab, or a click into it) the browser swaps its footer to
 	// THIS set — exactly the keys that do something in that mode — so a focused
@@ -240,7 +248,7 @@ var registry = []Action{
 	// who could not tell how to get BACK to the list, so the footer names that
 	// first. These rows are runner-less, so paletteAvailable keeps them out of
 	// the command palette exactly as it does the other browser navigation rows.
-	{ID: "browser-preview-list", Title: "list", Keys: []string{"esc", "tab"}, KeyHint: "esc/tab", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-list", Title: "list", Keys: []string{"esc", "tab"}, KeyHint: "esc/tab", Scope: ScopeBrowserPreviewFocused, NeverDrop: true},
 	{ID: "browser-preview-scroll", Title: "scroll", Keys: []string{"j", "k"}, KeyHint: "j/k", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-half-page", Title: "half page", Keys: []string{"ctrl+d", "ctrl+u"}, KeyHint: "ctrl+d/u", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-page", Title: "page", Keys: []string{"pgup", "pgdown"}, KeyHint: "pgup/pgdn", Scope: ScopeBrowserPreviewFocused},
@@ -270,7 +278,7 @@ var registry = []Action{
 	// directly by Reading.updateKey — the same key the reading viewport's own
 	// keymap deliberately left unbound for exactly this row.
 	{ID: "reading-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeReading},
-	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading},
+	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading, NeverDrop: true},
 	// ScopeHistory rows (Task 14, spec §6): the version-history screen's own
 	// in-screen keys, matched directly by History.updateKey — no root runner,
 	// like every other stack scope. view/diff/diff-older/back are read
@@ -281,13 +289,13 @@ var registry = []Action{
 	{ID: "history-diff", Title: "diff vs live", Keys: []string{"d"}, KeyHint: "d", Scope: ScopeHistory},
 	{ID: "history-diff-older", Title: "diff older", Keys: []string{"D"}, KeyHint: "D", Scope: ScopeHistory},
 	{ID: "history-restore", Title: "restore", Keys: []string{"R"}, KeyHint: "R", Scope: ScopeHistory, Mutates: true},
-	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory},
+	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory, NeverDrop: true},
 	// ScopeInsights row (Task 16, spec §9): the pushed insights screen scrolls
 	// its stat sections through the reading viewport's own keymap (table-stakes
 	// scroll keys, not registry actions, like every other screen's viewport), so
 	// esc is its only registry row — matched directly by Insights.updateKey, no
 	// root runner.
-	{ID: "insights-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeInsights},
+	{ID: "insights-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeInsights, NeverDrop: true},
 	// ScopeConflicts rows: the Conflicts tab's own list cursor + drill-in,
 	// matched directly by ConflictsView.Update exactly as Projects' select/open
 	// are — no root runner, unconditionally available so the tab footer keeps
@@ -309,7 +317,7 @@ var registry = []Action{
 	{ID: "conflictdetail-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeConflictDetail},
 	{ID: "conflictdetail-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeConflictDetail, Mutates: true},
 	{ID: "conflictdetail-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeConflictDetail},
-	{ID: "conflictdetail-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeConflictDetail},
+	{ID: "conflictdetail-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeConflictDetail, NeverDrop: true},
 }
 
 // Registry returns the full static table, defensively copied so a caller

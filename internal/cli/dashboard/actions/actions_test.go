@@ -184,10 +184,11 @@ func TestBindingWithNoKeysIsDisabled(t *testing.T) {
 func TestSeedRegistryShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		id      string
-		keys    []string
-		mutates bool
-		scope   Scope
+		id        string
+		keys      []string
+		mutates   bool
+		neverDrop bool
+		scope     Scope
 	}{
 		{id: "switch-tabs", keys: []string{"tab", "shift+tab", "right", "left", "l", "h", "1", "2", "3", "4"}, scope: ScopeGlobal},
 		{id: "select", keys: []string{"up", "down", "k", "j"}, scope: ScopeProjects},
@@ -198,7 +199,10 @@ func TestSeedRegistryShape(t *testing.T) {
 		{id: "search", keys: []string{"/"}, scope: ScopeGlobal},
 		{id: "open-palette", keys: []string{"ctrl+k"}, scope: ScopeGlobal},
 		{id: "help", keys: []string{"?"}, scope: ScopeGlobal},
-		{id: "quit", keys: []string{"q"}, scope: ScopeGlobal},
+		// quit is the tab footer's exit affordance, so it is NeverDrop: the width
+		// fitter must keep q quit at every terminal width (TestNeverDropFlagsExactlyExitAffordances
+		// pins the whole partition; the dashboard-package seam pins that it shows).
+		{id: "quit", keys: []string{"q"}, neverDrop: true, scope: ScopeGlobal},
 	}
 
 	byID := make(map[string]Action)
@@ -219,6 +223,9 @@ func TestSeedRegistryShape(t *testing.T) {
 			if action.Mutates != testCase.mutates {
 				t.Errorf("Mutates = %v, want %v", action.Mutates, testCase.mutates)
 			}
+			if action.NeverDrop != testCase.neverDrop {
+				t.Errorf("NeverDrop = %v, want %v", action.NeverDrop, testCase.neverDrop)
+			}
 			if action.Scope != testCase.scope {
 				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)
 			}
@@ -226,6 +233,34 @@ func TestSeedRegistryShape(t *testing.T) {
 				t.Error("Title must not be empty — it is the palette/help label")
 			}
 		})
+	}
+}
+
+// TestNeverDropFlagsExactlyExitAffordances pins the complete NeverDrop partition:
+// exactly the exit affordances carry the flag, and nothing else does. The footer's
+// width fitter keeps flagged rows at every terminal width (dashboard.go's
+// fitFooterSegments), so this is the load-bearing shape guard — unflagging any exit
+// row would let a narrow terminal hide how to leave the surface, and flagging a
+// non-exit row would wrongly pin an ordinary hint. Enumerating every registry row
+// (not sampling) catches drift in both directions. The exits are each scope's
+// esc/back row (the focused pane's "return to list" among them) plus the global
+// quit; the ? help row is deliberately NOT here — its discovery rides the "… ?"
+// marker's own key, so it stays droppable.
+func TestNeverDropFlagsExactlyExitAffordances(t *testing.T) {
+	t.Parallel()
+	exits := map[string]bool{
+		"quit":                 true, // tab footer exit (ScopeGlobal)
+		"browser-back":         true,
+		"browser-preview-list": true, // focused-preview "return to list" exit
+		"reading-back":         true,
+		"history-back":         true,
+		"insights-back":        true,
+		"conflictdetail-back":  true,
+	}
+	for _, action := range Registry() {
+		if action.NeverDrop != exits[action.ID] {
+			t.Errorf("action %q NeverDrop = %v, want %v (exactly the exit affordances are protected)", action.ID, action.NeverDrop, exits[action.ID])
+		}
 	}
 }
 
