@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 )
 
-// ghRow builds a doctor report whose gh check has the given status and detail —
+// ghReport builds a doctor report whose gh check has the given status and detail —
 // the one row the attention logic reads.
 func ghReport(status doctor.Status, detail string) doctor.Report {
 	return doctor.Report{Results: []doctor.CheckResult{
@@ -28,8 +29,6 @@ func ghReport(status doctor.Status, detail string) doctor.Report {
 // authInvalidDetail is a real `gh auth status` failure line (the doctor probe's
 // Detail on an expired keyring token), the exact corpus the classifier keys on.
 const authInvalidDetail = "gh auth status: The token in keyring is invalid. (run `gh auth login`)"
-
-// --- Step 2: surfacing ---
 
 func TestAuthAttentionSurfacesInHeader(t *testing.T) {
 	t.Parallel()
@@ -48,7 +47,7 @@ func TestAuthAttentionSurfacesInHeader(t *testing.T) {
 		}
 	}
 	// It joins the existing status line, adding no header row — the frame-height
-	// invariant Task 1's exact-fill frames depend on.
+	// invariant the exact-fill frames depend on.
 	if lines := strings.Count(got, "\n"); lines != 0 {
 		t.Errorf("attention added %d header rows; want it inline on the status line (%q)", lines, got)
 	}
@@ -77,7 +76,30 @@ func TestAuthAttentionIsStickyNotToast(t *testing.T) {
 	}
 }
 
-// --- Step 3: detection ---
+// TestHeaderRendersAlertBeforeBanner pins the defined status-line order when the
+// gh-auth alert and the update banner both show: the alert leads (spec §2), the
+// louder action-required signal first. They never coexist in practice (a dead
+// token is why the check failed, so no banner was offered), so the order is a
+// deliberate definition — this test is what keeps the realigned spec and the
+// composition from drifting apart.
+func TestHeaderRendersAlertBeforeBanner(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m.status = readyStatus()
+	m.authInvalid = true
+	m.updateTag = "v9.9.9"
+	m.updatePhase = updateOffered
+
+	header := plain(m.statusHeader())
+	alertAt := strings.Index(header, "gh auth invalid")
+	bannerAt := strings.Index(header, "v9.9.9 available")
+	if alertAt < 0 || bannerAt < 0 {
+		t.Fatalf("header missing a segment: alertAt=%d bannerAt=%d (%q)", alertAt, bannerAt, header)
+	}
+	if alertAt > bannerAt {
+		t.Errorf("gh-auth alert renders after the update banner; want the alert first (%q)", header)
+	}
+}
 
 func TestUpdateCheckAuthInvalidArmsAttention(t *testing.T) {
 	t.Parallel()
@@ -175,7 +197,44 @@ func TestDoctorReportFeedsAuthAttention(t *testing.T) {
 	}
 }
 
-// --- Step 4/5: the re-auth handoff ---
+// TestDoctorFixedMsgFeedsAuthAttention pins the doctorFixedMsg→applyGHAuthSignal
+// root wire: a standard `doctor --fix` re-runs the battery, so its fresh gh row
+// must move the sticky attention exactly as a plain doctor poll does. Deleting
+// the wire leaves the package green — the 2s poll would converge the state a tick
+// later — so this is the guard the red-under-deletion root-wiring standard needs.
+func TestDoctorFixedMsgFeedsAuthAttention(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		start   bool
+		report  doctor.Report
+		wantEnd bool
+	}{
+		{
+			name:    "auth-invalid gh row in the fix result arms",
+			start:   false,
+			report:  ghReport(doctor.StatusFail, authInvalidDetail),
+			wantEnd: true,
+		},
+		{
+			name:    "passing gh row in the fix result clears",
+			start:   true,
+			report:  ghReport(doctor.StatusOK, "gh installed and authenticated"),
+			wantEnd: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m.authInvalid = test.start
+			m, _ = step(m, doctorFixedMsg{report: test.report})
+			if m.authInvalid != test.wantEnd {
+				t.Errorf("authInvalid = %v, want %v", m.authInvalid, test.wantEnd)
+			}
+		})
+	}
+}
 
 // writeMarkerFakeGH installs a fake `gh` that records which subcommand ran by
 // touching a marker file — the e2e fakegh precedent, scoped to the two
@@ -224,15 +283,21 @@ func TestDoctorFixReauthHandoff(t *testing.T) {
 	m.authInvalid = true
 	m.doctor.Set(ghReport(doctor.StatusFail, authInvalidDetail), nil)
 
-	// f routes to the handoff: the Cmd is tea.ExecProcess's deferred request (NOT
-	// ghAuthFinishedMsg), and merely running it must not launch gh — only the
-	// suspended program loop does, the editor-handoff contract.
+	// f routes to the handoff: its Cmd IS tea.ExecProcess's deferred request —
+	// positively identified by type against the editor twin's reference request,
+	// not merely "not ghAuthFinishedMsg" — and merely running it must not launch
+	// gh: only the suspended program loop does, the editor-handoff contract.
 	m, cmd := step(m, key("f"))
 	if cmd == nil {
 		t.Fatal("f on the gh-invalid row produced no Cmd; want the re-auth handoff")
 	}
-	if _, ok := cmd().(ghAuthFinishedMsg); ok {
+	dispatch := cmd()
+	if _, ok := dispatch.(ghAuthFinishedMsg); ok {
 		t.Fatal("f ran gh directly; the handoff must go through tea.ExecProcess (suspend/resume)")
+	}
+	execRequest := tea.ExecProcess(exec.Command("true"), nil)()
+	if got, want := reflect.TypeOf(dispatch), reflect.TypeOf(execRequest); got != want {
+		t.Fatalf("f dispatch message type = %v, want tea.ExecProcess's %v (the reauth must BE the handoff request)", got, want)
 	}
 	if _, err := os.Stat(loginMarker); err == nil {
 		t.Fatal("running the dispatch Cmd launched gh outside the program loop")

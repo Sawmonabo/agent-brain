@@ -138,7 +138,7 @@ func launchHub(cmd *cobra.Command) error {
 			return runDoctorFixWithQuiesce(ctx, true, io.Discard)
 		},
 		Scan: hubScanRunner(),
-		// The gh-auth attention remedy (Task 7): the Doctor tab's f hands the
+		// The gh-auth attention remedy: the Doctor tab's f hands the
 		// terminal to the interactive `gh auth login -h github.com` when gh auth is
 		// invalid (GitHub's device/browser flow — no daemon may re-mint a token),
 		// then re-probes with a `gh auth status`. Both resolve gh at call time so a

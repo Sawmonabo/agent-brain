@@ -306,6 +306,34 @@ func TestRunGHAuthFails(t *testing.T) {
 	}
 }
 
+// TestRunGHAuthInvalidLeavesClassifiableDetail pins the PRODUCER half of the
+// single-classifier-seam design: checkGH must leave gh's raw `gh auth status`
+// stderr in CheckResult.Detail so the hub's arm-from-doctor path can re-classify
+// it through ghx.Classify. The fixture is the real multi-line keyring block whose
+// auth-invalid signatures sit on the second and third lines (never the first), so
+// a future Detail sanitization — a firstLine() truncation, a generic replacement —
+// would drop the signature and silently kill arm-from-doctor while every other
+// suite stayed green. This is the guard at the seam that would break.
+func TestRunGHAuthInvalidLeavesClassifiableDetail(t *testing.T) {
+	t.Parallel()
+	const keyringStderr = "github.com\n" +
+		"  X Failed to log in to github.com account Sawmonabo (keyring)\n" +
+		"  - The token in keyring is invalid.\n" +
+		"  - To re-authenticate, run: gh auth login -h github.com"
+	fx := newFixture(t)
+	fx.deps.GH = ghx.NewClientWithRunner(ghxtest.New(t, ghxtest.Call{
+		Args: []string{"auth", "status"}, Result: ghx.Result{ExitCode: 1, Stderr: keyringStderr},
+	}), "/usr/bin/gh")
+
+	got := result(t, doctor.Run(context.Background(), fx.deps), "gh")
+	if got.Status != doctor.StatusFail {
+		t.Fatalf("gh check = %+v, want fail", got)
+	}
+	if class := ghx.Classify(got.Detail); class != ghx.FailureAuthInvalid {
+		t.Fatalf("ghx.Classify(gh Detail) = %v, want FailureAuthInvalid; Detail = %q", class, got.Detail)
+	}
+}
+
 func TestRunRemoteUnreachable(t *testing.T) {
 	t.Parallel()
 	fx := newFixture(t)

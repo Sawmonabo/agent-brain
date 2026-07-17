@@ -29,7 +29,7 @@ this document for the hub era.
 
 ```
 Root ─ tab bar: [Projects] [Conflicts] [Activity] [Doctor]
-  │    status bar: daemon state · version · update banner · toasts · gh-auth alert
+  │    status bar: daemon state · version · gh-auth alert · update banner · toasts
   │    overlays (any view): / global search · ctrl+k palette · ? help
   │
   ├─ Projects tab (table of tracked units; a add · m migrate · u untrack · s sync)

@@ -12,7 +12,7 @@ import (
 	"github.com/Sawmonabo/agent-brain/internal/ghx"
 )
 
-// gh-auth staleness detection, surfacing, and one-key re-auth handoff (Task 7).
+// gh-auth staleness detection, surfacing, and one-key re-auth handoff.
 //
 // The memories checkout's remote is SSH, so sync never touches the gh OAuth
 // token — an invalid token silently breaks only the gh-dependent features (the

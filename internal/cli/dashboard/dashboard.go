@@ -231,15 +231,17 @@ type Config struct {
 	// (like Discover's TrackCandidate) because the Doctor view renders it.
 	Scan func(ctx context.Context, folder string) ([]views.ScanFinding, error)
 
-	// ReauthGH and ProbeGHAuth are the gh-auth attention remedy (Task 7), injected
+	// ReauthGH and ProbeGHAuth are the gh-auth attention remedy, injected
 	// by the cli root because gh binary resolution lives outside this package's
 	// import allowlist. ReauthGH builds the interactive `gh auth login -h
 	// github.com` command the Doctor tab's f hands the terminal to when gh auth is
 	// the invalid piece — an *exec.Cmd so it rides the SAME tea.ExecProcess
 	// suspend/resume seam the $EDITOR flow uses. ProbeGHAuth re-checks auth after
-	// that handoff (a `gh auth status`); nil on either disables the handoff (the f
-	// key falls back to the standard doctor --fix). No token ever enters this
-	// process: gh owns its own credential storage (ADR 08).
+	// that handoff (a `gh auth status`). A nil ReauthGH disables the handoff (the
+	// f key falls back to the standard doctor --fix); a nil ProbeGHAuth keeps the
+	// handoff and only degrades its return to an honest probe-unavailable failure,
+	// since there is then nothing to re-verify the token with. No token ever enters
+	// this process: gh owns its own credential storage (ADR 08).
 	ReauthGH    func() *exec.Cmd
 	ProbeGHAuth func(context.Context) error
 }
@@ -378,7 +380,7 @@ type Model struct {
 	runDoctorFix func(context.Context) (doctor.Report, error)
 	scan         func(ctx context.Context, folder string) ([]views.ScanFinding, error)
 
-	// gh-auth attention (Task 7, ghauth.go). authInvalid is the sticky flag the
+	// gh-auth attention (logic in ghauth.go). authInvalid is the sticky flag the
 	// status header renders loudly when any gh call classifies as auth-invalid
 	// (the update-check's ErrAuthInvalid, or the doctor gh row): STICKY by design
 	// — cleared only by a gh probe that succeeds (a passing doctor gh row, or the
@@ -2610,11 +2612,11 @@ func (m Model) activeScope() actions.Scope {
 func (m Model) statusHeader() string {
 	header := m.statusHeaderBase()
 	// Both the gh-auth attention and the update banner are status-bar segments
-	// (spec §2: "daemon state · version · update banner · toasts · gh-auth
-	// attention"): appended on the SAME line, so they add no header row and every
+	// (spec §2: "daemon state · version · gh-auth alert · update banner ·
+	// toasts"): appended on the SAME line, so they add no header row and every
 	// frame budget that measures the header (headerBlockHeight and its callers
 	// frameChromeLines/mousePrefixLines) or reserves for it (ProjectsView height−14)
-	// stays put — the invariant Task 1's exact-fill frames depend on. Both render
+	// stays put — the invariant the exact-fill frames depend on. Both render
 	// even when the base is the status-error placeholder, so the "installing…" line
 	// holds through the self-managed daemon restart an apply performs, and the
 	// attention persists when the daemon itself is unreachable.

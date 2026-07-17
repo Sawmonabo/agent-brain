@@ -209,6 +209,55 @@ func TestCheckResolutionAndOrdering(t *testing.T) {
 	}
 }
 
+// TestCheckPreservesAuthInvalidSentinel pins the update-check detection chain
+// end to end: when the release listing fails because the gh token is dead, the
+// error Check returns must still satisfy errors.Is(_, ghx.ErrAuthInvalid) — the
+// hub's update-check detector rides Check and arms its sticky attention on that
+// sentinel. The wrap survives only because Check forwards the ReleaseSource
+// error unchanged; a future edit that reformats it with %v would sever the
+// feature's primary detection path while every suite stayed green, and this is
+// the guard that turns that red.
+func TestCheckPreservesAuthInvalidSentinel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		listErr      error
+		wantSentinel bool
+	}{
+		{
+			// The exact shape ghx.classifyFailure produces for an auth-invalid gh
+			// call — "op: stderr: %w" carrying a real 401 body and the sentinel. ghx
+			// exposes no exported constructor for it (classifyFailure is unexported,
+			// reachable only through a real Client.ListReleases), so the fixture is
+			// hand-wrapped with that same shape and a real corpus line rather than a
+			// placeholder, so its text cannot drift away from what production emits.
+			name:         "dead-token wrapped sentinel survives Check",
+			listErr:      fmt.Errorf("gh release list --repo owner/agent-brain: %s: %w", "HTTP 401: Bad credentials", ghx.ErrAuthInvalid),
+			wantSentinel: true,
+		},
+		{
+			// A 5xx / other failure carries no sentinel — the fail-closed direction:
+			// the attention must arm ONLY on a real dead token, never on any list error.
+			name:         "unrelated failure carries no sentinel",
+			listErr:      errors.New("gh release list --repo owner/agent-brain: HTTP 500: Internal Server Error"),
+			wantSentinel: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			updater := &Updater{Source: &fakeSource{listErr: test.listErr}, Getenv: noEnv}
+			_, err := updater.Check(t.Context(), Options{
+				CurrentVersion: "2.0.0",
+				TargetPath:     "/home/user/.local/bin/agent-brain",
+			})
+			if got := errors.Is(err, ghx.ErrAuthInvalid); got != test.wantSentinel {
+				t.Fatalf("errors.Is(Check err, ErrAuthInvalid) = %v, want %v (err: %v)", got, test.wantSentinel, err)
+			}
+		})
+	}
+}
+
 // TestCheckRequestedVersion proves explicit-version pinning in one table:
 // an rc pins the same as a stable release, an older release is honored with
 // Downgrade set (deliberate rollback), equal is a no-op, drafts stay
