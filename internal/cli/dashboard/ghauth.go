@@ -35,8 +35,13 @@ const authAttentionText = "gh auth invalid — Doctor tab: f re-authenticates"
 type (
 	// ghAuthFinishedMsg reports the interactive `gh auth login` child's exit —
 	// the tea.ExecProcess callback message, the gh-handoff twin of
-	// editorFinishedMsg. err is the exec error (a launch failure), NOT gh's own
-	// exit code, which is not authoritative about whether auth recovered.
+	// editorFinishedMsg. err is whatever tea.ExecProcess delivers from the exec:
+	// an *exec.ExitError when gh ran and exited non-zero (the ctrl-C'd device
+	// flow is exit 130), or a launch-class error (the terminal could not be
+	// released, the binary was not found) when gh never ran. Neither says
+	// whether auth actually recovered — only the post-handoff probe
+	// (ghAuthProbedMsg) does — so the handler always re-probes on return and
+	// reads err solely to decide whether to name the manual fallback.
 	ghAuthFinishedMsg struct{ err error }
 	// ghAuthProbedMsg carries the post-handoff `gh auth status` re-probe verdict:
 	// nil clears the attention with an ok toast, non-nil keeps it and names the

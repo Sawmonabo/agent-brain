@@ -254,9 +254,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// The merge driver records retain-both events only when
 	// AGENT_BRAIN_CONFLICT_LOG is set (spec §4: the driver "records the
 	// event for the dashboard conflicts view"). Export it process-wide so
-	// every git child spawned during integrate inherits it;
-	// `agent-brain conflicts` reads this file (the dashboard view is
-	// deferred).
+	// every git child spawned during integrate inherits it; both readers of
+	// this file — the `agent-brain conflicts` CLI and the hub's conflict
+	// center (the Conflicts tab's detail view) — surface exactly these events.
 	if err := os.Setenv("AGENT_BRAIN_CONFLICT_LOG", d.cfg.Paths.ConflictLogFile()); err != nil {
 		return fmt.Errorf("conflict log env: %w", err)
 	}

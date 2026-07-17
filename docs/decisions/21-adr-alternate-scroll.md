@@ -271,11 +271,16 @@ outside, not a member of that package tree.
 
 ## Consequences
 
-- **No per-view wheel code.** Scroll works under the wheel on every current and
-  future viewport for free, because the terminal delivers arrow keys the
-  existing keymaps already handle. Screens that do not yet scroll (Activity /
-  Doctor) gain nothing today and lose nothing; the wheel becomes useful there
-  the instant their own scrolling lands.
+- **No per-view wheel code — for the viewports that bind arrow keys.** Scroll
+  works under the wheel for free on every viewport whose keymap already handles
+  the arrow keys the terminal delivers: the reading view and the browser
+  preview. The Activity and Doctor tab bodies now scroll too
+  (`views/scrollpane.go`), but they are cursorless and deliberately leave
+  `↑/↓` unbound, so the wheel notches 1007 translates into arrow keys are
+  ignored there — the wheel does not move a tab pane; `ctrl+d/u`, `pgup/pgdn`,
+  and `g/G` scroll them (spec §2), matching the overflow hint. That is by
+  design: a cursorless pane has no selection for the wheel to nudge line by
+  line.
 - **A hard kill leaks a dormant mode — accepted.** `RestoreAlternateScroll`
   covers every graceful exit (clean quit, ctrl+c, context cancel,
   `ErrProgramKilled`) and runs before the self-update `syscall.Exec`. A

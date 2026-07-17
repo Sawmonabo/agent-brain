@@ -29,7 +29,7 @@ this document for the hub era.
 
 ```
 Root ─ tab bar: [Projects] [Conflicts] [Activity] [Doctor]
-  │    status bar: daemon state · version · gh-auth alert · update banner · toasts
+  │    status bar: daemon state · gh-auth alert · update banner · toasts
   │    overlays (any view): / global search · ctrl+k palette · ? help
   │
   ├─ Projects tab (table of tracked units; a add · m migrate · u untrack · s sync)
@@ -50,6 +50,23 @@ in, `esc` backs out one level (from root: quit prompt), `q` quits from root
 views. Every keybinding appears in the `?` overlay; contextual hints render
 in each view's footer, which is anchored to the terminal's bottom row on
 every frame regardless of how tall the active view's own content is.
+
+The build version is not a status-bar segment; it renders on the Projects
+fleet header (§9). The status bar carries only fleet-wide daemon posture
+(state, quiesce, last cycle) plus the two action-required segments (gh-auth
+alert, update banner) and any transient toasts.
+
+Tab-body scrolling (Activity and Doctor tabs): each scrolls a height-bounded
+body while its section title stays pinned above the fold. The body scrolls on
+`ctrl+d/u` (half page), `pgup/pgdn` (page), and `g/G` (ends) — the same
+cursorless grammar the reading view and browser preview use — and a `── NN%
+· ctrl+d/u pgup/pgdn scroll ──` hint appears on the bottom line only while the
+content overflows. The scroll position resets to the top only when the body's
+identity changes, so a periodic poll never yanks it. These panes are
+cursorless — there is no selection to move — so `↑/↓` stay unbound: the
+alternate-scroll wheel (DECSET 1007, §3) translates a wheel notch into an arrow
+key these panes deliberately leave unbound, so the wheel does not move a tab
+pane; the explicit scroll keys above do.
 
 ## 3. Memory browser (per project)
 

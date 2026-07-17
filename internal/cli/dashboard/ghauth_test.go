@@ -78,10 +78,11 @@ func TestAuthAttentionIsStickyNotToast(t *testing.T) {
 
 // TestHeaderRendersAlertBeforeBanner pins the defined status-line order when the
 // gh-auth alert and the update banner both show: the alert leads (spec §2), the
-// louder action-required signal first. They never coexist in practice (a dead
-// token is why the check failed, so no banner was offered), so the order is a
-// deliberate definition — this test is what keeps the realigned spec and the
-// composition from drifting apart.
+// louder action-required signal first. The two CAN coexist — a banner offered
+// while the token was live survives a later doctor poll arming the attention —
+// and when both render the alert-first order keeps the louder signal whole and
+// clips the banner tail at over-width; this test is what keeps that order, the
+// realigned spec, and the composition from drifting apart.
 func TestHeaderRendersAlertBeforeBanner(t *testing.T) {
 	t.Parallel()
 	m := newTestModel(&fakeData{})
@@ -413,6 +414,72 @@ func TestGHReauthFinishReassertsAlternateScroll(t *testing.T) {
 			}
 			if found != test.want {
 				t.Errorf("ghAuthFinishedMsg emitted set-1007 RawMsg = %v, want %v", found, test.want)
+			}
+		})
+	}
+}
+
+// TestGHReauthFinishAlwaysReprobesAndReservesLaunchToast pins the two halves of
+// the re-auth return contract. tea.ExecProcess hands the finish message
+// cmd.Run()'s error, so gh's own non-zero exit arrives as an *exec.ExitError
+// (the ctrl-C'd device flow is exit 130) — carrying no more authority over
+// whether auth recovered than a clean exit does, which is none. So the handler
+// re-probes on EVERY return (the probe is the sole truth), and names the manual
+// fallback only for a genuine launch failure: an error that is present and NOT
+// an ExitError, meaning gh never started.
+func TestGHReauthFinishAlwaysReprobesAndReservesLaunchToast(t *testing.T) {
+	t.Parallel()
+
+	// A real *exec.ExitError, produced by running a process that exits non-zero
+	// rather than hand-built, so errors.As sees the genuine dynamic type the
+	// handler branches on.
+	exitError := exec.Command("sh", "-c", "exit 130").Run()
+	var asExitError *exec.ExitError
+	if !errors.As(exitError, &asExitError) {
+		t.Fatalf("setup: want a real *exec.ExitError from `exit 130`, got %T (%v)", exitError, exitError)
+	}
+
+	tests := []struct {
+		name            string
+		finishErr       error
+		wantLaunchToast bool
+	}{
+		{name: "clean exit re-probes, no launch toast", finishErr: nil, wantLaunchToast: false},
+		{name: "gh exited non-zero re-probes, no launch toast", finishErr: exitError, wantLaunchToast: false},
+		{
+			name:            "genuine launch failure re-probes and names the manual path",
+			finishErr:       errors.New(`exec: "gh": executable file not found in $PATH`),
+			wantLaunchToast: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			probeCalls := 0
+			m := New(Config{
+				Data: &fakeData{},
+				ProbeGHAuth: func(context.Context) error {
+					probeCalls++
+					return nil
+				},
+			})
+
+			updated, cmd := step(m, ghAuthFinishedMsg{err: test.finishErr})
+
+			// The probe is the sole truth source, so it fires on every return —
+			// clean exit, gh's own non-zero exit, and a launch failure alike.
+			if !containsMsg[ghAuthProbedMsg](drain(cmd)) {
+				t.Errorf("finish err %v did not fire the re-probe", test.finishErr)
+			}
+			if probeCalls == 0 {
+				t.Errorf("finish err %v never ran the injected probe", test.finishErr)
+			}
+
+			// The launch toast is reserved for a start failure; an ExitError leaves
+			// the truth to the probe and carries no toast.
+			gotLaunchToast := updated.stickyToast != nil && strings.Contains(updated.stickyToast.text, "did not run")
+			if gotLaunchToast != test.wantLaunchToast {
+				t.Errorf("launch toast present = %v, want %v (sticky = %+v)", gotLaunchToast, test.wantLaunchToast, updated.stickyToast)
 			}
 		})
 	}

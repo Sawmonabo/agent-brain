@@ -1424,8 +1424,8 @@ func TestToastExpiresOnTick(t *testing.T) {
 }
 
 // TestToastRendersInStatusHeaderRegion pins spec §2's placement: "status
-// bar: daemon state · version · update banner · toasts" groups a toast with
-// the persistent header, not between the active view's body and the
+// bar: daemon state · gh-auth alert · update banner · toasts" groups a toast
+// with the persistent header, not between the active view's body and the
 // footer. A pushed toast must render after the header's own daemon-state
 // text and before the tab bar (and therefore before the body/footer that
 // follow it).
@@ -1741,14 +1741,17 @@ func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 	t.Parallel()
 	const height = 40
 	tests := []struct {
-		name   string
-		sticky string
-		info   string
+		name        string
+		sticky      string
+		info        string
+		authInvalid bool
 	}{
 		{name: "zero toasts"},
 		{name: "info only", info: "path: /home/u/x.md"},
 		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md"},
 		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
+		{name: "attention armed", authInvalid: true},
+		{name: "attention armed with both toasts", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", authInvalid: true},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1756,6 +1759,7 @@ func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 			m := newTestModel(&fakeData{status: readyStatus()})
 			m, _ = step(m, tea.WindowSizeMsg{Width: 110, Height: height})
 			m.status = readyStatus()
+			m.authInvalid = testCase.authInvalid
 			m = m.pushScreen(fixedHeightScreen{title: "stub"})
 			if testCase.sticky != "" {
 				m.pushStickyToast(testCase.sticky)
@@ -1770,6 +1774,28 @@ func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 			}
 			if want := plain(m.footer()); want == "" || !strings.Contains(body, want) {
 				t.Errorf("stack footer missing from the composed frame:\n%s", body)
+			}
+			if testCase.authInvalid {
+				// The armed attention is a status-bar SEGMENT, not a row of its own:
+				// it joins the daemon-state line, adding no header row, which is why
+				// the header-height reservation still exact-fills the frame above. A
+				// version that broke the segment onto its own row would ALSO exact-fill
+				// (the body budget reserves the header's real height, so it self-
+				// compensates), so the line count alone cannot catch it — assert the
+				// segment shares its line with the daemon state.
+				attentionLine := ""
+				for line := range strings.SplitSeq(body, "\n") {
+					if strings.Contains(line, "gh auth invalid") {
+						attentionLine = line
+						break
+					}
+				}
+				if attentionLine == "" {
+					t.Fatalf("armed attention did not render in the frame:\n%s", body)
+				}
+				if !strings.Contains(attentionLine, "daemon:") {
+					t.Errorf("gh-auth attention rendered on its own row, not inline on the status line: %q", attentionLine)
+				}
 			}
 		})
 	}

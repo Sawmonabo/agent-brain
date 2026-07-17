@@ -1088,16 +1088,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ghAuthFinishedMsg:
 		// The interactive `gh auth login` child exited and the terminal is ours
-		// again. Re-assert 1007 exactly like the editor return (ADR 21). gh's own
-		// exit code is not authoritative — a user may abandon the device flow yet
-		// have fixed it in the browser, or vice versa — so a clean exit fires the
-		// re-probe (the sole truth about whether the token is live). A launch
-		// failure keeps the attention and names the manual path: there was nothing
-		// to re-probe.
+		// again. Re-assert 1007 exactly like the editor return (ADR 21). The finish
+		// err carries gh's own exit status — tea.ExecProcess delivers cmd.Run()'s
+		// error, an *exec.ExitError when gh ran and exited non-zero (the user may
+		// ctrl-C the device flow, exit 130, yet have fixed the token in the
+		// browser) — so it is never authoritative about whether auth recovered:
+		// always re-probe, the sole truth about whether the token is live. Reserve
+		// the "did not run" toast for a genuine launch failure (err present and NOT
+		// an ExitError — gh never started), which the probe alone cannot explain.
 		reassert := m.reassertAlternateScrollCmd()
-		if msg.err != nil {
+		var exitError *exec.ExitError
+		if msg.err != nil && !errors.As(msg.err, &exitError) {
 			m.pushStickyToast("gh auth login did not run: " + msg.err.Error() + " — run `gh auth login -h github.com` manually")
-			return m, reassert
 		}
 		return m, tea.Batch(reassert, m.probeGHAuthCmd())
 
@@ -2516,7 +2518,7 @@ func (m Model) View() tea.View {
 		header := m.statusHeader()
 		if toastLine := m.toastLine(); toastLine != "" {
 			// Grouped with the status header, not between body and
-			// footer (spec §2: "status bar: daemon state · version ·
+			// footer (spec §2: "status bar: daemon state · gh-auth alert ·
 			// update banner · toasts").
 			header = strings.Join([]string{header, toastLine}, "\n\n")
 		}
@@ -2737,8 +2739,8 @@ func (m Model) activeScope() actions.Scope {
 func (m Model) statusHeader() string {
 	header := m.statusHeaderBase()
 	// Both the gh-auth attention and the update banner are status-bar segments
-	// (spec §2: "daemon state · version · gh-auth alert · update banner ·
-	// toasts"): appended on the SAME line, so they add no header row and every
+	// (spec §2: "daemon state · gh-auth alert · update banner · toasts"):
+	// appended on the SAME line, so they add no header row and every
 	// frame budget that measures the header (headerBlockHeight and its callers
 	// frameChromeLines/mousePrefixLines) or derives its own budget from it
 	// (ProjectsView sizes its table from tabBodyHeight minus the view's named
@@ -2749,9 +2751,11 @@ func (m Model) statusHeader() string {
 	// attention persists when the daemon itself is unreachable.
 	//
 	// The attention leads the banner because it is the louder, action-required
-	// signal; in practice the two never coexist (an invalid token is why the
-	// update check failed, so no banner was ever offered), but the order is
-	// defined rather than incidental.
+	// signal, and the two CAN coexist: an update banner offered while the token
+	// was still live stays put when a later doctor poll arms the attention
+	// (applyGHAuthSignal never clears the banner). When both render, the joined
+	// line can exceed the terminal width; the deliberate alert-first order keeps
+	// the louder action-required signal whole and lets the banner tail clip.
 	if m.authInvalid {
 		header += m.styles.Dim.Render(" · ") + m.authAttentionSegment()
 	}

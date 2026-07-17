@@ -18,8 +18,9 @@ import (
 const sectionChromeLines = 2
 
 // scrollPane wraps a bubbles viewport in the dashboard's tab-body scrolling
-// convention (spec §7), shared by the Doctor and Activity tabs so the two
-// height-bounded bodies behave identically and reuse one implementation:
+// convention (spec §2, view map — tab-body scrolling), shared by the Doctor
+// and Activity tabs so the two height-bounded bodies behave identically and
+// reuse one implementation:
 //
 //   - content is (re)installed every render through refresh, which resets the
 //     scroll to the top only when the document's IDENTITY changes — a periodic
