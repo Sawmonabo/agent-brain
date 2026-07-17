@@ -474,3 +474,51 @@ func TestDoctorRegistryRowsShape(t *testing.T) {
 		})
 	}
 }
+
+// TestScrollRegistryRowsShape pins this wave's registry additions: the bounded
+// tab bodies' scroll rows — doctor-scroll in the Doctor scope and activity-scroll
+// in the new Activity scope. Both carry exactly the half/full-page keys (g/G are
+// table-stakes viewport keys handled directly, off the registry), never Mutates
+// (a scroll touches no daemon state, so a quiesce must not refuse it), and have
+// no root runner — routed straight to the pane's own keymap in the root's
+// tab-key dispatch, the same discipline as browser-scroll-preview.
+func TestScrollRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id    string
+		scope Scope
+	}{
+		{id: "doctor-scroll", scope: ScopeDoctor},
+		{id: "activity-scroll", scope: ScopeActivity},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff([]string{"ctrl+d", "ctrl+u", "pgup", "pgdown"}, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if action.KeyHint != "ctrl+d/u" {
+				t.Errorf("KeyHint = %q, want %q", action.KeyHint, "ctrl+d/u")
+			}
+			if action.Mutates {
+				t.Error("Mutates = true, want false — a scroll touches no daemon state")
+			}
+			if action.Scope != testCase.scope {
+				t.Errorf("Scope = %v, want %v", action.Scope, testCase.scope)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
+	}
+}

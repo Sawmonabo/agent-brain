@@ -380,6 +380,11 @@ func New(cfg Config) Model {
 		cacheRoot:    cfg.CacheRoot,
 		now:          time.Now(),
 		projects:     views.NewProjectsView(),
+		// Doctor and Activity own a scroll pane whose viewport needs its keymap
+		// installed before any scroll key reaches it, so they are constructed
+		// here rather than left zero-valued (NewDoctorView/NewActivityView).
+		doctor:   views.NewDoctorView(),
+		activity: views.NewActivityView(),
 	}
 	return m.withStyles(theme.Default(true), true) // dark until the terminal answers (Init requests it)
 }
@@ -727,6 +732,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.updatePhase != updateApplying {
 			m.daemonDown = errors.Is(msg.err, api.ErrDaemonNotRunning)
 		}
+		// Activity scrolls its snapshot: feed the fresh status through so a
+		// materially changed status resets its scroll to the top while an
+		// unchanged 2s poll leaves the reader where they are (OnData's contract).
+		// Done here, in the message handler, so the reset persists — View runs on
+		// a value copy and cannot.
+		m.activity.OnData(m.status, m.statusErr, m.projects.Units, m.now)
 		// The capture wait resolves off the same poll that carries every
 		// other daemon fact — no dedicated timer (editflow.go).
 		m.checkPendingCapture()
@@ -745,6 +756,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.projects.SetUnits(msg.resp.Units)
 		}
+		// Activity's fleet trigger count comes from the unit list, so a projects
+		// refresh feeds its scroll pane too (OnData) — the same reset-on-real-
+		// change discipline the status poll uses.
+		m.activity.OnData(m.status, m.statusErr, m.projects.Units, m.now)
 		return m, nil
 
 	case conflictsMsg:
@@ -1222,7 +1237,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.projects.Update(msg, m.data, m.actions, m.migrateActions)
 	case tabConflicts:
 		return m, m.conflicts.Update(msg)
+	case tabActivity:
+		// Activity's only keys are scroll; a non-scroll key is inert (Scroll
+		// reports the miss, which Activity has nothing to fall through to). Reached
+		// only on a bare Activity tab — every overlay/prompt/stack owned the key
+		// first (handleKey's precedence chain) — so the pane never contends with a
+		// modal for ctrl+d/G. Scroll mutates m.activity in place; returning m
+		// carries the advanced offset back.
+		m.activity.Scroll(msg, m.status, m.statusErr, m.projects.Units, m.now, m.width, m.tabBodyHeight())
+		return m, nil
 	case tabDoctor:
+		// Scroll first (ctrl+d/u, pgup/pgdown, g/G bound the battery); on a miss
+		// the key belongs to the tab's own r/f/s (handleDoctorKey). Same bare-tab
+		// gating as Activity above.
+		if m.doctor.Scroll(msg, m.width, m.tabBodyHeight()) {
+			return m, nil
+		}
 		return m.handleDoctorKey(msg)
 	}
 	return m, nil
@@ -1294,6 +1324,8 @@ func (m *Model) scopeActiveAtRoot(scope actions.Scope) bool {
 		return m.active == tabProjects
 	case actions.ScopeDoctor:
 		return m.active == tabDoctor
+	case actions.ScopeActivity:
+		return m.active == tabActivity
 	case actions.ScopeConflicts:
 		return m.active == tabConflicts
 	default:
@@ -2009,10 +2041,14 @@ func (m *Model) available(id string) bool {
 		"history-view", "history-diff", "history-diff-older", "history-back",
 		"insights-back",
 		"conflicts-select", "conflicts-open", "conflictdetail-back",
-		"doctor-rerun":
+		"doctor-rerun", "doctor-scroll", "activity-scroll":
 		// doctor-rerun is a read-only refetch matched directly by
 		// handleDoctorKey (no runner), always offerable so the Doctor footer
 		// keeps naming it — the same shape as select/conflicts-select.
+		// doctor-scroll/activity-scroll are the bounded tab bodies' scroll keys,
+		// routed straight to the pane in the tab-key dispatch (like
+		// browser-scroll-preview): always available so the footer keeps naming
+		// them, their effect situational (only a body that overflows scrolls).
 		return true
 	case "scan":
 		// Advisory gitleaks sweep — live exactly when its runner is wired.
@@ -2255,9 +2291,9 @@ func (m Model) activeBody() string {
 	case tabConflicts:
 		return m.conflicts.View(m.tabBodyHeight())
 	case tabActivity:
-		return m.activity.View(m.status, m.statusErr, m.projects.Units, m.now)
+		return m.activity.View(m.status, m.statusErr, m.projects.Units, m.now, m.width, m.tabBodyHeight())
 	case tabDoctor:
-		return m.doctor.View()
+		return m.doctor.View(m.width, m.tabBodyHeight())
 	default:
 		return ""
 	}
@@ -2346,15 +2382,16 @@ func (m Model) footerBindings() []keybinding.Binding {
 	return bindings
 }
 
-// activeScope maps the active tab to its actions.Scope. Activity has no
-// tab-specific actions of its own yet, so it falls back to Global — its
-// footer advertises exactly the always-on rows.
+// activeScope maps the active tab to its actions.Scope, so the footer
+// advertises that tab's own rows alongside the always-on globals.
 func (m Model) activeScope() actions.Scope {
 	switch m.active {
 	case tabProjects:
 		return actions.ScopeProjects
 	case tabDoctor:
 		return actions.ScopeDoctor
+	case tabActivity:
+		return actions.ScopeActivity
 	case tabConflicts:
 		return actions.ScopeConflicts
 	default:

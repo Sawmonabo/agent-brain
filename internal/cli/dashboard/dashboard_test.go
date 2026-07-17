@@ -4184,7 +4184,7 @@ func TestDoctorActionFixInvokesClosureRendersReportAndInfoToast(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("f on a fixable report produced no Cmd")
 	}
-	if body := plain(m2.doctor.View()); !strings.Contains(body, "fixing…") {
+	if body := plain(m2.doctor.View(m2.width, m2.tabBodyHeight())); !strings.Contains(body, "fixing…") {
 		t.Errorf("f did not enter the fixing state; got:\n%s", body)
 	}
 
@@ -4196,7 +4196,7 @@ func TestDoctorActionFixInvokesClosureRendersReportAndInfoToast(t *testing.T) {
 	for _, msg := range msgs {
 		m3, _ = step(m3, msg)
 	}
-	if body := plain(m3.doctor.View()); !strings.Contains(body, "filter wiring installed") {
+	if body := plain(m3.doctor.View(m3.width, m3.tabBodyHeight())); !strings.Contains(body, "filter wiring installed") {
 		t.Errorf("re-checked report not rendered after fix; got:\n%s", body)
 	}
 	if m3.toast == nil || !strings.Contains(m3.toast.text, "fix applied — re-checked") {
@@ -4253,7 +4253,7 @@ func TestDoctorActionScanRendersFindings(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("s on the Doctor tab produced no Cmd")
 	}
-	if body := plain(m2.doctor.View()); !strings.Contains(body, "scanning…") {
+	if body := plain(m2.doctor.View(m2.width, m2.tabBodyHeight())); !strings.Contains(body, "scanning…") {
 		t.Errorf("s did not enter the scanning state; got:\n%s", body)
 	}
 
@@ -4265,7 +4265,7 @@ func TestDoctorActionScanRendersFindings(t *testing.T) {
 	for _, msg := range msgs {
 		m3, _ = step(m3, msg)
 	}
-	body := plain(m3.doctor.View())
+	body := plain(m3.doctor.View(m3.width, m3.tabBodyHeight()))
 	for _, want := range []string{"1 finding in 1 file", "work/notes.md:7", "generic-api-key"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scan findings not rendered; missing %q; got:\n%s", want, body)
@@ -4336,7 +4336,7 @@ func TestDoctorFixRefusedWhileQuiesced(t *testing.T) {
 	if next.toast == nil || !strings.Contains(next.toast.text, "quiesced") {
 		t.Errorf("f while quiesced did not toast the refusal; toast = %+v", next.toast)
 	}
-	if strings.Contains(plain(next.doctor.View()), "fixing…") {
+	if strings.Contains(plain(next.doctor.View(next.width, next.tabBodyHeight())), "fixing…") {
 		t.Error("the fixing state latched despite the quiesce refusal")
 	}
 }

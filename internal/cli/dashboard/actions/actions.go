@@ -31,6 +31,7 @@ const (
 	ScopeGlobal         Scope = iota // any root view
 	ScopeProjects                    // Projects tab
 	ScopeDoctor                      // Doctor tab
+	ScopeActivity                    // Activity tab
 	ScopeBrowser                     // memory browser (Task 11+)
 	ScopeReading                     // reading view (Task 12+)
 	ScopeHistory                     // history view (Task 14+)
@@ -48,6 +49,8 @@ func (s Scope) String() string {
 		return "Projects"
 	case ScopeDoctor:
 		return "Doctor"
+	case ScopeActivity:
+		return "Activity"
 	case ScopeBrowser:
 		return "Memory browser"
 	case ScopeReading:
@@ -70,7 +73,7 @@ func (s Scope) String() string {
 // overlay's group ordering does not depend on ScopeConflicts happening to be
 // the last constant — a scope inserted later stays correct by construction.
 func AllScopes() []Scope {
-	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeBrowser, ScopeReading, ScopeHistory, ScopeInsights, ScopeConflicts, ScopeConflictDetail}
+	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeActivity, ScopeBrowser, ScopeReading, ScopeHistory, ScopeInsights, ScopeConflicts, ScopeConflictDetail}
 }
 
 // Action is one user-invokable operation. The SAME rows drive the palette
@@ -119,6 +122,16 @@ var registry = []Action{
 	{ID: "doctor-rerun", Title: "re-run", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeDoctor},
 	{ID: "doctor-fix", Title: "fix", Keys: []string{"f"}, KeyHint: "f", Scope: ScopeDoctor, Mutates: true},
 	{ID: "scan", Title: "scan", Keys: []string{"s"}, KeyHint: "s", Scope: ScopeDoctor},
+	// doctor-scroll / activity-scroll (this wave): the two status tabs render
+	// their bodies — the Doctor battery, the Activity snapshot — through a
+	// height-bounded viewport, so a long body scrolls in place instead of being
+	// clipped by the root frame. Matched by the pane's own restricted keymap in
+	// the root's tab-key dispatch (like browser-scroll-preview), no root runner
+	// and never Mutates. g/G jump to the ends — handled directly and, as
+	// table-stakes viewport keys, left off the registry; only the non-obvious
+	// half/full-page keys the footer must name are declared (spec §14).
+	{ID: "doctor-scroll", Title: "scroll", Keys: []string{"ctrl+d", "ctrl+u", "pgup", "pgdown"}, KeyHint: "ctrl+d/u", Scope: ScopeDoctor},
+	{ID: "activity-scroll", Title: "scroll", Keys: []string{"ctrl+d", "ctrl+u", "pgup", "pgdown"}, KeyHint: "ctrl+d/u", Scope: ScopeActivity},
 	{ID: "sync-fleet", Title: "sync fleet", Scope: ScopeGlobal, Mutates: true},
 	{ID: "search", Title: "search", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeGlobal},
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/daemon/api"
 )
@@ -22,6 +24,21 @@ import (
 // daemon endpoints.
 type ActivityView struct {
 	styles theme.Styles
+
+	// pane bounds the snapshot to the tab's height budget and scrolls it in
+	// place (spec §7): a long sync summary (many commits, scrubbed/degraded
+	// lists) can run past a short terminal, so it renders through a viewport
+	// rather than growing the frame and letting the root clamp silently cut the
+	// tail. The daemon status and unit list stay root-owned and passed in at
+	// render; the pane holds only the scroll offset and its change key.
+	pane scrollPane
+}
+
+// NewActivityView builds an Activity tab with its scroll pane initialized. The
+// model constructs it here rather than zero-valuing it because the pane's
+// viewport needs its scroll keymap before ctrl+d/G ever reach it.
+func NewActivityView() ActivityView {
+	return ActivityView{pane: newScrollPane()}
 }
 
 // SetStyles installs the palette-derived style set this view renders
@@ -31,20 +48,62 @@ func (v *ActivityView) SetStyles(styles theme.Styles) {
 	v.styles = styles
 }
 
-// View renders the Activity tab from the daemon status snapshot and the
-// current unit list, passed in fresh at every render (this view holds no
-// data of its own beyond its styles).
-func (v ActivityView) View(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
+// View renders the Activity tab: a fixed section title over a height-bounded,
+// scrollable body. The daemon status and unit list are still owned by the root
+// and passed in fresh at render (this view stores none of that data); width/
+// height come fresh too, so a resize is handled by construction. now feeds the
+// live uptime/quiesce-remaining, which is why the body is re-installed every
+// render even without new data. Value receiver, like DoctorView.View — the
+// scroll offset is advanced only by Scroll on the root's copy.
+func (v ActivityView) View(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time, width, height int) string {
+	v.syncPane(status, statusErr, units, now)
+	return sectionTitle(v.styles, "Activity") + "\n\n" +
+		v.pane.render(v.styles, width, max(height-sectionChromeLines, 1))
+}
+
+// Scroll routes a scroll key to the snapshot pane, sizing it to the same budget
+// View uses so the page math matches what is drawn. It reports whether the key
+// was a scroll key it consumed; Activity has no other keys, so the root ignores
+// a miss.
+func (v *ActivityView) Scroll(msg tea.KeyPressMsg, status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time, width, height int) bool {
+	v.syncPane(status, statusErr, units, now)
+	return v.pane.scroll(msg, width, max(height-sectionChromeLines, 1))
+}
+
+// OnData refreshes the scroll pane's change tracking when new daemon data
+// arrives (a status poll or a projects refresh), resetting to the top only on a
+// materially changed status — never on the 2s cadence itself, which would yank a
+// reader mid-scroll. Called from the root's message handlers so the reset
+// PERSISTS (View runs on a value copy); the ticking uptime is excluded from the
+// change key, so only real status changes reset the scroll.
+func (v *ActivityView) OnData(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) {
+	v.syncPane(status, statusErr, units, now)
+}
+
+// syncPane installs the rendered body in the scroll pane. The change key is the
+// body rendered at a ZERO reference time: uptimeSuffix returns "" for it and the
+// quiesce-remaining collapses to a now-invariant value, so the once-a-second
+// uptime tick is not read as a new document (which would GotoTop every frame and
+// make the tab unscrollable) while a real change — a new sync, a state flip, a
+// fresh quiesce deadline — still resets the scroll to the top. The huge clamped
+// remaining in the change key is never shown; it only has to be stable.
+func (v *ActivityView) syncPane(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) {
+	v.pane.refresh(v.body(status, statusErr, units, now), v.body(status, statusErr, units, time.Time{}))
+}
+
+// body renders everything BELOW the section title — the daemon line, optional
+// detail/quiesce/trigger lines, and the last-sync summary — or the read-error
+// placeholder. It is the scroll pane's content (the title is fixed chrome above
+// it). now feeds the relative uptime and quiesce-remaining; the caller passes a
+// zero now to derive a change key free of those live values (syncPane).
+func (v ActivityView) body(status api.StatusResponse, statusErr error, units []api.UnitInfo, now time.Time) string {
 	if statusErr != nil {
 		// Daemon-down is handled by the root before any view renders; a
 		// non-down error here is some other read failure worth showing plainly.
-		return sectionTitle(v.styles, "Activity") + "\n\n" + fmt.Sprintf("status unavailable: %v", statusErr)
+		return fmt.Sprintf("status unavailable: %v", statusErr)
 	}
 
 	var b strings.Builder
-	b.WriteString(sectionTitle(v.styles, "Activity"))
-	b.WriteString("\n\n")
-
 	fmt.Fprintf(&b, "daemon: %s (version %s, pid %d%s)\n",
 		valueOrDash(status.State), valueOrDash(status.Version), status.PID, uptimeSuffix(status.StartedAt, now))
 	if status.StateDetail != "" {

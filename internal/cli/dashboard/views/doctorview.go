@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/Sawmonabo/agent-brain/internal/cli/dashboard/theme"
 	"github.com/Sawmonabo/agent-brain/internal/doctor"
 )
@@ -61,6 +63,22 @@ type DoctorView struct {
 	scanned  bool
 	findings []ScanFinding
 	scanErr  error
+
+	// pane bounds the battery to the tab's height budget and scrolls it in place
+	// (spec §7): the full battery — checks, summary, and the fix/scan surfaces —
+	// can run past a short terminal, so it renders through a viewport rather than
+	// growing the frame and letting the root clamp silently cut the tail. Its
+	// content carries no now-relative text, so the rendered body doubles as the
+	// pane's change key (syncPane).
+	pane scrollPane
+}
+
+// NewDoctorView builds a Doctor tab with its scroll pane initialized. The
+// battery/fix/scan state all start zero (loaded false → "running checks…"); the
+// model constructs it here rather than zero-valuing it because the pane's
+// viewport needs its scroll keymap before ctrl+d/G ever reach it.
+func NewDoctorView() DoctorView {
+	return DoctorView{pane: newScrollPane()}
 }
 
 // SetStyles installs the palette-derived style set this view renders
@@ -136,24 +154,53 @@ func (v *DoctorView) SetScanResult(findings []ScanFinding, err error) {
 	v.scanErr = err
 }
 
-// View renders the Doctor tab from the last Set snapshot.
-func (v DoctorView) View() string {
-	var b strings.Builder
-	b.WriteString(sectionTitle(v.styles, "Doctor"))
-	b.WriteString("\n\n")
+// View renders the Doctor tab from the last Set snapshot: a fixed section title
+// over a height-bounded, scrollable body (spec §7). width/height come fresh from
+// the root every call, so a resize is handled by construction; height is the
+// whole tab-body budget, from which the fixed title chrome is subtracted for the
+// pane. Value receiver — the viewport's content/size mutations are local to this
+// render, and the scroll OFFSET is advanced only by Scroll on the root's
+// addressable copy of the view.
+func (v DoctorView) View(width, height int) string {
+	v.syncPane()
+	return sectionTitle(v.styles, "Doctor") + "\n\n" +
+		v.pane.render(v.styles, width, max(height-sectionChromeLines, 1))
+}
 
+// Scroll routes a scroll key to the battery pane, sizing it to the same budget
+// View uses so the page math matches what is drawn. It reports whether the key
+// was a scroll key it consumed, so the root's handleDoctorKey still owns r/f/s
+// on a miss.
+func (v *DoctorView) Scroll(msg tea.KeyPressMsg, width, height int) bool {
+	v.syncPane()
+	return v.pane.scroll(msg, width, max(height-sectionChromeLines, 1))
+}
+
+// syncPane installs the current battery body in the scroll pane, resetting the
+// scroll to the top only when the rendered body changed — a re-run producing an
+// identical report, or an unchanged 2s poll, leaves the reader where they are; a
+// genuinely different battery starts at the top. The body carries no
+// now-relative text, so it IS its own change key.
+func (v *DoctorView) syncPane() {
+	body := v.body()
+	v.pane.refresh(body, body)
+}
+
+// body renders everything BELOW the section title — the battery, its summary,
+// and the fix/scan surfaces — or the error/loading/empty placeholder. It is the
+// scroll pane's content (the title is fixed chrome above it); being free of any
+// now-relative text, it doubles as the pane's change key (syncPane).
+func (v DoctorView) body() string {
 	switch {
 	case v.err != nil:
-		fmt.Fprintf(&b, "doctor checks unavailable: %v", v.err)
-		return b.String()
+		return fmt.Sprintf("doctor checks unavailable: %v", v.err)
 	case !v.loaded:
-		b.WriteString(v.styles.Dim.Render("running checks…"))
-		return b.String()
+		return v.styles.Dim.Render("running checks…")
 	case len(v.report.Results) == 0:
-		b.WriteString(v.styles.Dim.Render("no checks reported"))
-		return b.String()
+		return v.styles.Dim.Render("no checks reported")
 	}
 
+	var b strings.Builder
 	var ok, warn, fail, info int
 	for _, result := range v.report.Results {
 		switch result.Status {

@@ -1474,8 +1474,10 @@ func (b *Browser) previewScrollHint(width int) string {
 		label := fmt.Sprintf("── %d%% · preview focused — j/k ctrl+d/u scroll · esc/tab list ──", percent)
 		return b.deps.Styles.Header.Render(fitWidth(label, width))
 	}
-	label := fmt.Sprintf("── %d%% · ctrl+d/u pgup/pgdn scroll ──", percent)
-	return b.deps.Styles.Dim.Render(fitWidth(label, width))
+	// The unfocused hint is the shared tab-body affordance (scrollHintLine): the
+	// same percent-through readout and key list the Doctor/Activity tabs render,
+	// built in one place so the format never drifts between the panes.
+	return scrollHintLine(b.deps.Styles, percent, width)
 }
 
 // fitWidth truncates s to at most width display cells, marking any cut with an
