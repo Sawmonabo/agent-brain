@@ -41,6 +41,7 @@ Deletes the bash/chezmoi system from `develop` and rewrites the repo-level meta 
 **Files:**
 - Delete: `home/` (entire tree, incl. `dot_agent-brain/` ciphertext), `tools/` (installer + bats tests), `.chezmoiroot`
 - Move: `docs/plans/sparkling-wiggling-curry.md`, `docs/plans/v3-cli-settings-flag.md` → `docs/archive/plans/`
+  *(As-executed postscript, 2026-07-17: `docs/archive/` — the two plans moved here and the bash-era spec archive — was later erased from the repository and its entire history by the ADR 13 full-v1-erasure scrub; these paths no longer exist anywhere.)*
 - Rewrite: `.gitattributes`, `.gitignore`, `README.md`, `CLAUDE.md`
 
 **Interfaces:**

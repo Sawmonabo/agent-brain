@@ -1,8 +1,8 @@
 # agent-brain v2 — Design Specification
 
-- **Status:** Approved design, pre-implementation (all 13 sections user-approved 2026-07-07)
-- **Branch:** `develop` (main retains the bash-era system until v2 is proven; ADR 11)
-- **Supersedes:** the bash/chezmoi/age system spec, archived at `docs/archive/00-design-spec-bash-era.md`
+- **Status:** Approved 2026-07-07 (all 13 sections user-approved); implemented through Phase 5 and maintained as-built. Repo public since 2026-07-17 (ADR 13 scrub executed).
+- **Branch:** `develop` (integration) → `main` (released line). ADR 11's original arrangement — main retaining the bash-era system until v2 proved out — ended at the 2026-07-17 cutover: the scrubbed v2 line became `main` (ADR 13).
+- **Supersedes:** the bash/chezmoi/age system spec (bash era). Its archived copy — and all bash-era history — was removed from this repository by the ADR 13 full-v1-erasure scrub; the offline pre-scrub mirror is the only remaining record.
 - **Decisions:** every load-bearing choice has an ADR under `docs/decisions/` — this spec states *what* the system is; the ADRs record *why*, the alternatives, buy-vs-build, and full research trails.
 
 agent-brain v2 is a single Go binary that syncs AI coding agents' per-project memory
@@ -613,15 +613,20 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
   original cask lean).** Formulae never set `com.apple.quarantine`, so Gatekeeper
   never engages — the cask + `xattr` quarantine-strip hook the original design
   assumed is defeated on macOS 26. Personal tap `Sawmonabo/homebrew-tap`, published
-  with `skip_upload: auto`: prerelease (`v2.0.0-rc.*`) tags ship release assets but
-  push no formula, so `brew install sawmonabo/tap/agent-brain` activates only with
-  the public `v2.0.0` tagged after the ADR-13 scrub.
-- **Interim install while this repo is private** (pre-scrub, dated 2026-07-10):
-  Homebrew fetches assets anonymously and this repo is private, so brew is not yet
-  live. Use `gh release download <tag> -R Sawmonabo/agent-brain -p '<os>_<arch>'`
-  (authenticated) or
-  `go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest` (owner git
-  access, §8). No self-update code — `brew upgrade` / re-download owns that.
+  with `skip_upload: auto`: prerelease tags ship release assets but push no
+  formula, so `brew install sawmonabo/tap/agent-brain` activates only with the
+  first public stable tag — `v1.0.0`, tagged after the ADR-13 scrub (ADR 16
+  decision 7; the pre-scrub `v2.0.0-rc.*` tags died with the old repo
+  instance). The tap push authenticates with a per-run GitHub App installation
+  token minted in-workflow — no stored personal credential (ADR 16 decision 6).
+- **Interim install while this repo was private** (pre-scrub era, dated
+  2026-07-10; retired 2026-07-17 when the repo went public): Homebrew fetches
+  assets anonymously, so brew could not go live against a private repo. The
+  era's paths — `gh release download <tag> -R Sawmonabo/agent-brain -p
+  '<os>_<arch>'` or
+  `go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest` (§8) —
+  both remain valid post-launch; brew becomes the primary path once `v1.0.0`
+  publishes the formula.
 - **New-machine onboarding** (target: under 5 minutes; per-OS runbook in
   `docs/onboarding.md`): install → `agent-brain init` (gh auth → clone memories repo
   → `key import` from password manager → service install → enrollment picker) →

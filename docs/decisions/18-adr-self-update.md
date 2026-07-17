@@ -89,6 +89,10 @@ are expected to detect and refuse that case.
    semver orders an rc BELOW its own release (v2.0.0-rc.4 < v2.0.0), and
    implicit resolution keeps the never-downgrade invariant, so removing the
    flag can never cause a backwards move.
+   **Naming note (2026-07-17):** the first stable tag shipped as `v1.0.0`, not
+   `v2.0.0` — ADR 16 decision 7 (public history starts at v1; the module path
+   has no `/v2` suffix). The `v2.0.0` spellings in this decision's text are
+   period phrasing and semver illustrations, kept verbatim.
 
 3. **Fail-closed verification pipeline, in order.** Download the platform
    archive plus the GoReleaser checksums asset into a temp dir; verify sha256

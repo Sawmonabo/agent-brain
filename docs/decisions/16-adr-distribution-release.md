@@ -54,7 +54,8 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
    prerelease tags (`v2.0.0-rc.*`, used through the Task 9–11 cutover) publish
    GitHub release assets but do not push a tap formula, so no public
    `brew install` command ever points at this still-private repo's assets; the
-   final `v2.0.0` (tagged post-scrub, Task 12, once the repo is public) is what
+   final `v2.0.0` (tagged post-scrub, Task 12, once the repo is public; shipped
+   as `v1.0.0` — decision 7) is what
    activates `brew install sawmonabo/tap/agent-brain`. **Correction (2026-07-09,
    Task 7 fix round):** `Sawmonabo/homebrew-tap` is not created by this
    project — it is a pre-existing personal tap (created 2026-05-14) already
@@ -93,6 +94,37 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
    brew/go install → `agent-brain init` (wizard: gh auth check → clone
    `agent-brain-memories` → `key import` from password manager → service install →
    enrollment picker) → `agent-brain migrate` if the machine has bash-era state.
+6. **Tap-push credential: a per-run GitHub App installation token — no stored
+   PAT. (Added 2026-07-17, T12 public launch; supersedes the fine-grained-PAT
+   design in the Phase-4 decision record / Step 4 runbook, which was never
+   provisioned.)** A user-owned GitHub App (`agent-brain-tap-publisher`;
+   Repository permissions: Contents = Read & write, nothing else; no webhook)
+   is installed on `Sawmonabo/homebrew-tap` ONLY. The release workflow mints an
+   installation token at run time via GitHub's first-party
+   `actions/create-github-app-token` (v3.2.0, SHA-pinned per ADR 12) from two
+   repo secrets — `TAP_PUBLISHER_APP_ID` and `TAP_PUBLISHER_APP_PRIVATE_KEY` —
+   and hands it to GoReleaser as `HOMEBREW_TAP_GITHUB_TOKEN`, so the env-var
+   contract and `.goreleaser.yaml` are unchanged and the formula auto-push
+   survives intact. WHY (owner directive, 2026-07-17): no long-lived personal
+   credential may sit in CI. An installation token is non-personal, scoped to
+   the one installed repo, minted fresh each run, and expires in ~1 hour —
+   there is nothing durable to leak or rotate; revocation is "uninstall the
+   App". Repo secrets are write-only and never publicly visible, and GitHub
+   withholds secrets from fork-triggered workflow runs (moot here anyway: the
+   workflow fires only on tag push, which outside contributors cannot do).
+   `GITHUB_TOKEN` still cannot push cross-repo — that premise is unchanged.
+7. **First public tag: `v1.0.0`. (Owner decision 2026-07-17, T12 — supersedes
+   every `v2.0.0`-as-first-tag reference in this ADR, ADR 13, ADR 18, and the
+   phase plans.)** The published history contains no v1 era at all (ADR 13
+   full-v1-erasure scrub, executed 2026-07-17), so public version numbering
+   starts at 1; "v2" survives in these documents only as the internal codename
+   for the Go rebuild. Load-bearing module-path detail: the module is
+   `github.com/Sawmonabo/agent-brain` with no `/v2` suffix, so v1.x tags are
+   what keep `go install …@latest` resolving — a `v2.0.0` tag on a suffixless
+   module path is invisible to the Go module system (Go requires the `/v2`
+   major suffix for v2+ versions of a module that has a go.mod). The pre-scrub
+   `v2.0.0-rc.*` tags were erased with the old repo instance; the fresh
+   instance starts tagless and `v1.0.0` is its first tag and first release.
 
 ## Consequences
 
@@ -120,7 +152,8 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
   is never created, and is never "empty" in any state this project controls.
   `skip_upload: auto` semantics are otherwise unchanged: agent-brain gains an
   actual formula file in the tap only at the first non-prerelease tag (the
-  post-scrub `v2.0.0`, Task 12); every `v2.0.0-rc.*` cutover tag (Tasks 9–11)
+  post-scrub Task 12 tag — shipped as `v1.0.0`, decision 7); every
+  `v2.0.0-rc.*` cutover tag (Tasks 9–11)
   publishes GitHub release assets but never touches the tap. The interim
   install path while the code repo is private is `gh release download <tag>`
   (authenticated) or `go install` (owner has git access) — documented in
@@ -202,3 +235,21 @@ repos/Sawmonabo/homebrew-tap/contents/Formula` (`sidekick-usages.rb`); `gh
 api repos/Sawmonabo/homebrew-tap/contents/.github/workflows/test-formula.yml`
 (confirms `brew install --build-from-source` + `brew test` +
 non-blocking `brew audit --strict`, macOS runner).
+
+Tap-credential amendment trail (2026-07-17, decision 6):
+
+- https://github.com/actions/create-github-app-token — GitHub's first-party
+  mint action; v3.2.0 pinned at `bcd2ba49218906704ab6c1aa796996da409d3eb1`,
+  resolved live via `gh api
+  repos/actions/create-github-app-token/git/ref/tags/v3.2.0` at pin time and
+  confirmed the latest release the same call.
+- https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
+  — installation tokens: per-installation scope, ~1-hour expiry.
+- https://docs.github.com/en/actions/security-for-github-actions/security-guides/using-secrets-in-github-actions
+  — repo secrets are write-only after creation and are withheld from
+  fork-triggered runs.
+- Field survey (how released Go CLIs push personal taps from CI): the two
+  live patterns are a stored fine-grained PAT (rejected — long-lived personal
+  credential in CI) and an in-workflow GitHub App mint (chosen). GoReleaser's
+  errors page, cited above, remains the canonical statement of why
+  `GITHUB_TOKEN` alone cannot.

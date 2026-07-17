@@ -1,6 +1,6 @@
 # ADR 13: Scrub this repo's history after verified migration
 
-- **Status:** Accepted (scope amended 2026-07-12 — see "Amendment: full v1 erasure" below)
+- **Status:** Accepted (scope amended 2026-07-12 — see "Amendment: full v1 erasure" below); **executed 2026-07-17** — see "Execution record"
 - **Date:** 2026-07-07
 - **Deciders:** Sawmon (directive: once old data is safely in the new memories repo, scrub the code repo of secrets/ciphertext)
 - **Related:** ADR 11 (greenfield workflow), design Section 10 (migration)
@@ -46,7 +46,7 @@ Going public afterward becomes a zero-cost option, not a commitment.
 The original decision removed only the memory-store paths, leaving the bash-era
 *code* commits visible in history. Sawmon's stated goal for the cutover is
 stronger: the published history should look like v1 never existed, with v2.0.0
-as the repo's first release. The scrub scope is therefore extended:
+as the repo's first release (shipped as `v1.0.0` — ADR 16 decision 7). The scrub scope is therefore extended:
 
 1. **Graft the greenfield-reset commit as the new root.** In the fresh scrub
    clone: `git replace --graft <greenfield-reset-sha>` (parentless), then the
@@ -66,7 +66,7 @@ as the repo's first release. The scrub scope is therefore extended:
    unique commits are all bash-era operations, which this amendment erases).
 3. **Old tags are not re-pushed.** The rc tags reference pre-scrub history;
    the fresh instance starts tagless and `v2.0.0` becomes its first tag and
-   first release.
+   first release (shipped as `v1.0.0` — ADR 16 decision 7).
 4. **Verification gains one check:** zero commits older than the new root
    (`git log --all --reverse | head` shows the greenfield commit as root),
    alongside the existing gitleaks `--log-opts=--all`, empty-path, and
@@ -82,6 +82,43 @@ as the repo's first release. The scrub scope is therefore extended:
 Author identity (name/email) on v2 commits is deliberately retained — it is
 the chosen public git identity; a mailmap rewrite remains possible at
 execution time if that changes.
+
+## Execution record (2026-07-17)
+
+Executed as amended, with one recipe deviation and two owner decisions made
+live:
+
+1. **`--sensitive-data-removal` was dropped from the filter-repo invocation.**
+   Discovered at execution: that flag re-fetches and re-mirrors every ref from
+   origin, resurrecting the pre-scrub branches and rc tags and discarding the
+   `git replace --graft` root — the first attempt produced a 427-commit history
+   with the original root intact. The deterministic recipe that shipped: fresh
+   clone → strip to exactly one local ref (remote removed, all other branches
+   and every tag deleted) → `git replace --graft` on the greenfield-reset
+   commit (pre-scrub SHA `e9dc7cb`; ceased to exist with the rewrite) → plain
+   `git filter-repo --force --message-callback` (root subject rewritten to
+   `chore!: greenfield baseline`) → separate `--invert-paths` belt passes for
+   `home/dot_agent-brain` and `docs/archive`.
+2. **`docs/archive/` was erased too** (owner decision during the personal-info
+   sweep): the bash-era spec archive and two archived plans carried
+   personal-environment detail and die with the era they document. Live doc
+   references to those paths were annotated as-built in the same change as
+   this record.
+3. **The repo was recreated PUBLIC** — the "zero-cost option" exercised at
+   recreation, per decision 3's delete-and-recreate finish. The scrubbed
+   develop line was pushed as both `main` (default) and `develop`: 332
+   commits, root = the parentless greenfield baseline, tagless.
+4. **Verification passed in full before any push:** gitleaks over
+   `--log-opts=--all`; zero `home/dot_agent-brain` paths in any commit's tree;
+   zero `memory:` subjects; parentless neutral root; plus a personal-info
+   sweep (email, home paths, hostnames) across every commit's tree. Author
+   identity retained as decided above.
+5. **First tag: `v1.0.0`** (ADR 16 decision 7) — publicly, v1 never existed,
+   so public numbering starts at 1.
+6. **Age-key retirement (decision 4) and last-backup deletion (amendment
+   item 5) follow on their recorded schedule** — nothing the key guards exists
+   in the published history; the offline pre-scrub mirror archive is the only
+   remaining record and holds until its retention window closes.
 
 ## Consequences
 
