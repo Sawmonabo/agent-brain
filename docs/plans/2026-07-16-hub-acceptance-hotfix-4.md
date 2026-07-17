@@ -42,10 +42,13 @@
 4. **Runtime mouse toggle, not a config flag:** native selection is a moment-to-moment need (grab this text now), not an installation posture. A `dashboard.alternate_scroll`-style config exists for the wheel; the selection toggle is a session action with footer disclosure. OSC52 y/Y copy stays (SSH/tmux path).
 5. **M4 built proactively:** the two-read stability gate hardens to three on the user's standing directive (the recorded trigger was "first observed flake"; the user directed building actionable hardening now). The plan-deltas note in `docs/plans/2026-07-16-pty-e2e-battery.md` gets a dated supersession line — append-only, the original ruling stays visible.
 6. **Doctor/activity scroll = viewport convention:** same interaction grammar as the preview/reading panes (ctrl+d/u, pgup/pgdn, g/G), cursorless (scroll only) — no new interaction concepts.
+7. **Stable footers beat per-state churn (execution adjudications, T6 review):** (a) footers keep listing scroll keys even when a tab's content fits — hiding them per-selection would recreate the position-instability T1 fixed; keys no-op harmlessly. (b) The doctor pane accepts one gratuitous scroll reset when an expired quiesce deadline clears to nil: removing it needs either real-now in the scroll identity (reintroduces time-driven yanks at the expiry moment) or dropping the deadline from the identity (loses reset-on-new-quiesce) — both strictly worse.
+8. **Mouse toggle is scope-broad, mode-structural (T4 review):** the toggle works across browser surfaces (list, focused, deleted) because native selection is wanted wherever text is read — but the key match lives in the browser's mode dispatch (request-msg to the root), never a mode-blind root interception, which was proven to steal `m` from filter typing. The off-state cue leads the footer line so the disclosed state is visible at narrow widths.
+9. **Footers fit, never silently clip (T4 review's wave-level finding):** the browser list-scope footer exceeds 120 columns when armed; the v2 compositor clips, so trailing rows — including the toggle's own row and cue before Task 4's fix — were invisible at the battery's canonical width. Footer lines now fit by dropping whole trailing rows (registry order = priority) behind an explicit continuation marker, with state cues always visible; the `?` help overlay remains the full-truth surface.
 
 ## File Structure
 
-- `internal/cli/dashboard/dashboard.go` — fill-to-budget primitive + compose change (T1); footer sub-mode selection (T3); mouse-capture toggle flag + gate (T4); doctor/activity key routing (T6)
+- `internal/cli/dashboard/dashboard.go` — fill-to-budget primitive + compose change (T1); footer sub-mode selection (T3); mouse-capture toggle flag + gate (T4); doctor/activity key routing (T6); width-aware footer fitting (T9)
 - `internal/cli/dashboard/views/browser.go` — preview header zone w/ lint reasons (T2); focus cue + focused-scope exposure (T3)
 - `internal/cli/dashboard/views/doctorview.go`, `views/activity.go` — viewport scrolling (T6)
 - `internal/cli/dashboard/actions/actions.go` (+`actions_test.go` shape) — new registry rows (T3 focused scope if modeled there, T4 toggle, T6 scroll rows)
@@ -195,6 +198,20 @@ columns must change atomically (`setColumns` capture/restore pattern from the re
 - [ ] **Step 2: Implement** — thread the actual body budget into SetSize (or a new resize entry point) and invoke it on toast transitions; all row/column mutations go through the atomic pattern.
 - [ ] **Step 3: Green + mutation** — restore the static 14: Step-1 RED. Restore.
 - [ ] **Step 4: Package + battery runs; commit** — `fix(dashboard): projects table reflows with toast occupancy`
+
+### Task 9: Width-aware footer fitting (no silent clipping)
+
+**Files:**
+- Modify: `internal/cli/dashboard/dashboard.go` (the footer line builders — the stack-footer and tab-footer seams share one fitting helper)
+- Test: `dashboard_test.go`
+
+**Interfaces:**
+- Produces: a fitting step applied to every footer line at render — rows keep registry order (registry order IS priority: earlier rows are more important), whole rows are dropped from the tail when the line exceeds the terminal width, a trailing `… ?` continuation marker renders whenever anything was dropped (the `?` help overlay is the full-truth surface), and state cues (the mouse-off cue; any future sticky state) always render and are never dropped (they lead the line per Decision 8). No wrapping, no mid-row truncation, frame height unchanged.
+
+- [ ] **Step 1: Failing tests** — at width 120, armed browser footer: printable width ≤ 120, last visible row intact (no mid-row cut), `… ?` marker present when rows were dropped; at width 80: same invariants with fewer rows; at width 80 while mouse-off: the state cue fully visible AND the marker present; at width 200: all rows, no marker. Measure with the same ANSI-aware width helpers the wave already uses.
+- [ ] **Step 2: Implement** — the fitting helper at the footer seams (both call sites), lipgloss-width-aware; state cues excluded from droppable rows.
+- [ ] **Step 3: Green + mutations** — remove the fitting → the 120-width test RED (over-wide line); drop the always-keep-cue rule → the off-80 test RED. Restore both.
+- [ ] **Step 4: Package + battery runs; commit** — dashboard tree `-race`; full PTY battery `-race` (footer content changes; the battery's assertions must be verified by run, not inference). Commit: `fix(dashboard): fit footer rows to terminal width instead of clipping (state cues always visible)`
 
 ---
 
