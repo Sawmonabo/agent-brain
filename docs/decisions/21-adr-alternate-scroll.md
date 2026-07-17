@@ -174,7 +174,7 @@ terminal the mode *breaks*, only ones it does not help.
 (harness) added a PTY battery that drives the real compiled binary on a real
 pseudo-terminal, proving wire-level facts no unit test can reach: a unit
 test pins the bytes a call site emits, never their place in the actual
-render stream or their effect on a real screen model. Six scenarios:
+render stream or their effect on a real screen model. Seven scenarios:
 
 - `TestPTYHubArmsAlternateScrollInOrder` pins the arm order on the wire:
   `1007s` < `1007h` < `1049h` — XTSAVE and DECSET both land before the
@@ -185,6 +185,16 @@ render stream or their effect on a real screen model. Six scenarios:
   subtests `csi-normal-cursor-keys` (`\x1b[B`) and
   `ss3-application-cursor-keys` (`\x1bOB`) — then drives to a
   deeper-scroll outcome with no fixed notch count assumed.
+- `TestPTYHoverScrollWheelScrollsPreviewWithoutFocusChange` pins the
+  browser preview's hover-scroll — the OTHER half of the precedence rule
+  above. With the preview's cell-motion capture armed, a wheel notch
+  arrives as an SGR mouse event (mouse tracking beats alternate scroll, so
+  1007 does NOT translate it to an arrow key here) and scrolls the pane a
+  few lines WITHOUT moving focus, which only a click may change. Together
+  with the reading-view scenario above — where no capture is armed and
+  1007 turns the same notch into an arrow — the two compose the wheel
+  contract on the wire: mouse event over the armed preview, arrow key
+  everywhere else.
 - `TestPTYClickBytesSelectBrowserRow` pins that an SGR mouse click on a
   browser row moves the selection cursor AND re-targets the preview to
   that row's body — the body is the deliberately stronger of the two
@@ -280,18 +290,23 @@ outside, not a member of that package tree.
   `XTRESTORE` is a no-op there and the plain `DECRST` stands alone.
 - **Automated by the PTY battery.** The arm order, wheel-to-scroll at
   exactly one line per notch, SGR click re-targeting of the browser
-  preview, the editor round trip's no-re-save guarantee, the
-  teardown-tail order on every armed quit route, and the kill switch's
-  zero-1007 guarantee are now proven on the wire by the PTY battery (see
-  "Automated wire-contract coverage," above) rather than resting on manual
-  spot checks alone.
+  preview, the browser preview's hover-scroll (a wheel mouse event
+  scrolling the pane without moving focus), the editor round trip's
+  no-re-save guarantee, the teardown-tail order on every armed quit route,
+  and the kill switch's zero-1007 guarantee are now proven on the wire by
+  the PTY battery (see "Automated wire-contract coverage," above) rather
+  than resting on manual spot checks alone.
 - **Manual smoke matrix, narrowed to emulator and config residue.** What
   remains is exactly the residue no PTY harness can reach — behavior that
   depends on a real terminal's own choices, not on how our program answers
   a given input byte: whether a given emulator translates the wheel to
-  arrows under 1007, composes that correctly with the mouse-tracking
-  precedence rule so the browser preview still hover-scrolls, and leaves
-  drag-select alone with no modifier key required — checked by hand on
+  arrows under 1007 and composes that with the mouse-tracking precedence
+  rule — reporting a wheel MOUSE event, not an arrow, while the preview's
+  capture is armed (our own response to each is now automated, above: an
+  arrow scrolls a viewport, a preview-armed mouse event hover-scrolls the
+  pane without moving focus — what the emulator still owns by hand is
+  emitting the right one), and leaves drag-select alone with no modifier
+  key required — checked by hand on
   iTerm2, Terminal.app, and Windows Terminal (kitty is documented to
   always-translate regardless of 1007, and tmux is documented to swallow
   the inner program's 1007 behind its own

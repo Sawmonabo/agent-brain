@@ -230,39 +230,60 @@ func maxVisibleLineNumber(screen string) int {
 	return highest
 }
 
-// waitStableMaxVisibleLineNumber blocks until the reading view has painted
+// waitStableMaxVisibleLineNumber blocks until a line-numbered body has painted
 // line-001, then further until maxVisibleLineNumber reads the SAME value on
-// two consecutive polls, returning the screen that confirmed the second read.
-// The single-notch pin (TestPTYWheelBytesScrollReadingView) derives its whole
-// predicate — which line a notch must reveal, and which line it must NOT —
-// from this snapshot, so the snapshot has to be the fully-painted frame, not
-// whichever chunk of it happened to have landed when line-001 first showed up.
-// readLoop (ptyharness_test.go) locks s.mu only per read chunk, so a poll can
-// land between two chunks of the SAME still-arriving frame and observe
-// line-001 alongside only a partial run of the lines below it. Deriving
-// `revealed` from that under-read screen would still make the pin pass — but
-// `revealed` appearing would then be timing the paint finishing, not the
-// notch that has not been sent yet: a silent degradation from measuring the
-// notch to measuring the render, one that would never surface as a test
-// FAILURE, only as a pin that quietly stopped proving what its comments
-// claim. Two consecutive equal reads is a quiet-frame gate consistent with
-// the no-bare-sleeps discipline: a screen still being painted keeps producing
-// larger values and never repeats, while a settled one trivially does. Polls
-// at the package's standard pollInterval cadence (ptyharness_test.go); this
-// is a predicate wait, never a bare sleep.
+// three consecutive polls, returning the screen that confirmed the third read.
+// Its wheel-scroll callers — the reading-view single-notch pin
+// (TestPTYWheelBytesScrollReadingView) and the browser hover-scroll pin
+// (TestPTYHoverScrollWheelScrollsPreviewWithoutFocusChange) — derive their whole
+// predicate (which line a notch must reveal, and which it must NOT) from this
+// snapshot, so the snapshot has to be the fully-painted frame, not whichever
+// chunk of it happened to have landed when line-001 first showed up. readLoop
+// (ptyharness_test.go) locks s.mu only per read chunk, so a poll can land
+// between two chunks of the SAME still-arriving frame and observe line-001
+// alongside only a partial run of the lines below it. Deriving the target line
+// from that under-read screen would still make the pin pass — but the target
+// appearing would then be timing the paint finishing, not the notch that has
+// not been sent yet: a silent degradation from measuring the notch to measuring
+// the render, one that would never surface as a test FAILURE, only as a pin that
+// quietly stopped proving what its comments claim.
+//
+// Three consecutive equal reads is the quiet-frame gate, consistent with the
+// no-bare-sleeps discipline: a screen still being painted keeps producing larger
+// values and never repeats, while a settled one trivially does. Three rather
+// than two closes a mid-frame stall window — if a paint pauses for longer than
+// one pollInterval between chunks, two adjacent polls can read the SAME partial
+// max and pass as settled while more lines are still to come; a third equal read
+// requires the stall to span two whole poll intervals at the identical partial
+// max, which the chunk cadence does not produce. The cost is one extra
+// pollInterval of floor latency per call, taken proactively on the standing
+// "harden before the flake" directive rather than deferred to the first observed
+// failure. Polls at the package's standard pollInterval cadence
+// (ptyharness_test.go); this is a predicate wait, never a bare sleep.
 func waitStableMaxVisibleLineNumber(t *testing.T, s *hubSession) string {
 	t.Helper()
+	// The run of consecutive equal reads that marks a settled frame. Two is the
+	// minimum that can ever repeat; three adds one more sample so a paint that
+	// stalls for longer than a single pollInterval mid-frame cannot be mistaken
+	// for a quiet one (the doc above has the full reasoning).
+	const stableReads = 3
 	screen := s.waitScreen(func(screen string) bool { return strings.Contains(screen, "line-001") })
 	previousMax := maxVisibleLineNumber(screen)
+	consecutive := 1 // the read above is the first sample at previousMax
 	deadline := time.Now().Add(waitDeadline)
 	for {
 		time.Sleep(pollInterval)
 		screen = s.snapshotScreen()
 		currentMax := maxVisibleLineNumber(screen)
 		if currentMax == previousMax {
-			return screen
+			consecutive++
+			if consecutive >= stableReads {
+				return screen
+			}
+		} else {
+			previousMax = currentMax
+			consecutive = 1
 		}
-		previousMax = currentMax
 		if time.Now().After(deadline) {
 			t.Fatalf("maxVisibleLineNumber never stabilized within %s (last read line-%03d)\nscreen:\n%s\nraw tail: %q",
 				waitDeadline, currentMax, screen, tail(s.snapshotRaw()))
@@ -367,6 +388,93 @@ func TestPTYPreviewClickFocusIsDisclosed(t *testing.T) {
 	// memory, proof focus truly returned to the list.
 	s.send("j")
 	s.waitScreen(func(screen string) bool { return selectionOnLongMemory(screen) })
+	s.quitAndDrain()
+}
+
+// TestPTYHoverScrollWheelScrollsPreviewWithoutFocusChange proves the browser
+// preview's terminal-native hover-scroll on a real pty — the one composition ADR
+// 21's precedence rule promises that no other scenario in this battery reaches.
+// While a preview pane is on screen the hub arms cell-motion mouse capture
+// (browser.go's WantsMouse), so the terminal reports a wheel notch as an SGR
+// MOUSE event, not the arrow key 1007 would translate it into on a no-capture
+// screen (mouse tracking beats alternate scroll — the precedence rule). That
+// mouse event must hover-scroll the pane WITHOUT changing focus: focus is a
+// click-only affordance (only updateMouseClick's overPreview arm sets it), so a
+// reader spinning the wheel over a long memory's preview keeps the list's keys.
+// The unit layer pins this on an in-process tea.MouseWheelMsg
+// (views/browser_test.go's TestBrowserWheelScrollsPreview); this is its wire
+// complement — a real SGR wheel byte, decoded by the real binary, its scroll AND
+// the focus disclosure both read from the vt10x screen, the three things the
+// unit test cannot reach.
+//
+// Both halves ride the SAME post-scroll frame: a line that was below the fold
+// before the notches is now visible (the POSITIVE proof it scrolled — never
+// line-001's absence, the wrong predicate this battery documents at length), AND
+// the focus cue Task 3 draws on a focused pane stays absent while the list-scope
+// footer stays present. Had the wheel focused the pane, the cue would render and
+// the footer would swap to the preview-focused set, dropping "o order" — so
+// asserting both on one snapshot is exactly "the wheel scrolled AND left the keys
+// with the list."
+func TestPTYHoverScrollWheelScrollsPreviewWithoutFocusChange(t *testing.T) {
+	t.Parallel()
+	s := startHubSession(t, defaultSessionConfig())
+	openBrowser(t, s)
+	// Move the selection off the index onto the long memory so the preview renders
+	// its 200-line body (the index's own body is the one-line "See
+	// long-scroll-target." — nothing to scroll).
+	s.send("j")
+	// The preview has painted the long memory's head and settled, so the max
+	// visible line is measured from a fully-painted top-of-body frame rather than a
+	// mid-paint chunk (waitStableMaxVisibleLineNumber's own doc has the reasoning).
+	// line-NNN tokens live ONLY in the preview here — the list column shows memory
+	// names — so maxVisibleLineNumber over the whole grid reads the preview's
+	// bottom content line.
+	settled := waitStableMaxVisibleLineNumber(t, s)
+	// Baseline: the list holds focus before any wheel — the focus cue is absent and
+	// the list-scope footer ("o order", a list-only key) is present. This is the
+	// state the post-scroll assertion proves the wheel LEFT unchanged, not one the
+	// hub happened to open in. "preview focused" is the substring of the pane's cue
+	// (browser.go's previewFocusCue) that renders only while the pane holds focus.
+	if strings.Contains(settled, "preview focused") {
+		t.Fatalf("setup: focus cue present before any wheel event\nscreen:\n%s", settled)
+	}
+	if !strings.Contains(settled, "o order") {
+		t.Fatalf("setup: list-scope footer absent before any wheel event\nscreen:\n%s", settled)
+	}
+	// A wheel-down that scrolls the preview reveals the line one past everything
+	// currently visible at the pane's bottom edge; three notches (each scrolls
+	// mouseWheelScrollLines) move well past it. Derived from the actual pre-scroll
+	// geometry, not a hardcoded row the pane height would make fragile — the same
+	// discipline the reading-view single-notch pin uses.
+	revealed := fmt.Sprintf("line-%03d", maxVisibleLineNumber(settled)+1)
+	row := lineRowOf(settled, longMemoryName)
+	if row == 0 {
+		t.Fatalf("setup: no on-screen row to aim the wheel at\nscreen:\n%s", settled)
+	}
+	// Three SGR wheel-down notches over a preview column. Button 65 (the 64 wheel
+	// flag plus 1 for "down") with a press-only 'M' is the byte an SGR-mouse (1006)
+	// terminal emits per wheel-down notch. previewColumn is well past
+	// browserListPaneWidth+2, so overPreview routes each notch to the pane's
+	// viewport; its Y is immaterial to that gate (updateMouseWheel routes on the
+	// column alone), so the long memory's own rendered row is just a guaranteed
+	// on-screen point in the preview band.
+	const previewColumn = 70 // well past browserListPaneWidth+2 (48), inside the preview
+	for range 3 {
+		s.send(fmt.Sprintf("\x1b[<65;%d;%dM", previewColumn, row))
+	}
+	// postScroll is the exact grid the wait matched (waitScreen returns it under
+	// s.mu, never a fresh read), so the focus checks below read the identical
+	// scrolled frame rather than a later poll that could have drifted.
+	postScroll := s.waitScreen(func(screen string) bool { return strings.Contains(screen, revealed) })
+	// Focus did NOT change: the pane's focus cue stays absent and the list-scope
+	// footer stays present. Only a click focuses the preview (updateMouseClick); the
+	// wheel is a hover affordance that must never move focus.
+	if strings.Contains(postScroll, "preview focused") {
+		t.Errorf("wheel over the preview focused it: the focus cue is present after a hover-scroll (only a click may focus)\nscreen:\n%s", postScroll)
+	}
+	if !strings.Contains(postScroll, "o order") {
+		t.Errorf("wheel over the preview swapped the footer: list-scope \"o order\" absent after a hover-scroll\nscreen:\n%s", postScroll)
+	}
 	s.quitAndDrain()
 }
 

@@ -226,4 +226,9 @@ per the append-only plan-history convention:
   carries a theoretical under-read window if a frame stalls longer than one poll interval
   mid-scroll; proven green across repeated `-race -count=3` rounds. Harden to three equal reads on
   the first observed flake — not before, since each extra sample widens every wheel test's floor
-  latency to defend against a window nobody has observed.
+  latency to defend against a window nobody has observed. **Superseded:** hardened to three
+  consecutive equal reads proactively when the battery grew the browser hover-scroll pin
+  (`TestPTYHoverScrollWheelScrollsPreviewWithoutFocusChange`), which shares this gate — the standing
+  "harden before the flake" directive took precedence over the wait-for-a-flake posture recorded
+  above, trading the one extra `pollInterval` of floor latency per wheel test for the closed
+  mid-scroll stall window rather than waiting for it to surface.
