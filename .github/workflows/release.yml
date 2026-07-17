@@ -25,6 +25,14 @@ jobs:
           mkdir -p quill-bin
           tar -xz -C quill-bin -f "quill_${QUILL_VERSION}_linux_amd64.tar.gz" quill
           echo "${RUNNER_TEMP}/quill-bin" >> "$GITHUB_PATH"
+      - name: "Mint tap-push token (ADR 16 decision 6: GitHub App, per-run, homebrew-tap only)"
+        id: tap_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.TAP_PUBLISHER_APP_ID }}
+          private-key: ${{ secrets.TAP_PUBLISHER_APP_PRIVATE_KEY }}
+          owner: Sawmonabo
+          repositories: homebrew-tap
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
@@ -32,6 +40,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # fine-grained PAT, contents:write, scoped to Sawmonabo/homebrew-tap only —
-          # GITHUB_TOKEN cannot push cross-repo (ADR 16 decision 13; Step 4 runbook).
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          # per-run GitHub App installation token (~1 h expiry) minted above; the App
+          # is installed on Sawmonabo/homebrew-tap only, so no long-lived personal
+          # credential exists in CI (ADR 16 decision 6). GITHUB_TOKEN still cannot
+          # push cross-repo.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap_token.outputs.token }}
