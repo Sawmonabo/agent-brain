@@ -484,3 +484,77 @@ func TestGHReauthFinishAlwaysReprobesAndReservesLaunchToast(t *testing.T) {
 		})
 	}
 }
+
+// TestGHReauthFinishNilProbeReportsUnavailable pins the nil-probe branch end to
+// end on the reauth return. Because every finish now routes through
+// probeGHAuthCmd, a build that wired the handoff but no probe closure (nil
+// ProbeGHAuth) reaches the honest-unavailability guard on every return: it
+// reports the "unavailable" verdict rather than running a probe or falsely
+// clearing the attention, and the return still re-asserts DECSET 1007. The
+// verdict carries the exact sentinel — a real probe would carry its own result,
+// so the sentinel is itself the proof the probe was bypassed. The exit-vs-launch
+// taxonomy composes with the branch: an ExitError finish still shows no launch
+// toast and the honest verdict still stands.
+func TestGHReauthFinishNilProbeReportsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	exitError := exec.Command("sh", "-c", "exit 130").Run()
+	var asExitError *exec.ExitError
+	if !errors.As(exitError, &asExitError) {
+		t.Fatalf("setup: want a real *exec.ExitError from `exit 130`, got %T (%v)", exitError, exitError)
+	}
+
+	tests := []struct {
+		name      string
+		finishErr error
+	}{
+		{name: "clean exit, nil probe", finishErr: nil},
+		{name: "gh exited non-zero, nil probe", finishErr: exitError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			// The handoff is wired but no probe closure is — ProbeGHAuth stays nil.
+			m := New(Config{
+				Data:     &fakeData{},
+				ReauthGH: func() *exec.Cmd { return exec.Command("true") },
+			})
+			m.settings.Dashboard.AlternateScroll = true
+
+			updated, cmd := step(m, ghAuthFinishedMsg{err: test.finishErr})
+
+			var probed ghAuthProbedMsg
+			gotProbed := false
+			reasserted := false
+			for _, message := range drain(cmd) {
+				switch typed := message.(type) {
+				case ghAuthProbedMsg:
+					probed = typed
+					gotProbed = true
+				case tea.RawMsg:
+					if fmt.Sprint(typed.Msg) == "\x1b[?1007h" {
+						reasserted = true
+					}
+				}
+			}
+
+			// The nil probe reports an honest unavailability, not a real probe result
+			// and not a false clear — the sentinel proves the probe was bypassed.
+			if !gotProbed {
+				t.Fatalf("finish err %v produced no ghAuthProbedMsg from the nil-probe path", test.finishErr)
+			}
+			if probed.err == nil || probed.err.Error() != "gh auth probe is unavailable in this build" {
+				t.Errorf("nil-probe verdict = %v, want the honest-unavailable sentinel", probed.err)
+			}
+			// The return still re-asserts DECSET 1007, exactly like a wired-probe return.
+			if !reasserted {
+				t.Errorf("finish err %v did not re-assert alternate scroll on the nil-probe path", test.finishErr)
+			}
+			// The exit-vs-launch taxonomy composes: an ExitError finish shows no launch
+			// toast, so the honest verdict is the only signal.
+			if updated.stickyToast != nil && strings.Contains(updated.stickyToast.text, "did not run") {
+				t.Errorf("nil-probe path surfaced a launch toast for finish err %v: %+v", test.finishErr, updated.stickyToast)
+			}
+		})
+	}
+}
