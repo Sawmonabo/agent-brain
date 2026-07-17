@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "git-clean", "git-smudge", "git-textconv", "git-merge":
-			fmt.Fprintln(os.Stderr, "cli.test invoked as a git filter — a fixture wired filter config at the test binary; see the 2026-07-08 fork-bomb incident (testBinaryPath's doc comment, this file)")
+			fmt.Fprintln(os.Stderr, "cli.test invoked as a git filter — a fixture wired filter config at the test binary, which would recurse the whole suite as its own clean/smudge driver; see testBinaryPath's doc comment, this file")
 			os.Exit(1)
 		}
 	}
