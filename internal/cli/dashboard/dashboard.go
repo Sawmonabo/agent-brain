@@ -1503,22 +1503,35 @@ func (m Model) forwardToStack(msg tea.Msg) (Model, tea.Cmd) {
 	return m.replaceStackTop(next), cmd
 }
 
-// mousePrefixLines is how many terminal rows the root composes above a stack
-// screen's first line: the status header (the toast line included when present),
-// one blank line from the "\n\n" join, the breadcrumb, and its blank join line.
-// Built from the same strings View joins (statusHeader/toastLine/breadcrumb) so
-// the offset and the pixels cannot drift; mouse reporting is only ever armed on
-// the stack-top browser frame (View's MouseMode gate), so mouse events are
-// generated under the default branch's shape — header, breadcrumb, screen,
-// footer. An event already in flight when an overlay opens can still land one
-// message cycle late, translated against this same default-branch prefix —
-// benign, worst case an invisible cursor move under the overlay.
-func (m Model) mousePrefixLines() int {
+// headerBlockHeight is the status header block's ACTUAL height for this
+// frame: the status header line (the update banner included, inline —
+// updateBanner's doc) plus however many toast lines are populated right now —
+// 0 extra when both slots are clear, 1 when exactly one is populated, 3 when
+// both are (the sticky and info lines plus the blank toastLine joins between
+// them). Shared by mousePrefixLines (mouse Y translation) and frameChromeLines
+// (the body budget) so the offset that places the mouse cursor and the
+// reservation that sizes the body read the same header the same way, rather
+// than one of them assuming a fixed worst case the other measures for real.
+func (m Model) headerBlockHeight() int {
 	header := m.statusHeader()
 	if toastLine := m.toastLine(); toastLine != "" {
 		header = strings.Join([]string{header, toastLine}, "\n\n")
 	}
-	return lipgloss.Height(header) + 1 + lipgloss.Height(m.breadcrumb()) + 1
+	return lipgloss.Height(header)
+}
+
+// mousePrefixLines is how many terminal rows the root composes above a stack
+// screen's first line: the header block, one blank line from the "\n\n" join,
+// the breadcrumb, and its blank join line. Built from the same strings View
+// joins (headerBlockHeight/breadcrumb) so the offset and the pixels cannot
+// drift; mouse reporting is only ever armed on the stack-top browser frame
+// (View's MouseMode gate), so mouse events are generated under the default
+// branch's shape — header, breadcrumb, screen, footer. An event already in
+// flight when an overlay opens can still land one message cycle late,
+// translated against this same default-branch prefix — benign, worst case an
+// invisible cursor move under the overlay.
+func (m Model) mousePrefixLines() int {
+	return m.headerBlockHeight() + 1 + lipgloss.Height(m.breadcrumb()) + 1
 }
 
 // translateStackMouse rebases a mouse event from terminal-absolute rows to
@@ -1658,38 +1671,51 @@ func (m Model) breadcrumb() string {
 	return m.styles.Title.Render(strings.Join(segments, " ▸ "))
 }
 
-// stackBodyHeight computes a pushed screen's content budget: terminal height
-// minus the header, breadcrumb, and footer chrome around it — mirroring the
-// tab-level budget ProjectsView.SetSize reserves for the same chrome (status
-// header, BOTH toast slots, footer), minus the one line the breadcrumb costs
-// in place of the tab bar it replaces. Ten chrome lines: the status header,
-// the sticky toast, the info toast, and the breadcrumb each cost their line
-// plus a trailing blank, and the footer its line plus a leading blank. The
-// header absorbs up to two toast lines (sticky over info); reserving both
-// here keeps the composed frame within the terminal with both slots full,
-// rather than letting the second line push the footer off-screen. When
-// fewer slots are populated the frame simply runs short (blank rows at the
-// bottom), the same posture the tab-level budget already takes. Below the
-// floor the screen still gets 3 lines — a terminal that small overflows
-// regardless, and a readable screen beats an empty one.
-func (m Model) stackBodyHeight() int {
-	const chromeLines = 10
-	if height := m.height - chromeLines; height > 3 {
+// frameChromeLines computes a composed frame's ACTUAL non-body chrome height
+// for this render: the header block at its current toast occupancy (not a
+// two-toast-blind maximum), one nav line (navLine — the breadcrumb for a
+// pushed screen, the tab bar for a tab body), the footer, and the blank-line
+// separator the "\n\n" join costs between each of the four blocks joined —
+// header, navLine, body, footer, three separators. Reserving the header's
+// actual height rather than its worst case is what keeps the composed frame
+// at exactly m.height on every frame regardless of toast occupancy: when a
+// toast arrives the header grows by that many lines and this reservation
+// grows with it, so the body budget shrinks by the same amount and the total
+// never changes — the footer never leaves the terminal's last row. Shared by
+// stackBodyHeight and tabBodyHeight: the two root layouts differ only in
+// which nav line replaces the other, both exactly one line today.
+func (m Model) frameChromeLines(navLine string) int {
+	return m.headerBlockHeight() + 1 + lipgloss.Height(navLine) + 1 + 1 + lipgloss.Height(m.footer())
+}
+
+// bodyHeightFloor clamps a computed body height to a 3-line minimum — a
+// terminal small enough to hit this is already overflowing regardless, and a
+// readable few lines beats an empty pane.
+func bodyHeightFloor(height int) int {
+	if height > 3 {
 		return height
 	}
 	return 3
 }
 
-// tabBodyHeight is the vertical budget for a tab body. It equals the pushed-
-// screen budget (stackBodyHeight): both root layouts are header + one nav line
-// (the tab bar or the breadcrumb) + body + footer joined by three blank
-// separators, so the chrome framing the body is identical line-for-line. Kept a
-// named helper of its own rather than a bare call at the tab clamp so the two
-// layouts' budgets read as the distinct concepts they are — a later change to
-// one layout's chrome would then adjust only its own helper — even though they
-// coincide today.
+// stackBodyHeight computes a pushed screen's content budget: terminal height
+// minus the frame's actual current chrome — the header at its real toast
+// occupancy, the breadcrumb, and the footer (frameChromeLines). This mirrors
+// the tab-level budget's own shape (tabBodyHeight); ProjectsView.SetSize
+// reserves separately for the Projects tab's own extra chrome (its own doc).
+func (m Model) stackBodyHeight() int {
+	return bodyHeightFloor(m.height - m.frameChromeLines(m.breadcrumb()))
+}
+
+// tabBodyHeight is the vertical budget for a tab body: the same
+// frameChromeLines reservation as stackBodyHeight, measured against the tab
+// bar instead of the breadcrumb — the one nav line that differs between the
+// two root layouts. Kept a named helper of its own rather than a bare call so
+// the two layouts' budgets read as the distinct concepts they are, each
+// measuring its own nav line rather than assuming they coincide — even
+// though both cost exactly one line today.
 func (m Model) tabBodyHeight() int {
-	return m.stackBodyHeight()
+	return bodyHeightFloor(m.height - m.frameChromeLines(m.tabBar()))
 }
 
 // fitAndFillHeight clamps body to at most exact lines, keeping the FIRST
@@ -2332,10 +2358,11 @@ func (m Model) statusHeader() string {
 	}
 	// The update banner is a status-bar segment adjacent to the version (spec
 	// §2: "daemon state · version · update banner · toasts"): appended on the
-	// SAME line, so it adds no header row and every frame budget (stackBodyHeight
-	// chromeLines, ProjectsView height−14) stays put. It renders even when the
-	// base is the status-error placeholder, so the "installing…" line holds
-	// through the self-managed daemon restart an apply performs.
+	// SAME line, so it adds no header row and every frame budget that measures
+	// the header (stackBodyHeight/tabBodyHeight's frameChromeLines) or reserves
+	// for it (ProjectsView height−14) stays put. It renders even when the base
+	// is the status-error placeholder, so the "installing…" line holds through
+	// the self-managed daemon restart an apply performs.
 	return base + m.styles.Dim.Render(" · ") + banner
 }
 

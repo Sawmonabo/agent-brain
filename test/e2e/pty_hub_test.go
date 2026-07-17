@@ -421,18 +421,21 @@ func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 // be the first hint, not a later one: the full footer line is wider than
 // this session's 120-column width and the terminal clips rather than wraps
 // it, so a hint late in registry order (e.g. "esc back") never reaches the
-// visible grid at all. The row index itself is derived from
-// the FIRST captured frame rather than hardcoded: stackBodyHeight's chrome
-// reservation holds room for a header at its two-toast maximum
-// (dashboard.go's own doc), so with no toast ever pushed in this scenario the
-// footer settles a few rows above the terminal's absolute last row — a fixed,
-// already-pinned characteristic of that unrelated reservation
-// (TestStackFrameExactFillAtEveryToastOccupancy, dashboard_test.go), not a
-// number this scenario should assume. What this scenario proves is that the
-// row stays fixed as the previewed content's height swings from one line to
-// two hundred, which is the actual defect being fixed.
+// visible grid at all.
+//
+// The row is asserted against the LITERAL last row of the 40-row session (39,
+// 0-indexed) rather than a row derived from the first captured frame:
+// stackBodyHeight now reserves the header's actual current height, not a
+// two-toast-blind maximum (dashboard.go's frameChromeLines), so with no toast
+// ever pushed in this scenario the frame still fills the terminal exactly and
+// the footer sits on the true bottom row — the same row a toast-occupied
+// frame would also reach. Asserting the literal row, not just the
+// short-vs-tall equality, is what makes a reservation that under-fills (the
+// footer settling short of the bottom on every selection alike, equality
+// preserved but wrong) fail here.
 func TestPTYFooterStaysAnchoredAcrossSelections(t *testing.T) {
 	t.Parallel()
+	const lastRow = 39 // 0-indexed bottom row of the 40-row session (defaultSessionConfig)
 	s := startHubSession(t, defaultSessionConfig())
 	shortFrame := openBrowser(t, s) // index selected, its one-line body previewed
 	shortRow := footerLineIndex(t, shortFrame, "enter read")
@@ -444,6 +447,9 @@ func TestPTYFooterStaysAnchoredAcrossSelections(t *testing.T) {
 	if shortRow != tallRow {
 		t.Errorf("footer row changed with the preview height: row %d (short preview) vs row %d (tall preview), want identical\nshort frame:\n%s\ntall frame:\n%s",
 			shortRow, tallRow, shortFrame, tallFrame)
+	}
+	if shortRow != lastRow {
+		t.Errorf("footer row = %d, want %d — the terminal's true last row\nshort frame:\n%s", shortRow, lastRow, shortFrame)
 	}
 	s.quitAndDrain()
 }

@@ -1639,37 +1639,35 @@ func TestNewStickyReplacesOldSticky(t *testing.T) {
 }
 
 // TestStackFrameExactFillAtEveryToastOccupancy pins the pushed-screen chrome
-// reservation EXACTLY, in both directions. A fixed-height stub screen fills
-// its whole stackBodyHeight budget deterministically (a real Browser windows
-// its content and may under-fill), so the composed frame's line count is a
-// pure function of the reservation — no non-determinism, so every occupancy
-// gets an exact count, never a loose `<=`.
+// reservation EXACTLY, at EVERY toast occupancy — not just the two-toast
+// maximum. A fixed-height stub screen fills its whole stackBodyHeight budget
+// deterministically (a real Browser windows its content and may under-fill),
+// so the composed frame's line count is a pure function of the reservation —
+// no non-determinism, so every occupancy gets an exact count, never a loose
+// `<=`.
 //
 // The frame is header + breadcrumb + screen + footer joined by three
-// blank-line separators, so its line count is headerLines + screenLines + 5
-// (breadcrumb 1 + footer 1 + 3 separators). screenLines is stackBodyHeight()
-// = height - 10 (well above the floor at height 40). The header block is 1
-// line bare, 3 with one toast (status + blank + line), 5 with two (status +
-// blank + sticky + blank + info). So the total is height-4 / height-2 /
-// height for zero / one / two toasts — the reservation holds room for the
-// two-line max, so fewer toasts leave the frame short (blank rows at the
-// bottom), and full occupancy fills the terminal exactly. Asserting `==`
-// (not `<=`) at the max is what makes an OVER-reservation regression — a
-// screen budget one too small, so the frame never reaches the bottom — fail
-// here rather than pass unseen.
+// blank-line separators. stackBodyHeight() now reserves the header's ACTUAL
+// current height (1 line bare, 3 with one toast, 5 with two) rather than its
+// two-toast maximum, so the screen budget grows or shrinks with occupancy and
+// the total frame is exactly height at every row — a toast arriving shrinks
+// the body and grows the header by the same line count, so the footer never
+// moves off the terminal's last row. Asserting `==` (not `<=`) at every
+// occupancy is what makes EITHER an over-reservation (the frame falling
+// short even with no toasts) or an under-reservation (a real row shoved past
+// the fold once a toast lands) fail here rather than pass unseen.
 func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 	t.Parallel()
 	const height = 40
 	tests := []struct {
-		name      string
-		sticky    string
-		info      string
-		wantLines int
+		name   string
+		sticky string
+		info   string
 	}{
-		{name: "zero toasts", wantLines: height - 4},
-		{name: "info only", info: "path: /home/u/x.md", wantLines: height - 2},
-		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md", wantLines: height - 2},
-		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+		{name: "zero toasts"},
+		{name: "info only", info: "path: /home/u/x.md"},
+		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md"},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1686,8 +1684,8 @@ func TestStackFrameExactFillAtEveryToastOccupancy(t *testing.T) {
 			}
 
 			body := plain(m.View().Content)
-			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
-				t.Errorf("stack frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, testCase.wantLines)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+				t.Errorf("stack frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, height)
 			}
 			if want := plain(m.footer()); want == "" || !strings.Contains(body, want) {
 				t.Errorf("stack footer missing from the composed frame:\n%s", body)
@@ -1780,42 +1778,59 @@ func TestRootClampsOverflowingPushedScreen(t *testing.T) {
 // live-hub defect this task fixes (see the sibling test below for the
 // across-selections symptom itself).
 //
-// Both toast slots are populated so the header sits at its own reserved
-// maximum (TestStackFrameExactFillAtEveryToastOccupancy's "both slots" case) —
-// that isolates the axis this test pins (the PUSHED SCREEN's own height)
-// from the header's independent, already-pinned chrome reservation, under
-// which fewer toasts deliberately leave the frame short by design (that
-// test's own doc). Without both slots the frame's true target here would be
-// height-4, not height, for a reason this test does not exist to cover.
+// Occupancy rows (0/1/2 toasts) exercise this against stackBodyHeight's own
+// occupancy-varying reservation (TestStackFrameExactFillAtEveryToastOccupancy):
+// a short pushed body must be padded out to exactly height regardless of how
+// much of that height the header currently claims, not just at the two-toast
+// maximum.
 func TestRootPadsShortPushedBodyToFillTerminalHeight(t *testing.T) {
 	t.Parallel()
 	const width, height = 120, 40
-	browser := views.NewBrowser(views.BrowserDeps{
-		Folder:   "acme",
-		Now:      time.Now(),
-		ReadBody: func(memoryfs.Memory) (string, error) { return "short body", nil },
-		List: func() ([]memoryfs.Memory, error) {
-			return []memoryfs.Memory{{Provider: "claude", Name: "solo", RepoPath: "claude/solo.md"}}, nil
-		},
-	})
-	m := newTestModel(&fakeData{status: readyStatus()})
-	m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
-	m.status = readyStatus()
-	m, _ = step(m, views.PushScreenMsg{Screen: browser})
-	m.pushStickyToast("save failed — kept at /scratch/x.md")
-	m.pushToast("path: /home/u/x.md")
+	tests := []struct {
+		name   string
+		sticky string
+		info   string
+	}{
+		{name: "zero toasts"},
+		{name: "info only", info: "path: /home/u/x.md"},
+		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md"},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			browser := views.NewBrowser(views.BrowserDeps{
+				Folder:   "acme",
+				Now:      time.Now(),
+				ReadBody: func(memoryfs.Memory) (string, error) { return "short body", nil },
+				List: func() ([]memoryfs.Memory, error) {
+					return []memoryfs.Memory{{Provider: "claude", Name: "solo", RepoPath: "claude/solo.md"}}, nil
+				},
+			})
+			m := newTestModel(&fakeData{status: readyStatus()})
+			m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
+			m.status = readyStatus()
+			m, _ = step(m, views.PushScreenMsg{Screen: browser})
+			if testCase.sticky != "" {
+				m.pushStickyToast(testCase.sticky)
+			}
+			if testCase.info != "" {
+				m.pushToast(testCase.info)
+			}
 
-	frame := plain(m.View().Content)
-	lines := strings.Split(frame, "\n")
-	if len(lines) != height {
-		t.Fatalf("root frame is %d lines, want exactly %d — a short pushed body was not padded to fill the terminal", len(lines), height)
-	}
-	footer := plain(m.footer())
-	if footer == "" {
-		t.Fatal("setup: footer empty — the last-row assertion would be vacuous")
-	}
-	if last := lines[len(lines)-1]; !strings.Contains(last, footer) {
-		t.Errorf("footer not on the frame's last row; last row = %q, want to contain %q\nframe:\n%s", last, footer, frame)
+			frame := plain(m.View().Content)
+			lines := strings.Split(frame, "\n")
+			if len(lines) != height {
+				t.Fatalf("root frame is %d lines, want exactly %d — a short pushed body was not padded to fill the terminal", len(lines), height)
+			}
+			footer := plain(m.footer())
+			if footer == "" {
+				t.Fatal("setup: footer empty — the last-row assertion would be vacuous")
+			}
+			if last := lines[len(lines)-1]; !strings.Contains(last, footer) {
+				t.Errorf("footer not on the frame's last row; last row = %q, want to contain %q\nframe:\n%s", last, footer, frame)
+			}
+		})
 	}
 }
 
@@ -1827,11 +1842,12 @@ func TestRootPadsShortPushedBodyToFillTerminalHeight(t *testing.T) {
 // battery's own seeded index/long-scroll-target split — and the footer's row
 // index is captured on both sides of a cursor move between them.
 //
-// Both toast slots are populated for the same isolation reason
-// TestRootPadsShortPushedBodyToFillTerminalHeight's doc gives: it pins this
-// test's row at the terminal's true last row (height-1) rather than at
-// whatever shorter row the header's own, separately-pinned toast-occupancy
-// reservation would otherwise put it on.
+// Toast-free: this test's own axis is the PUSHED SCREEN's height swinging
+// between short and tall, which TestStackFrameExactFillAtEveryToastOccupancy
+// already isolates from the header's independent, separately-pinned
+// toast-occupancy reservation. height-1 is the terminal's true last row
+// regardless of toast occupancy now that stackBodyHeight reserves the
+// header's actual current height rather than a two-toast-blind constant.
 func TestRootFooterRowFixedAcrossShortAndTallPreview(t *testing.T) {
 	t.Parallel()
 	const width, height = 120, 40
@@ -1856,8 +1872,6 @@ func TestRootFooterRowFixedAcrossShortAndTallPreview(t *testing.T) {
 	m, _ = step(m, tea.WindowSizeMsg{Width: width, Height: height})
 	m.status = readyStatus()
 	m, _ = step(m, views.PushScreenMsg{Screen: browser})
-	m.pushStickyToast("save failed — kept at /scratch/x.md")
-	m.pushToast("path: /home/u/x.md")
 
 	footer := plain(m.footer())
 	if footer == "" {
@@ -1956,32 +1970,30 @@ func TestFleetHeaderLine(t *testing.T) {
 }
 
 // TestProjectsTabFrameExactFillWithFleetHeader pins the Projects TAB frame's
-// chrome reservation EXACTLY, in both directions, now that the fleet header
-// (spec §9) adds one row above the table. ProjectsView.SetSize reserves for
-// every non-table line the frame carries at full chrome — status header, both
-// toast slots, tab bar, section title, fleet header, action notice, footer, and
-// the blank separators between them — and the table space-fills the remainder,
-// so the composed frame's line count is a pure function of that reservation. At
-// full chrome (both toasts + a notice) the frame fills the terminal exactly;
-// fewer toasts leave it short. Asserting == at the max makes BOTH an
-// under-reservation (the table a row too tall, a real row shoved off the bottom)
-// and an over-reservation (the header eating a table row's height, the frame
-// never reaching the bottom) fail here — the both-directions discipline the
-// toast-tiers stack-frame pin established, extended to the tab that gained the
-// header.
+// chrome reservation EXACTLY, at every toast occupancy, now that the fleet
+// header (spec §9) adds one row above the table. tabBodyHeight reserves the
+// header's ACTUAL current height (not the two-toast maximum) plus the tab
+// bar, the footer, and their separators; ProjectsView's own table sizing
+// stays a separate, worst-case-always reservation (its own doc), so the
+// table itself does not grow as toasts clear — the root's fitAndFillHeight
+// pads the gap instead (its own doc: "the Projects table self-fills its
+// configured height... without padding here a tab with little content would
+// leave the same short-frame, floating-footer symptom"). Either way the
+// composed frame reaches exactly height. Asserting == at every occupancy
+// makes BOTH an under-reservation (a real row shoved off the bottom) and an
+// over-reservation (the frame falling short even toast-free) fail here.
 func TestProjectsTabFrameExactFillWithFleetHeader(t *testing.T) {
 	t.Parallel()
 	const height = 40
 	tests := []struct {
-		name      string
-		sticky    string
-		info      string
-		wantLines int
+		name   string
+		sticky string
+		info   string
 	}{
-		{name: "zero toasts", wantLines: height - 4},
-		{name: "info only", info: "path: /home/u/x.md", wantLines: height - 2},
-		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md", wantLines: height - 2},
-		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+		{name: "zero toasts"},
+		{name: "info only", info: "path: /home/u/x.md"},
+		{name: "sticky only", sticky: "save failed — kept at /scratch/x.md"},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -2004,8 +2016,8 @@ func TestProjectsTabFrameExactFillWithFleetHeader(t *testing.T) {
 			}
 
 			body := plain(m.View().Content)
-			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
-				t.Errorf("projects tab frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, testCase.wantLines)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+				t.Errorf("projects tab frame is %d lines, want exactly %d — reservation off (over- or under-reserved)", gotLines, height)
 			}
 			// The fleet header renders above the table, not buried inside it.
 			header := "2 units · watching 1/2 · last sync ok 2h ago · vtest"
@@ -3941,25 +3953,26 @@ func TestUpdateAgentBrainAvailability(t *testing.T) {
 // TestStackFrameExactFillWithBannerPresent extends the pushed-screen exact-fill
 // pin to the banner-present case: the update banner is an inline segment on the
 // status-header LINE (spec §2), so it adds no header row and the frame line
-// count is IDENTICAL to the banner-absent pin at every toast occupancy. A width
-// wide enough that the longest banner never wraps isolates the reservation
-// arithmetic from wrapping. Asserting == both directions makes a banner that
-// silently grew the header (pushing the footer off the bottom) fail here.
+// count is IDENTICAL to the banner-absent pin at every toast occupancy — exactly
+// height, since stackBodyHeight reserves the header's actual current height
+// (banner included, inline) rather than a toast-blind constant. A width wide
+// enough that the longest banner never wraps isolates the reservation
+// arithmetic from wrapping. Asserting == makes a banner that silently grew the
+// header (pushing the footer off the bottom) fail here.
 func TestStackFrameExactFillWithBannerPresent(t *testing.T) {
 	t.Parallel()
 	const height = 40
 	const width = 160
 	tests := []struct {
-		name      string
-		phase     updatePhase
-		sticky    string
-		info      string
-		wantLines int
+		name   string
+		phase  updatePhase
+		sticky string
+		info   string
 	}{
-		{name: "offered, zero toasts", phase: updateOffered, wantLines: height - 4},
-		{name: "offered, both toasts", phase: updateOffered, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
-		{name: "installed, zero toasts", phase: updateInstalled, wantLines: height - 4},
-		{name: "installed, both toasts", phase: updateInstalled, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+		{name: "offered, zero toasts", phase: updateOffered},
+		{name: "offered, both toasts", phase: updateOffered, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
+		{name: "installed, zero toasts", phase: updateInstalled},
+		{name: "installed, both toasts", phase: updateInstalled, sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -3978,8 +3991,8 @@ func TestStackFrameExactFillWithBannerPresent(t *testing.T) {
 			}
 
 			body := plain(m.View().Content)
-			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
-				t.Errorf("banner-present stack frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, testCase.wantLines)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+				t.Errorf("banner-present stack frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, height)
 			}
 			wantBanner := "v2.1.0 available — U to update"
 			if testCase.phase == updateInstalled {
@@ -3994,20 +4007,21 @@ func TestStackFrameExactFillWithBannerPresent(t *testing.T) {
 
 // TestProjectsTabFrameExactFillWithBannerPresent extends the Projects TAB
 // exact-fill pin to the banner-present case: the status header the tab budget
-// reserves one line for stays one line with the banner, so the frame still
-// fills the terminal exactly at full chrome and runs short with fewer toasts.
+// measures stays one line with the banner (it is an inline segment, not an
+// extra row), so the frame reaches exactly height whether toasts are present
+// or not — tabBodyHeight reserves the header's actual current height, not a
+// toast-blind constant.
 func TestProjectsTabFrameExactFillWithBannerPresent(t *testing.T) {
 	t.Parallel()
 	const height = 40
 	const width = 160
 	tests := []struct {
-		name      string
-		sticky    string
-		info      string
-		wantLines int
+		name   string
+		sticky string
+		info   string
 	}{
-		{name: "zero toasts", wantLines: height - 4},
-		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md", wantLines: height},
+		{name: "zero toasts"},
+		{name: "both slots", sticky: "save failed — kept at /scratch/x.md", info: "path: /home/u/x.md"},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -4032,8 +4046,8 @@ func TestProjectsTabFrameExactFillWithBannerPresent(t *testing.T) {
 			}
 
 			body := plain(m.View().Content)
-			if gotLines := strings.Count(body, "\n") + 1; gotLines != testCase.wantLines {
-				t.Errorf("banner-present Projects frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, testCase.wantLines)
+			if gotLines := strings.Count(body, "\n") + 1; gotLines != height {
+				t.Errorf("banner-present Projects frame is %d lines, want exactly %d — the inline banner added a header row", gotLines, height)
 			}
 			if !strings.Contains(body, "v2.1.0 available — U to update") {
 				t.Errorf("banner missing from the Projects frame:\n%s", body)
