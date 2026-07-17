@@ -2779,6 +2779,7 @@ func TestStackFooterRendersFocusedPreviewSetLit(t *testing.T) {
 		{"browser-preview-page", "pgup/pgdn page"},
 		{"browser-preview-ends", "g/G ends"},
 		{"browser-preview-copy", "y copy"},
+		{"browser-preview-mouse-capture", "m mouse capture"},
 	}
 	for _, row := range rows {
 		if !m.available(row.id) {
@@ -4807,6 +4808,10 @@ func TestRootViewMouseModeGate(t *testing.T) {
 // same path the every-non-browser-frame disarm already takes — and m again
 // re-arms it. This is the toggle's whole purpose: native drag-select needs the
 // capture actually gone, and re-arming restores the wheel and click-select.
+// Driven, not stepped: m is no longer intercepted at the root — the browser
+// matches it in its mode dispatch and emits MouseCaptureToggleMsg, so the flip
+// only lands once that Cmd's message is fed back, which drive does and a single
+// step would not.
 func TestMouseCaptureToggleDisarmsAndRearms(t *testing.T) {
 	t.Parallel()
 	m := newTestModel(&fakeData{})
@@ -4816,11 +4821,11 @@ func TestMouseCaptureToggleDisarmsAndRearms(t *testing.T) {
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
 		t.Fatalf("setup: armed browser preview MouseMode = %v, want CellMotion", got)
 	}
-	m, _ = step(m, key("m"))
+	m = drive(t, m, key("m"))
 	if got := m.View().MouseMode; got != tea.MouseModeNone {
 		t.Errorf("after m, MouseMode = %v, want None (capture disarmed for native select)", got)
 	}
-	m, _ = step(m, key("m"))
+	m = drive(t, m, key("m"))
 	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
 		t.Errorf("after a second m, MouseMode = %v, want CellMotion (capture re-armed)", got)
 	}
@@ -4845,7 +4850,7 @@ func TestMouseCaptureDisclosureRendersEveryFrameWhileOff(t *testing.T) {
 		t.Fatalf("armed browser footer discloses native select before any toggle:\n%s", footer)
 	}
 
-	m, _ = step(m, key("m"))
+	m = drive(t, m, key("m"))
 	if footer := plain(m.footer()); !strings.Contains(footer, cue) {
 		t.Fatalf("footer after m missing the disclosure %q; got:\n%s", cue, footer)
 	}
@@ -4858,7 +4863,7 @@ func TestMouseCaptureDisclosureRendersEveryFrameWhileOff(t *testing.T) {
 		t.Errorf("disclosure dropped on the frame after the flip; it must track the mouseCaptureOff STATE, not the toggle event:\n%s", footer)
 	}
 
-	m, _ = step(m, key("m"))
+	m = drive(t, m, key("m"))
 	if footer := plain(m.footer()); strings.Contains(footer, "native select") {
 		t.Errorf("footer still discloses native select after re-arming:\n%s", footer)
 	}
@@ -4891,6 +4896,121 @@ func TestMouseCaptureToggleFooterRowLit(t *testing.T) {
 	}
 	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
 		t.Errorf("%q does not render lit in the browser footer; got:\n%q", segment, raw)
+	}
+}
+
+// TestFilterTypingKeepsMouseKeyAsQueryLetter is the F1 regression pin: while the
+// in-browser filter owns input, m must type into the query, never flip mouse
+// capture. The earlier build intercepted m at the root before forwarding, so an
+// m anywhere in a typed query was swallowed AND flipped capture — the reviewer's
+// probe typed "am" and got a filter reading "a" with capture toggled on. The fix
+// matches m inside the browser's mode dispatch, AFTER the filtering branch has
+// already claimed the key, so both halves hold: the query keeps its m and the
+// veto never moves. The probe types an ODD count of m's (one) on purpose — an
+// even count would flip the veto back to false and hide a reintroduced root
+// interception behind a coincidentally-correct final state.
+func TestFilterTypingKeepsMouseKeyAsQueryLetter(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View() // browser owns the stack at split width (armed)
+
+	m, _ = step(m, key("/")) // open the filter
+	m, _ = step(m, key("a"))
+	m, _ = step(m, key("m")) // the m the earlier build stole
+
+	if m.mouseCaptureOff {
+		t.Error("typing m into the filter flipped mouseCaptureOff; m must stay a query letter while the filter owns input")
+	}
+	if got := plain(m.View().Content); !strings.Contains(got, "am") {
+		t.Errorf("filter query lost its m — the frame does not show the typed \"am\"; got:\n%s", got)
+	}
+}
+
+// TestMouseCaptureToggleFlipsInDeletedList pins the toggle in the deleted-
+// recovery list (the reviewer's routing trap 1): that list is a distinct
+// updateKey branch that consumes every key and returns before the normal-mode
+// switch, so an m match only in the normal switch would leave m DEAD there while
+// the deleted list's own preview still arms the mouse and its footer advertises
+// the key. The setup asserts the browser is genuinely in the deleted list
+// (the "Deleted memories" title) before pressing m, so a regression that dropped
+// the deleted-mode match — sending m to the normal switch, which also flips —
+// cannot pass this pin vacuously.
+func TestMouseCaptureToggleFlipsInDeletedList(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View()
+
+	m = drive(t, m, key("x")) // enter the deleted-recovery list
+	if got := plain(m.View().Content); !strings.Contains(got, "Deleted memories") {
+		t.Fatalf("setup: x did not enter the deleted list, so the deleted-mode m path is untested; view:\n%s", got)
+	}
+
+	m = drive(t, m, key("m"))
+	if !m.mouseCaptureOff {
+		t.Error("m in the deleted list did not flip mouseCaptureOff; updateDeleted's m match is missing and the key is dead there")
+	}
+}
+
+// TestMouseCaptureToggleFlipsWhilePreviewFocused pins the toggle while the
+// preview pane holds keyboard focus (the reviewer's routing trap 2): the focused
+// block routes unmatched keys into the viewport, so without its own m match the
+// key would scroll-or-nothing instead of flipping capture, and F3's focused
+// "m mouse capture" footer row would advertise a dead key. The setup asserts the
+// pane is actually focused before pressing m, so the pin cannot pass through the
+// list-mode m path.
+func TestMouseCaptureToggleFlipsWhilePreviewFocused(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View() // record previewShown so tab can arm focus
+
+	m = drive(t, m, key("tab"))
+	if !m.stack[0].(*views.Browser).PreviewFocused() {
+		t.Fatal("setup: tab did not focus the preview pane, so the focused-mode m path is untested")
+	}
+
+	m = drive(t, m, key("m"))
+	if !m.mouseCaptureOff {
+		t.Error("m while the preview holds focus did not flip mouseCaptureOff; the focused block's m match is missing")
+	}
+}
+
+// TestMouseCaptureCueLeadsListFooterWithinWidth is the F2 pin: while capture is
+// off, the LIST-scope footer must LEAD with the state cue so it survives the
+// clip at the canonical PTY width. The list footer overflows 120 columns and the
+// v2 compositor clips rather than wraps, so a cue appended last (the earlier
+// build) began at ~column 191 and never rendered — the disclosed state was
+// invisible at the one width the battery runs. The pin measures the cue's visual
+// start column (accounting for the multi-byte "·" separators) and requires it
+// within 120; appended last it lands past that and the pin goes red.
+func TestMouseCaptureCueLeadsListFooterWithinWidth(t *testing.T) {
+	t.Parallel()
+	const cue = "mouse: native select (m re-arms)"
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View() // list scope, preview shown -> armed footer
+
+	if strings.Contains(plain(m.footer()), "native select") {
+		t.Fatal("armed list footer discloses native select before any toggle")
+	}
+
+	m = drive(t, m, key("m")) // disarm via the browser's normal-mode m
+	footer := plain(m.footer())
+	beforeCue, _, found := strings.Cut(footer, cue)
+	if !found {
+		t.Fatalf("off list footer missing the cue %q; got:\n%s", cue, footer)
+	}
+	// The cue's start column is the visual width of everything before it —
+	// lipgloss.Width, not a byte index, because the " · " separators are
+	// multi-byte runes that a byte offset would over-count.
+	if startColumn := lipgloss.Width(beforeCue); startColumn >= 120 {
+		t.Errorf("cue starts at column %d (>= 120); the list footer clips it at the canonical width and it never shows\nfooter: %s", startColumn, footer)
 	}
 }
 

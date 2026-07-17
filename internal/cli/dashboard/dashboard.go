@@ -899,6 +899,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.popScreen()
 		return m, nil
 
+	case views.MouseCaptureToggleMsg:
+		// The browser matched m in its mode dispatch (never in the filter, where m
+		// stays a typable query letter) and asked the root to flip its terminal-
+		// global mouse-capture veto. The flip lives HERE, not in the browser,
+		// because View's arming gate — the only reader of mouseCaptureOff — is root
+		// state the browser cannot reach. Both directions ride one message: off
+		// disarms the preview's cell-motion capture so native drag-select works
+		// across the browser, on re-arms it. The disclosure (mouseCaptureDisclosure)
+		// then shows every frame it is off, from this same flag.
+		m.mouseCaptureOff = !m.mouseCaptureOff
+		return m, nil
+
 	case views.HistoryVersionsMsg, views.HistoryBlobMsg, views.InsightsDataMsg:
 		// The History screen's async fetches (and the browser's folder-wide
 		// deleted scan), plus the Insights screen's one folder-wide history
@@ -1175,18 +1187,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// happens to share the same key. See ScopeBrowser's registry rows
 	// (actions.go) and stackFooterRows for the matching footer/help
 	// surface of this same priority.
-	if top, ok := m.stackTop(); ok {
-		// The mouse-capture toggle is a ROOT terminal-mode control, not a browser
-		// key: the arming gate that reads mouseCaptureOff lives in View (root), so
-		// m is consumed HERE — while a browser owns the stack, the one surface the
-		// mouse is ever armed for — flipping the root flag rather than being
-		// forwarded down. The browser binds no m, so consuming it shadows nothing;
-		// gating on the browser type keeps the ScopeBrowser row honest (a Reading
-		// or History screen pushed on top neither arms the mouse nor answers to m).
-		if _, isBrowser := top.(*views.Browser); isBrowser && matchesMouseCaptureToggle(msg) {
-			m.mouseCaptureOff = !m.mouseCaptureOff
-			return m, nil
-		}
+	if _, ok := m.stackTop(); ok {
 		return m.forwardToStack(msg)
 	}
 
@@ -1964,18 +1965,6 @@ func (m Model) buildConflictDetailDeps(record config.ConflictRecord) views.Confl
 	}
 }
 
-// matchesMouseCaptureToggle reports whether msg is the mouse-capture toggle's
-// key. Resolved from the registry row rather than a hardcoded "m" so the key the
-// root consumes and the hint the footer/help advertise can never diverge — the
-// single-source discipline every other action follows (actions.go).
-func matchesMouseCaptureToggle(msg tea.KeyPressMsg) bool {
-	action, ok := findAction("mouse-capture-toggle")
-	if !ok {
-		return false
-	}
-	return keybinding.Matches(msg, actions.Binding(action))
-}
-
 // findAction looks up a registry row by ID. Registry() is a handful of
 // entries, so a linear scan costs nothing next to a keypress or a render.
 func findAction(id string) (actions.Action, bool) {
@@ -2086,6 +2075,7 @@ func (m *Model) available(id string) bool {
 		"browser-scroll-preview", "browser-focus-preview", "mouse-capture-toggle", "browser-back",
 		"browser-preview-list", "browser-preview-scroll", "browser-preview-half-page",
 		"browser-preview-page", "browser-preview-ends", "browser-preview-copy",
+		"browser-preview-mouse-capture",
 		"reading-scroll", "reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
@@ -2101,12 +2091,15 @@ func (m *Model) available(id string) bool {
 		// them, their effect situational (only a body that overflows scrolls).
 		// The browser-preview-* rows are the preview-focused footer set, matched
 		// directly by the browser's focused block (list/scroll/half-page/page/ends/
-		// copy): always available so that swapped footer renders every key lit, its
-		// whole reason for existing being to name the keys that DO work in that mode.
-		// mouse-capture-toggle is the same shape — matched directly by the root
-		// while a browser owns the stack (handleKey), never a runner — so it is
-		// always offerable, its effect situational (only a shown preview has a
-		// captured mouse to hand back), and renders lit rather than struck.
+		// copy/mouse-capture): always available so that swapped footer renders every
+		// key lit, its whole reason for existing being to name the keys that DO work
+		// in that mode.
+		// mouse-capture-toggle (and its focused-scope twin browser-preview-mouse-
+		// capture) is the same shape — matched directly by the browser's mode
+		// dispatch, which emits MouseCaptureToggleMsg for the root to act on, never a
+		// runner — so it is always offerable, its effect situational (only a shown
+		// preview has a captured mouse to hand back), and renders lit rather than
+		// struck.
 		return true
 	case "scan":
 		// Advisory gitleaks sweep — live exactly when its runner is wired.
@@ -2408,14 +2401,29 @@ func (m Model) footer() string {
 		}
 		return m.styles.Dim.Render(views.HelpLine(bindings))
 	default:
-		if _, ok := m.stackTop(); ok {
+		if top, ok := m.stackTop(); ok {
 			footer := m.stackFooterLine()
 			if cue := m.mouseCaptureDisclosure(); cue != "" {
-				// Appended to the SAME footer line (a state cue, not a new row) so
-				// the frame keeps its exact height and the footer stays on the
-				// literal last row (spec §2): it reads as one more " · "-joined
-				// segment, the separator stackFooterLine already uses between hints.
-				footer = strings.Join([]string{footer, cue}, m.styles.Dim.Render(" · "))
+				// The cue joins the SAME footer line (a state cue, not a new row) so
+				// the frame keeps its exact height and the footer stays on the literal
+				// last row (spec §2): it reads as one more " · "-joined segment, the
+				// separator stackFooterLine already uses between hints. WHERE on the
+				// line it sits depends on scope. The LIST footer overflows the
+				// canonical PTY width (188 cols even armed) and the v2 compositor
+				// CLIPS rather than wraps, so a cue appended last would begin past the
+				// right edge and never render — the disclosed state would be invisible
+				// at the one width that matters. So in list scope the cue LEADS,
+				// surviving the clip. The focused footer is the short swapped preview
+				// set and comfortably fits, so there the cue trails as the last
+				// segment, leaving the return/scroll keys reading first. (The general
+				// list-footer overflow — even "esc back" clips — is a separate
+				// width-aware-fitting task, not this cue placement.)
+				separator := m.styles.Dim.Render(" · ")
+				if browser, isBrowser := top.(*views.Browser); isBrowser && browser.PreviewFocused() {
+					footer = strings.Join([]string{footer, cue}, separator)
+				} else {
+					footer = strings.Join([]string{cue, footer}, separator)
+				}
 			}
 			return footer
 		}

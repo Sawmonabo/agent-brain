@@ -492,6 +492,12 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 			return b, nil
 		case keybinding.Matches(msg, DashboardKeys.BrowserCopy):
 			return b, b.copyRequest()
+		case keybinding.Matches(msg, DashboardKeys.BrowserMouseCapture):
+			// m works while the preview holds focus too (the focused footer
+			// advertises it via browser-preview-mouse-capture) — matched here
+			// rather than falling through into the viewport's scroll keymap below,
+			// so it flips capture instead of being swallowed as a dead key.
+			return b, b.mouseCaptureToggleRequest()
 		}
 		b.previewViewport.KeyMap = browserPreviewFocusedKeyMap()
 		var cmd tea.Cmd
@@ -526,6 +532,14 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		// native drag-select being suppressed while the preview holds mouse mode,
 		// and a copy that also carries over SSH/tmux/WSL2.
 		return b, b.copyRequest()
+	case keybinding.Matches(msg, DashboardKeys.BrowserMouseCapture):
+		// m is the escape hatch for when a copy is not enough and the user wants
+		// the terminal's own drag-select back: it asks the root to disarm the
+		// preview's cell-motion capture entirely (there is no way to scope capture
+		// to just the list gutter — a protocol truth). Matched here in the normal
+		// body, AFTER the filtering branch returned above, so m stays a typable
+		// query letter while the filter owns input.
+		return b, b.mouseCaptureToggleRequest()
 	case keybinding.Matches(msg, DashboardKeys.BrowserFilter):
 		// A dangling preview focus (previewFocused set while previewShown was
 		// false — a narrow resize) must not survive into filter mode, where the
@@ -656,6 +670,18 @@ func (b *Browser) newRequest() tea.Cmd {
 		request.Provider = selected.Provider
 	}
 	return func() tea.Msg { return request }
+}
+
+// mouseCaptureToggleRequest builds the Cmd that emits MouseCaptureToggleMsg for
+// the root to flip its mouse-capture veto (spec §3's m). Payload-free and
+// selection-independent — it toggles a terminal-global capture mode, not
+// anything about the highlighted row — so unlike selectedRequest/copyRequest it
+// takes no memory and always emits. The three mode branches that match m
+// (normal, deleted, preview-focused) share this one builder so they can never
+// disagree about which message the root receives; the filter branch matches
+// nothing here and types the letter instead.
+func (b *Browser) mouseCaptureToggleRequest() tea.Cmd {
+	return func() tea.Msg { return MouseCaptureToggleMsg{} }
 }
 
 // openReading pushes the selected memory's reading view (spec §4's enter),
@@ -871,6 +897,12 @@ func (b *Browser) updateDeleted(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	case keybinding.Matches(msg, DashboardKeys.BrowserRead),
 		keybinding.Matches(msg, DashboardKeys.BrowserHistory):
 		return b, b.openDeletedHistory()
+	case keybinding.Matches(msg, DashboardKeys.BrowserMouseCapture):
+		// The deleted list shows a preview pane too, so it arms the same
+		// cell-motion capture — m must flip it here as well, or the toggle would
+		// be dead in this mode while the list still needs native drag-select.
+		// There is no text input in the deleted list, so matching m is harmless.
+		return b, b.mouseCaptureToggleRequest()
 	case keybinding.Matches(msg, DashboardKeys.Select):
 		b.moveDeletedCursor(msg.String())
 		return b, nil

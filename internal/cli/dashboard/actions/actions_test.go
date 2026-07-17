@@ -499,6 +499,7 @@ func TestBrowserPreviewFocusedRegistryRowsShape(t *testing.T) {
 		{id: "browser-preview-page", keys: []string{"pgup", "pgdown"}, keyHint: "pgup/pgdn"},
 		{id: "browser-preview-ends", keys: []string{"g", "G"}, keyHint: "g/G"},
 		{id: "browser-preview-copy", keys: []string{"y"}, keyHint: "y"},
+		{id: "browser-preview-mouse-capture", keys: []string{"m"}, keyHint: "m"},
 	}
 
 	byID := make(map[string]Action)

@@ -2293,6 +2293,28 @@ func TestBrowserFilteringOwnsKeysOverPreviewScroll(t *testing.T) {
 	}
 }
 
+// TestBrowserFilterTypesMouseKeyNotToggle pins the browser-side half of F1's
+// routing: while the filter owns input, m types into the query like every other
+// letter action, never routing to the mouse-capture toggle. updateKey reaches
+// the normal-mode m match only AFTER the filtering branch has returned, so the
+// query keeps its m. A regression that hoisted the m match ahead of the
+// `if b.filtering` guard would divert it and leave the filter value empty. This
+// is the precise browser-scope twin of the root-level end-to-end filter pin.
+func TestBrowserFilterTypesMouseKeyNotToggle(t *testing.T) {
+	t.Parallel()
+	browser := longBodyBrowser(t)
+	const width, height = 120, 30
+	_ = browser.View(width, height)
+
+	next, _ := browser.Update(key("/")) // open the filter
+	browser = next.(*Browser)
+	next, _ = browser.Update(key("m")) // m toggles mouse capture outside filtering; here it must TYPE
+	browser = next.(*Browser)
+	if got := browser.filter.Value(); got != "m" {
+		t.Errorf("filter value = %q, want %q; filtering must own m, not route it to the mouse toggle", got, "m")
+	}
+}
+
 // focusPreviewBrowser is a two-memory browser whose top (default-selected) row
 // carries a 300-line body — long enough to overflow any preview pane — and whose
 // second row carries a short one. The two rows make the focus distinction

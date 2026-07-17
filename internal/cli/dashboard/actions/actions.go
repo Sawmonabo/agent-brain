@@ -209,12 +209,14 @@ var registry = []Action{
 	// is terminal-global — scoped capture is not expressible — so the only honest
 	// remedy is a runtime switch that turns it off entirely, with the state
 	// disclosed every frame it is off (dashboard.go's mouseCaptureDisclosure).
-	// Runner-less like every other browser navigation row: the root matches m
-	// directly while a browser owns the stack and flips its own mouseCaptureOff
-	// (handleKey), never a daemon mutation, so it never Mutates and a quiesce
-	// leaves it alone. Its m is free within ScopeBrowser; migrate binds m too but
-	// under ScopeProjects, and cross-scope reuse is legal (only one scope is ever
-	// the matched footer scope at a time).
+	// Runner-less like every other browser navigation row, but NOT root-matched:
+	// m must stay a typable letter while the in-browser filter owns input, so
+	// Browser.updateKey matches m in its mode dispatch (skipping the filter
+	// branch) and emits MouseCaptureToggleMsg; the root flips its own
+	// mouseCaptureOff in that message's handler. Never a daemon mutation, so it
+	// never Mutates and a quiesce leaves it alone. Its m is free within
+	// ScopeBrowser; migrate binds m too but under ScopeProjects, and cross-scope
+	// reuse is legal (only one scope is ever the matched footer scope at a time).
 	{ID: "mouse-capture-toggle", Title: "mouse capture", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeBrowserPreviewFocused rows: while the preview pane holds
@@ -224,7 +226,10 @@ var registry = []Action{
 	// list key read as inert with no cue why). All are matched directly by
 	// Browser.updateKey's focused block — esc/tab hand focus back, g/G jump the
 	// ends, j/k + ctrl+d/u + pgup/pgdown scroll the viewport, y copies the
-	// previewed body — so like every other stack-scope row they carry no root
+	// previewed body, m flips mouse capture (browser-preview-mouse-capture, the
+	// focused-scope twin of mouse-capture-toggle, so the focused footer names the
+	// key that already works there) — so like every other stack-scope row they
+	// carry no root
 	// runner. None Mutates: the scroll/return keys touch no daemon state and the
 	// copy is a clipboard write (OSC52), not a provider-file mutation. The keys
 	// deliberately re-use ScopeBrowser's own bindings under distinct IDs
@@ -241,6 +246,7 @@ var registry = []Action{
 	{ID: "browser-preview-page", Title: "page", Keys: []string{"pgup", "pgdown"}, KeyHint: "pgup/pgdn", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-ends", Title: "ends", Keys: []string{"g", "G"}, KeyHint: "g/G", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-copy", Title: "copy", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-mouse-capture", Title: "mouse capture", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeBrowserPreviewFocused},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.
 	// h-history is deliberately absent — Task 14 declares that row together

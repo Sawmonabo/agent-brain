@@ -50,6 +50,17 @@ type PushScreenMsg struct{ Screen Screen }
 // PopScreenMsg asks the root to pop the top of the stack.
 type PopScreenMsg struct{}
 
+// MouseCaptureToggleMsg asks the root to flip its mouse-capture veto
+// (mouseCaptureOff), disarming or re-arming the browser preview's cell-motion
+// capture so native drag-select works (spec §3's m). The veto is root state —
+// View's arming gate is the only place that reads it — but the key that flips
+// it is an in-browser key that must stay typable while the filter input owns
+// the keyboard. So the browser owns the match, mode-aware (normal, deleted, and
+// preview-focused emit this; filter mode types the letter instead), and emits
+// this as a Cmd's result exactly like PopScreenMsg; the root owns the flip.
+// Payload-free: the root simply toggles, so both directions ride one message.
+type MouseCaptureToggleMsg struct{}
+
 // ToastMsg asks the root to surface Text in its persistent status area —
 // the screen→root channel for a local refusal or notice that needs no
 // state change (the reading view's enter on a dangling link). Produced as

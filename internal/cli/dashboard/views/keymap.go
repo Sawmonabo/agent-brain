@@ -74,6 +74,18 @@ type DashboardKeymap struct {
 	// matched binding, so this is the only preview key resolved here.
 	BrowserFocusPreview keybinding.Binding
 	BrowserBack         keybinding.Binding
+	// BrowserMouseCapture (m) asks the root to flip its mouse-capture veto so the
+	// preview pane's cell-motion capture disarms and the terminal's own native
+	// drag-select works across the whole browser (spec §3). It is matched in
+	// three of Browser.updateKey's mode branches — normal, deleted, and
+	// preview-focused — each emitting MouseCaptureToggleMsg for the root to act
+	// on; the filter branch deliberately does NOT match it, so m stays a typable
+	// query letter while the text input owns input focus (the same "letters stay
+	// typable" rule the e/r/d/n flow keys already follow). One binding serves all
+	// three sites: both registry rows that advertise m (the list-scope
+	// mouse-capture-toggle and the focused-scope browser-preview-mouse-capture)
+	// key it identically, so matching either resolves the same keystroke.
+	BrowserMouseCapture keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
 	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
 	// one hint; Reading.updateKey matches it for membership, then picks the
@@ -163,6 +175,7 @@ var DashboardKeys = DashboardKeymap{
 	BrowserCopy:           bindingFor("browser-copy"),
 	BrowserFocusPreview:   bindingFor("browser-focus-preview"),
 	BrowserBack:           bindingFor("browser-back"),
+	BrowserMouseCapture:   bindingFor("mouse-capture-toggle"),
 	ReadingCycleLinks:     bindingFor("reading-links"),
 	ReadingFollow:         bindingFor("reading-follow"),
 	ReadingBacklinks:      bindingFor("reading-backlinks"),
