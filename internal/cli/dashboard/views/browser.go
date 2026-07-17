@@ -124,11 +124,10 @@ type Browser struct {
 	// advanced clock is always what the next render actually sees.
 	now time.Time
 
-	// index is the wiki-link graph over the current listing (Task 7),
-	// retained (not just consumed) because openReading threads the
-	// identical graph into every pushed Reading screen for link/backlink
-	// navigation, and because lint.Check below takes it as an input rather
-	// than building its own.
+	// index is the wiki-link graph over the current listing, retained (not
+	// just consumed) because openReading threads the identical graph into
+	// every pushed Reading screen for link/backlink navigation, and because
+	// lint.Check below takes it as an input rather than building its own.
 	index *links.Index
 	// lintFlags is the ⚠ badge's actual source of truth: RepoPath ->
 	// "present in lint.Check's results" — spec §8's advisory findings
@@ -843,8 +842,8 @@ func (b *Browser) updateMouseWheel(msg tea.MouseWheelMsg) {
 // updateMouseClick handles a mouse button click. Only a left-click matters. A
 // click over the preview focuses that pane (the mouse counterpart of Tab); a
 // click over the list blurs the preview and moves the list cursor to the memory
-// on the clicked row. The focus arms mirror Task 2's focus primitives rather than
-// a bare `previewFocused = overPreview(x)` assignment — on a click-to-blur that
+// on the clicked row. The focus arms mirror the keyboard focus primitives (Tab/
+// Esc) rather than a bare `previewFocused = overPreview(x)` assignment — on a click-to-blur that
 // bare form would strand the lazily-installed focused keymap and break the
 // invariant that leaving focus restores the unfocused keymap (so j/k drive the
 // list again).
@@ -870,7 +869,7 @@ func (b *Browser) updateMouseClick(msg tea.MouseClickMsg) {
 		b.previewFocused = true // like Tab: a pure flip; the focused keymap installs lazily on the next focused key
 		return
 	}
-	b.blurPreview() // like Esc: clears focus AND restores the unfocused keymap (Task 2's blur invariant)
+	b.blurPreview() // like Esc: clears focus AND restores the unfocused keymap (the blur invariant)
 	// Screen-local Y minus the browser's own chrome above the list is the index
 	// into the recorded hit-map; a header line (-1) or an out-of-range click
 	// (below the last row, or a stale line past this frame's list) selects nothing.
@@ -1421,7 +1420,7 @@ func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int)
 // column's first row (always a provider-header line; see renderList's own doc).
 // The cue occupies that SAME single row the padding blank otherwise would, so
 // focusing the pane changes what the top row says without moving the body: the
-// Task-2 alignment invariant and the pane's height budget hold identically
+// alignment invariant and the pane's height budget hold identically
 // whether or not the preview is focused. One Warn-styled "⚠ <Rule>: <Detail>"
 // line then follows per lint issue recorded against selected (b.lintIssues,
 // keyed by RepoPath), each measured and ansi-truncated to width as PLAIN text

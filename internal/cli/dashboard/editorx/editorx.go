@@ -40,7 +40,7 @@ type Editor struct {
 // x/editor library was evaluated for this exact role and dropped for
 // silently defaulting to nano when nothing is configured, among other
 // rule violations (the plan's dependency-verification note; ADR 20
-// correction, Task 22).
+// correction).
 var ErrNoEditor = errors.New("no editor configured — set $EDITOR or editor.command in config")
 
 // scratchDirPattern names the per-edit temp dir created under the cache

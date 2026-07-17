@@ -21,10 +21,10 @@ import (
 //
 // STANDING CONTRACT: later phases APPEND rows here, never delete. A row that
 // stops failing when its defense is reverted is not a pin — the git-meta scrub
-// rows are proven to fail if their defense is removed: rows 1–5 if Task 1's
-// post-integrate scrub is removed (see the task-12 report's RED evidence), and
-// rows 10–11 if engine.prepareCheckout's top-of-entry scrub is removed (both
-// leak their plaintext sentinel onto the wire; Phase-3 final review, F1).
+// rows are proven to fail if their defense is removed: rows 1–5 if the
+// post-integrate scrub is removed, and rows 10–11 if
+// engine.prepareCheckout's top-of-entry scrub is removed (both leak their
+// plaintext sentinel onto the wire).
 //
 // The two axes are independent, and a row on one axis does NOT cover the other:
 // rows 1–5 deliver poison by INTEGRATE into a checkout an earlier cycle already
@@ -57,7 +57,7 @@ func TestAdversarialContainment(t *testing.T) {
 	}
 }
 
-// --- Rows 1, 2, 4: git-meta scrub (Task 1 whole-checkout walk) ---------------
+// --- Rows 1, 2, 4: git-meta scrub (whole-checkout walk) ----------------------
 
 func advNestedUnitGitattributes(t *testing.T) {
 	// A .gitattributes INSIDE the unit dir: its `* -filter` would unscope the
@@ -73,7 +73,7 @@ func advNestedUnitGitattributes(t *testing.T) {
 
 func advFolderLevelGitattributes(t *testing.T) {
 	// A .gitattributes one level ABOVE the unit dir — the folder-level hole
-	// mirror-in's unit-scoped scrub cannot see; only Task 1's whole-checkout
+	// mirror-in's unit-scoped scrub cannot see; only the whole-checkout
 	// walk catches it.
 	gitMetaScrubCase(
 		t,
@@ -169,7 +169,7 @@ func gitMetaScrubCase(t *testing.T, mutate func(t *testing.T, dir string), absen
 	assertNoPlaintextOnWire(t, bare, sentinel)
 }
 
-// --- Row 3: root .gitattributes mutation (Task 1 byte-canonical heal) --------
+// --- Row 3: root .gitattributes mutation (byte-canonical heal) --------------
 
 func advRootGitattributesMutation(t *testing.T) {
 	a, b, bare := newTwoMachines(t)

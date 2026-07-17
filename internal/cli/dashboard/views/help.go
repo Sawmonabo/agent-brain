@@ -35,7 +35,7 @@ func (h HelpModel) View() string {
 	for _, scope := range actions.AllScopes() {
 		rows := actions.ForScope(scope)
 		if len(rows) == 0 {
-			continue // no rows land in this scope yet (Browser/Reading/History, Task 11+)
+			continue // defensive: every declared Scope currently has at least one row, but a future scope added to AllScopes before its rows land must not print an empty header
 		}
 		b.WriteString(h.styles.Header.Render(scope.String()))
 		b.WriteString("\n")

@@ -231,7 +231,7 @@ func TestQueryLimit(t *testing.T) {
 }
 
 // TestQueryAcrossFolders pins the ≥2-projects fixture shape the search
-// overlay's own acceptance seed (Task 15) reuses: memories from different
+// overlay's own acceptance seed reuses: memories from different
 // folders are matched independently of folder identity.
 func TestQueryAcrossFolders(t *testing.T) {
 	t.Parallel()

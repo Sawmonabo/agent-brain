@@ -51,7 +51,7 @@ func TestIsEncryptedDiscriminator(t *testing.T) {
 }
 
 // TestDecryptNonMagicReturnsSentinel pins the exported sentinel so downstream
-// callers (the smudge/textconv command in Task 7) can branch on ErrNotEncrypted
+// callers (the smudge/textconv command) can branch on ErrNotEncrypted
 // via errors.Is rather than string-matching.
 func TestDecryptNonMagicReturnsSentinel(t *testing.T) {
 	t.Parallel()

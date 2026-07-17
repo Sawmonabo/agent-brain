@@ -75,7 +75,7 @@ func fakeGhOnPath(t *testing.T) {
 // so .gitattributes exempts itself from its own filter. That is what keeps
 // this fixture latent-safe even before testBinaryPath existed; the fix
 // above closes the margin so a future test that DOES stage a filtered file
-// (e.g. Task 10/11's track/untrack cycles) fails loud instead of
+// (e.g. track/untrack cycles) fails loud instead of
 // fork-bombing if it copies this fixture.
 func provisionHealthyDoctorMachine(t *testing.T) config.Paths {
 	t.Helper()

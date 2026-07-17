@@ -510,7 +510,7 @@ func TestMirrorInRefreshesLedgerOnIdenticalContentTouch(t *testing.T) {
 }
 
 // TestMirrorInSeparatesManifestKeysAcrossRepoSubdirUnits pins the
-// namespace fix that goes with Task 2's RepoSubdir plumbing: two units
+// namespace fix that goes with RepoSubdir plumbing: two units
 // sharing one (folder, provider) but mapped to different RepoSubdirs
 // (the codex memories+chronicle shape, spec §3) must never alias each
 // other's manifest entries. Without RepoSubdir folded into the

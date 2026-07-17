@@ -86,9 +86,10 @@ func TestPaletteEnterWithNoMatchesDoesNothing(t *testing.T) {
 }
 
 // TestPaletteHidesUnavailableActions pins the availability gate: an action
-// with no registered runner (search, until Task 15) must never appear in the
-// palette, even though it is declared in Registry() — the help overlay is
-// the only surface that lists it regardless (TestHelpListsEveryRegisteredAction).
+// the injected available func marks unavailable (search, standing in for
+// any not-yet-wired action) must never appear in the palette, even though it
+// is declared in Registry() — the help overlay is the only surface that
+// lists it regardless (TestHelpListsEveryRegisteredAction).
 func TestPaletteHidesUnavailableActions(t *testing.T) {
 	t.Parallel()
 	available := func(id string) bool { return id != "search" }

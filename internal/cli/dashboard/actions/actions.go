@@ -32,11 +32,11 @@ const (
 	ScopeProjects                           // Projects tab
 	ScopeDoctor                             // Doctor tab
 	ScopeActivity                           // Activity tab
-	ScopeBrowser                            // memory browser (Task 11+)
+	ScopeBrowser                            // memory browser
 	ScopeBrowserPreviewFocused              // memory browser while the preview pane holds keyboard focus
-	ScopeReading                            // reading view (Task 12+)
-	ScopeHistory                            // history view (Task 14+)
-	ScopeInsights                           // project insights screen, pushed from the browser (Task 16+)
+	ScopeReading                            // reading view
+	ScopeHistory                            // history view
+	ScopeInsights                           // project insights screen, pushed from the browser
 	ScopeConflicts                          // conflicts tab
 	ScopeConflictDetail                     // conflict detail screen (pushed from the tab)
 )
@@ -121,7 +121,7 @@ var registry = []Action{
 	// inert in the footer and palette on a build that did not inject them.
 	{ID: "migrate", Title: "migrate", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeProjects, Mutates: true},
 	{ID: "open-browser", Title: "open", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeProjects},
-	// ScopeDoctor rows (Task 19, spec §11/§12): the Doctor tab's own actions.
+	// ScopeDoctor rows (spec §11/§12): the Doctor tab's own actions.
 	// re-run refetches the read-only battery on demand — matched directly by
 	// handleDoctorKey like the Projects/Conflicts cursor rows (no root runner),
 	// so it stays out of the palette. fix runs the quiesce-aware `doctor --fix`
@@ -148,7 +148,7 @@ var registry = []Action{
 	{ID: "open-palette", Title: "palette", Keys: []string{"ctrl+k"}, KeyHint: "ctrl+k", Scope: ScopeGlobal},
 	{ID: "help", Title: "help", Keys: []string{"?"}, KeyHint: "?", Scope: ScopeGlobal},
 	{ID: "quit", Title: "quit", Keys: []string{"q"}, KeyHint: "q", Scope: ScopeGlobal, NeverDrop: true},
-	// update-agent-brain (Task 18, spec §11) surfaces the one-key self-update
+	// update-agent-brain (spec §11) surfaces the one-key self-update
 	// when a newer release is available. NOT Mutates — a binary swap is not a
 	// daemon mutation, so quiesce never refuses it; its live availability is
 	// the root's updatePhase == updateOffered gate (available/paletteAvailable),
@@ -157,13 +157,13 @@ var registry = []Action{
 	// The banner itself is the primary surface; this row keeps the palette/help/
 	// footer honest about the same key.
 	{ID: "update-agent-brain", Title: "update agent-brain", Keys: []string{"U"}, KeyHint: "U", Scope: ScopeGlobal},
-	// ScopeBrowser rows (Task 11 seeded o///esc; Task 12 added enter-to-read):
-	// the memory browser's own in-screen keys, matched directly by
-	// Browser.updateKey — no root-level runner, same as select/switch-tabs.
+	// ScopeBrowser rows: the memory browser's own in-screen keys, matched
+	// directly by Browser.updateKey — no root-level runner, same as
+	// select/switch-tabs.
 	{ID: "browser-read", Title: "read", Keys: []string{"enter"}, KeyHint: "enter", Scope: ScopeBrowser},
 	{ID: "browser-order", Title: "order", Keys: []string{"o"}, KeyHint: "o", Scope: ScopeBrowser},
 	{ID: "browser-filter", Title: "filter", Keys: []string{"/"}, KeyHint: "/", Scope: ScopeBrowser},
-	// Edit-flow rows (Task 13, spec §5): all Mutates — they land provider-
+	// Edit-flow rows (spec §5): all Mutates — they land provider-
 	// file writes — and, like every stack-scope row, runner-less: the views
 	// match the keys directly and emit flow-request messages the root
 	// handles. Their live availability (editor resolves, fact-class
@@ -173,13 +173,13 @@ var registry = []Action{
 	{ID: "browser-new", Title: "new", Keys: []string{"n"}, KeyHint: "n", Scope: ScopeBrowser, Mutates: true},
 	{ID: "browser-rename", Title: "rename", Keys: []string{"r"}, KeyHint: "r", Scope: ScopeBrowser, Mutates: true},
 	{ID: "browser-delete", Title: "delete", Keys: []string{"d"}, KeyHint: "d", Scope: ScopeBrowser, Mutates: true},
-	// history (h) and show-deleted (x) are Task 14 read surfaces, matched
+	// history (h) and show-deleted (x) are read surfaces, matched
 	// directly by Browser.updateKey like read/order/filter — no root runner,
 	// never Mutates. h drills into the selected memory's version history; x
 	// toggles the list into deleted-memory recovery mode (spec §6).
 	{ID: "browser-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeBrowser},
 	{ID: "browser-show-deleted", Title: "show deleted", Keys: []string{"x"}, KeyHint: "x", Scope: ScopeBrowser},
-	// i opens the project insights screen (Task 16, spec §9) — a read surface
+	// i opens the project insights screen (spec §9) — a read surface
 	// matched directly by Browser.updateKey like read/history/show-deleted: no
 	// root runner, never Mutates.
 	{ID: "browser-insights", Title: "insights", Keys: []string{"i"}, KeyHint: "i", Scope: ScopeBrowser},
@@ -255,10 +255,10 @@ var registry = []Action{
 	{ID: "browser-preview-ends", Title: "ends", Keys: []string{"g", "G"}, KeyHint: "g/G", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-copy", Title: "copy", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeBrowserPreviewFocused},
 	{ID: "browser-preview-mouse-capture", Title: "mouse capture", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeBrowserPreviewFocused},
-	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
-	// view's own in-screen keys, matched directly by Reading.updateKey.
-	// h-history is deliberately absent — Task 14 declares that row together
-	// with its screen, so no dead row advertises an unbuilt key.
+	// ScopeReading rows: the reading view's own in-screen keys, matched
+	// directly by Reading.updateKey. h-history is deliberately absent — it is
+	// declared together with the History screen instead, so no dead row
+	// advertises an unbuilt key.
 	// scroll documents the viewport keys (spec §4) in the footer and help; the
 	// viewport's own keymap matches them (readingViewportKeyMap), no root
 	// runner. The wheel reaches the same path: alternate scroll (ADR 21)
@@ -274,12 +274,12 @@ var registry = []Action{
 	// no root runner and never Mutates.
 	{ID: "reading-copy-body", Title: "copy body", Keys: []string{"Y"}, KeyHint: "Y", Scope: ScopeReading},
 	{ID: "reading-edit", Title: "edit", Keys: []string{"e"}, KeyHint: "e", Scope: ScopeReading, Mutates: true},
-	// h drills into the open memory's version history (Task 14), matched
+	// h drills into the open memory's version history, matched
 	// directly by Reading.updateKey — the same key the reading viewport's own
 	// keymap deliberately left unbound for exactly this row.
 	{ID: "reading-history", Title: "history", Keys: []string{"h"}, KeyHint: "h", Scope: ScopeReading},
 	{ID: "reading-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeReading, NeverDrop: true},
-	// ScopeHistory rows (Task 14, spec §6): the version-history screen's own
+	// ScopeHistory rows (spec §6): the version-history screen's own
 	// in-screen keys, matched directly by History.updateKey — no root runner,
 	// like every other stack scope. view/diff/diff-older/back are read
 	// surfaces; restore lands a NEW version (Mutates) through the edit flow's
@@ -290,7 +290,7 @@ var registry = []Action{
 	{ID: "history-diff-older", Title: "diff older", Keys: []string{"D"}, KeyHint: "D", Scope: ScopeHistory},
 	{ID: "history-restore", Title: "restore", Keys: []string{"R"}, KeyHint: "R", Scope: ScopeHistory, Mutates: true},
 	{ID: "history-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeHistory, NeverDrop: true},
-	// ScopeInsights row (Task 16, spec §9): the pushed insights screen scrolls
+	// ScopeInsights row (spec §9): the pushed insights screen scrolls
 	// its stat sections through the reading viewport's own keymap (table-stakes
 	// scroll keys, not registry actions, like every other screen's viewport), so
 	// esc is its only registry row — matched directly by Insights.updateKey, no

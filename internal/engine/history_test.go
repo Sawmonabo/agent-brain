@@ -329,7 +329,7 @@ func TestHistoryRejectsBadInputs(t *testing.T) {
 // TestValidateHistoryInputsWrapsSentinel pins the ErrBadHistoryInput
 // sentinel: every validate-history-inputs failure — a malformed folder, a
 // path escaping the checkout, and a badly-shaped rev — must be
-// errors.Is-detectable, so the daemon (Task 2) can map any of them to a 400
+// errors.Is-detectable, so the daemon can map any of them to a 400
 // without pattern-matching message text. The prefix and specific detail
 // TestHistoryRejectsBadInputs/TestBlobAtRejectsBadRev already pin must
 // survive alongside the sentinel wrap.

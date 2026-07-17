@@ -59,7 +59,7 @@ func TestRecoverIsNoopOnCleanCheckout(t *testing.T) {
 // still present. recoverState must clear the staged entry and leave the
 // worktree file untouched.
 //
-// REVISED for Task 4.6 (deliberate, reviewed semantics change): recoverState
+// REVISED (deliberate, reviewed semantics change): recoverState
 // is no longer a blanket "never touch the worktree" — after the staged-index
 // reset it also RESTORES stray worktree-only deletions from HEAD (the
 // crash-window heal). The safe signature that makes restoration always correct:
@@ -108,7 +108,7 @@ func TestRecoverStateResetsStagedDeletion(t *testing.T) {
 // (git add after editing) and asserts recoverState unstages it while the
 // EDITED bytes stay in the worktree (mirror-in owns reconciling them).
 //
-// REVISED for Task 4.6: the crash-window heal is DELETIONS ONLY — it restores
+// REVISED: the crash-window heal is DELETIONS ONLY — it restores
 // stray worktree deletions from HEAD but never rewinds a worktree
 // MODIFICATION. A modified file is present, not missing, so the heal's
 // `git ls-files --deleted` never lists it; mirror-in legitimately overwrites
@@ -150,11 +150,11 @@ func TestRecoverStateResetsStagedModification(t *testing.T) {
 	}
 }
 
-// TestRecoverStateRestoresStrayWorktreeDeletion is the Task 4.6 heal (the
-// crash-window sibling of Task 4's in-integrate heal). It constructs the
+// TestRecoverStateRestoresStrayWorktreeDeletion is the crash-window heal (the
+// sibling of the in-integrate worktree heal in integrate.go). It constructs the
 // residue a smudge-stranded rebase leaves after git's own --abort restores
 // HEAD and the index but NOT the worktree: a stray UNSTAGED worktree deletion,
-// with no staged component. Task 1's staged-index reset never touches it — the
+// with no staged component. The staged-index reset never touches it — the
 // ` D` (worktree-only) deletion is invisible to `git diff --cached`. recoverState
 // must restore the file from HEAD so the next cycle's commitProjects cannot
 // `git add -A` it into a phantom deletion that mirror-out then propagates
@@ -175,7 +175,7 @@ func TestRecoverStateRestoresStrayWorktreeDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Precondition: the deletion is worktree-only (unstaged) — the exact shape
-	// git's --abort leaves, and the exact shape Task 1's staged reset ignores.
+	// git's --abort leaves, and the exact shape the staged reset ignores.
 	porcelain := mustGit(t, checkout, "status", "--porcelain", "--", rel)
 	if !strings.HasPrefix(porcelain.Stdout, " D") {
 		t.Fatalf("expected an unstaged worktree deletion, got porcelain %q", porcelain.Stdout)
@@ -314,7 +314,7 @@ func TestRecoverStatePropagatesExecutionFailure(t *testing.T) {
 	}
 }
 
-// TestRestoreStrayWorktreeDeletionsPropagatesFailure pins that the Task 4.6
+// TestRestoreStrayWorktreeDeletionsPropagatesFailure pins that the crash-window
 // heal never swallows a git execution failure: a swallowed error would let the
 // cycle proceed past an unhealed stray deletion and re-open the exact
 // data-loss window the heal closes. A canceled context kills the heal's first

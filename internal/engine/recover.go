@@ -61,7 +61,7 @@ func (e *Engine) recoverState(ctx context.Context) error {
 			}
 		}
 		// With the index now equal to HEAD, restore any stray worktree-only
-		// deletion a crash stranded (Task 4.6). This shares the unborn-HEAD
+		// deletion a crash stranded. This shares the unborn-HEAD
 		// guard: an unborn HEAD has no committed path to strand or restore.
 		if err := e.restoreStrayWorktreeDeletions(ctx); err != nil {
 			return err
@@ -71,17 +71,17 @@ func (e *Engine) recoverState(ctx context.Context) error {
 }
 
 // restoreStrayWorktreeDeletions restores every tracked path present in HEAD but
-// missing from the worktree — the crash-window sibling of Task 4's in-integrate
+// missing from the worktree — the crash-window sibling of the in-integrate
 // worktree heal (integrate.go). A degraded integrate's rebase/merge can
 // partial-update the worktree and then smudge-fail on an undecryptable upstream
 // blob; git's own --abort restores HEAD and the index but NOT the worktree,
-// stranding an UNSTAGED deletion. Task 4 heals that on every non-Integrated
+// stranding an UNSTAGED deletion. The in-integrate heal fixes that on every non-Integrated
 // return, but a daemon crash BETWEEN the failed rebase and that heal leaves the
 // stray deletion for the next cycle, where commitProjects' `git add -A` would
 // commit it and mirror-out would propagate a phantom deletion fleet-wide (silent
 // data loss, spec §5/§11).
 //
-// The safe signature (established by Task 4's instrumentation): a legitimate
+// The safe signature: a legitimate
 // memory deletion ONLY ever appears STAGED, as mirror-in's `git rm` in the same
 // cycle; an UNSTAGED (worktree-only) deletion at cycle start is ALWAYS git
 // residue (an interrupted checkout-update, a crash mid-integrate) and never user

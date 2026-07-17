@@ -8,13 +8,13 @@ import (
 )
 
 // TestCrashWindowStrayDeletionDoesNotPropagate is the crash-window
-// characterization for Task 4.6 — the process-death sibling of Task 4's
-// in-integrate worktree heal.
+// characterization for restoreStrayWorktreeDeletions — the process-death
+// sibling of the in-integrate worktree heal.
 //
 // The stranded state: a degraded integrate's rebase/merge partially updates
 // the worktree and then smudge-fails on an undecryptable upstream blob; git's
 // own --abort restores HEAD and the index but NOT the worktree, leaving a
-// stray UNSTAGED deletion. Task 4 heals that on every non-Integrated return,
+// stray UNSTAGED deletion. The in-integrate heal fixes that on every non-Integrated return,
 // but if the daemon CRASHES between the failed rebase and that heal, the stray
 // deletion survives into the next cycle. Pre-fix, recoverState left it,
 // mirror-in's manifest fast-path skipped re-copy (the provider file is
@@ -50,8 +50,8 @@ func TestCrashWindowStrayDeletionDoesNotPropagate(t *testing.T) {
 	if err := os.Remove(filepath.Join(a.checkout, filepath.FromSlash(repoPath))); err != nil {
 		t.Fatal(err)
 	}
-	// The residue MUST be worktree-only (unstaged): Task 1's staged-index reset
-	// does not cover it — only the Task 4.6 heal does. ` D` is the porcelain
+	// The residue MUST be worktree-only (unstaged): the staged-index reset
+	// does not cover it — only the crash-window heal does. ` D` is the porcelain
 	// signature of an unstaged deletion.
 	if status := gitRun(t, a.checkout, "status", "--porcelain", "--", repoPath); !strings.HasPrefix(status, " D") {
 		t.Fatalf("expected an unstaged worktree deletion, got porcelain %q", status)

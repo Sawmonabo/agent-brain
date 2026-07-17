@@ -68,7 +68,7 @@ func (s Status) String() string {
 // Controller is the fake-able surface over the service manager.
 type Controller interface {
 	// Install installs the service. The returned string is a non-fatal
-	// warning (Task 3c: a WSL2 systemd-lingering failure) — never an
+	// warning (a WSL2 systemd-lingering failure) — never an
 	// error condition itself; err is nil (or ErrAlreadyInstalled) exactly
 	// when the underlying install succeeded or was already done.
 	Install() (warning string, err error)
@@ -100,7 +100,7 @@ type Runner interface {
 // lingerTimeout bounds the loginctl subprocess — a local D-Bus/systemd
 // call, never a network one, but a hung system bus must not block
 // Install or Status indefinitely (same rationale as migrate's
-// config.MigrateSettings.PreflightTimeout, Task 3a).
+// config.MigrateSettings.PreflightTimeout).
 const lingerTimeout = 5 * time.Second
 
 // loginctlWaitDelay bounds cleanup after lingerTimeout kills loginctl: a
@@ -169,7 +169,7 @@ func (noopProgram) Stop(kardianos.Service) error  { return nil }
 type kardianosController struct {
 	svc kardianos.Service
 
-	// isWSL2, username, and runner are Task 3c's WSL2-lingering seams —
+	// isWSL2, username, and runner are the WSL2-lingering seams —
 	// production wiring is IsWSL2/currentUsername/execRunner{}; tests
 	// substitute all three so no test ever shells a real loginctl.
 	isWSL2   func() bool
@@ -209,7 +209,7 @@ func NewController(binaryPath string) (Controller, error) {
 }
 
 // Install installs the service and, on WSL2, best-effort enables systemd
-// user lingering (Task 3c) so the resident unit survives past this login
+// user lingering so the resident unit survives past this login
 // session — WSL2 has no display manager or session keyring to do that
 // itself, unlike launchd/native-systemd session management. Linger is
 // attempted whenever the install itself succeeded OR was already done

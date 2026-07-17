@@ -9,7 +9,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// TestUnitInfoTelemetryRoundTrips proves the Task-6.5 per-unit telemetry fields
+// TestUnitInfoTelemetryRoundTrips proves the per-unit telemetry fields
 // (WatchState, WatchTriggers, LastCycle) survive a JSON round-trip intact — the
 // wire contract old and new clients both decode.
 func TestUnitInfoTelemetryRoundTrips(t *testing.T) {
@@ -135,7 +135,7 @@ func TestSyncSummaryOmitsOfflineWhenFalse(t *testing.T) {
 }
 
 // TestHistoryResponseRoundTrip proves the history wire shape survives JSON
-// intact (go-cmp), and that a version with no Host/Timestamp — Task 1's
+// intact (go-cmp), and that a version with no Host/Timestamp — the
 // "not a capture subject" signal, e.g. a foreign non-engine commit —
 // omits both keys from ITS OWN serialized object rather than merely being
 // obscured by a sibling version that does carry them.

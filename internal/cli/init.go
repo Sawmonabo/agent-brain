@@ -21,7 +21,7 @@ const defaultRepoName = "agent-brain-memories"
 // newInitCmd is the first-run onboarding wizard (spec §7; ADRs 04, 08):
 // gh -> repo -> keyset -> wiring -> config -> service -> enrollment ->
 // first sync. Every decision has a flag, so init is fully scriptable
-// (Task 12's testscript drives it with --non-interactive); huh forms
+// (a testscript drives it with --non-interactive); huh forms
 // only ever appear when a decision is undetermined AND interactive —
 // initsteps.go's step functions themselves never touch stdin or a TTY.
 func newInitCmd() *cobra.Command {

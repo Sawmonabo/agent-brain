@@ -324,7 +324,7 @@ func TestDaemonWatchesSyncsAndReports(t *testing.T) {
 		t.Fatalf("projects = %+v", projects)
 	}
 
-	// Per-unit telemetry (Task 6.5) is populated end to end by the same cycle:
+	// Per-unit telemetry is populated end to end by the same cycle:
 	// the enrolled root is watching, the filesystem write that drove the cycle
 	// counted at least one watch trigger, and the last cycle landed ok.
 	reported := projects.Units[0]
@@ -543,7 +543,7 @@ func TestWatcherCoversUnitEnrolledAfterStartup(t *testing.T) {
 // client.Track lands the enrollment through the ONE engine goroutine
 // (projects.toml committed in the checkout, local registry gains the unit),
 // and the post-track cycle rebuilds the watcher so a later touch syncs with
-// no manual trigger (composition with Task 6's rebuild-on-diff).
+// no manual trigger (composition with rebuild-on-diff).
 func TestTrackEnrollsCommitsAndSyncs(t *testing.T) {
 	paths, base := provisionMemories(t)
 	client := startDaemon(t, paths)
@@ -1093,7 +1093,7 @@ func wireHistoryVersions(versions []engine.HistoryVersion) []api.HistoryVersion 
 // real sync cycles so the capture commits carry the engine's own subject
 // convention, then asserts the API's History mirrors what a direct
 // engine.History call against the SAME checkout returns — proving the read
-// funnel (Task 2's submitRead/readRequests) changes nothing about what the
+// funnel (submitRead/readRequests) changes nothing about what the
 // read itself sees, only how it is scheduled.
 func TestHistoryServedThroughReadFunnel(t *testing.T) {
 	paths, unit := newDaemonEnv(t)

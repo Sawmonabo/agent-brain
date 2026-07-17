@@ -140,7 +140,7 @@ func TestClientSyncCarriesProjectFilter(t *testing.T) {
 	if body := <-bodies; !strings.Contains(body, `"project":"alpha"`) {
 		t.Fatalf("filtered sync body = %q, want project filter", body)
 	}
-	// A whole-fleet sync sends no body (nil in), preserving the pre-Task-7 wire.
+	// A whole-fleet sync sends no body (nil in), preserving the original wire format.
 	if _, err := client.Sync(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}

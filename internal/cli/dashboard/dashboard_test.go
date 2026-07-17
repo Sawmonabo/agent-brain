@@ -108,7 +108,7 @@ func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 	return f.conflicts, f.conflictsErr
 }
 
-// History and Blob satisfy the grown DataSource surface (Task 14). Root-level
+// History and Blob satisfy the grown DataSource surface. Root-level
 // tests here drive the restore LAND path directly (RestoreRequestMsg already
 // carries the fetched blob), so these answer empty; the History screen's own
 // suite exercises the read funnel through a dedicated fake.
@@ -2305,10 +2305,9 @@ func browserRegistry(t *testing.T) *provider.Registry {
 // row cannot build a *views.Browser itself (views.ProjectsView has none of
 // Registry/Styles/memoryfs/glamour) — it emits views.OpenFolderMsg, and the
 // root, the only place with all of those, resolves it into an actual Screen
-// and pushes it. This is the seam every later screen's own drill-in
-// (Task 12's Reading, Task 14's History) will reuse. esc then pops the
-// identical round trip back to the Projects tab, proving the stack is not
-// just push-only.
+// and pushes it. This is the seam every later screen's own drill-in (the
+// Reading and History screens) reuses. esc then pops the identical round
+// trip back to the Projects tab, proving the stack is not just push-only.
 func TestEnterOnProjectsPushesBrowser(t *testing.T) {
 	t.Parallel()
 	registry := browserRegistry(t)
@@ -2892,11 +2891,11 @@ func TestStackFooterSwapsToPreviewFocusedSet(t *testing.T) {
 // of the focused-footer wiring. TestStackFooterSwapsToPreviewFocusedSet reads
 // plain(footer), which strips SGR and so cannot tell a lit row from one struck as
 // "advertised dead" — yet a focused footer whose six rows are the ONLY working
-// keys while all render dim+struck is the worst version of the freeze this wave
-// fixes. Every focused row is runner-less and unconditionally available, so all
-// six must render lit; dropping any browser-preview-* ID from available()'s
-// whitelist makes that row render struck (its contiguous lit render vanishes),
-// which this catches at the raw-SGR level across the whole set.
+// keys while all render dim+struck is the worst version of that freeze. Every
+// focused row is runner-less and unconditionally available, so all six must
+// render lit; dropping any browser-preview-* ID from available()'s whitelist
+// makes that row render struck (its contiguous lit render vanishes), which
+// this catches at the raw-SGR level across the whole set.
 func TestStackFooterRendersFocusedPreviewSetLit(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
@@ -3847,7 +3846,7 @@ func TestSlashWhileProjectsModalOpenTypesIntoModalInput(t *testing.T) {
 }
 
 // TestPushHistoryIssuesInitCmdAndForwards pins the stacked-screen async
-// plumbing Task 14 introduces: pushing a History screen issues its InitCmd
+// plumbing behind a pushed History screen: pushing it issues its InitCmd
 // (the version fetch), and the fetch result — a HistoryVersionsMsg the root
 // forwards to the stack top — is adopted by the screen, moving it off its
 // loading notice. The two together are the round trip every stacked async
@@ -3878,7 +3877,7 @@ func TestPushHistoryIssuesInitCmdAndForwards(t *testing.T) {
 	}
 }
 
-// --- Task 18: update banner + one-key self-update + re-exec (spec §11) ---
+// --- update banner + one-key self-update + re-exec (spec §11) ---
 
 // newUpdateModel builds a sized root model wired with the injected update
 // closures, its daemon already reporting ready — the common setup for the
@@ -5533,7 +5532,7 @@ func TestFooterProtectsExitAffordances(t *testing.T) {
 		// The marker stands at the elision point: the line ends with the literal
 		// "… ? · esc back", never "esc back · … ?" (marker past the exit). Asserting the
 		// LITERAL text — not footerOverflowMarker — also pins the marker's spelling, so
-		// regressing the const to "…" (losing the "?" full-truth handoff) reds here (F3).
+		// regressing the const to "…" (losing the "?" full-truth handoff) reds here.
 		if !strings.Contains(printable, "… ? · "+browserExitRow) {
 			t.Errorf("want the literal \"… ?\" at the elision point before the exit; want %q in\nfooter: %s", "… ? · "+browserExitRow, printable)
 		}
@@ -5566,7 +5565,7 @@ func TestFooterProtectsExitAffordances(t *testing.T) {
 			t.Errorf("Projects footer dropped the exit affordance \"q quit\" at width 80; it must never drop\nfooter: %s", printable)
 		}
 		// The literal "… ?" (not footerOverflowMarker) pins the marker text at this seam
-		// too, so a const regression to "…" reds here as well (F3).
+		// too, so a const regression to "…" reds here as well.
 		if !strings.Contains(printable, "… ? · q quit") {
 			t.Errorf("want the literal \"… ?\" at the elision point before \"q quit\"; want %q in\nfooter: %s", "… ? · q quit", printable)
 		}

@@ -198,7 +198,7 @@ func TestNewAPIClientPreChecksSocketPath(t *testing.T) {
 }
 
 // TestSyncProjectFlagSendsFilter proves `sync --project x` reaches the
-// daemon as Task 7's SyncRequest{Project: "x"} body.
+// daemon as a SyncRequest{Project: "x"} body.
 func TestSyncProjectFlagSendsFilter(t *testing.T) {
 	dir, err := os.MkdirTemp("", "ab")
 	if err != nil {

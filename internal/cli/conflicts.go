@@ -70,7 +70,7 @@ func newConflictsShowCmd() *cobra.Command {
 // records in write order and logConflict appends chronologically, so reversing
 // is sufficient — no timestamp parsing/sorting is needed. Newest-first ordering,
 // the limit, and the empty-state message are presentation and live here, not in
-// the shared reader. Only the live log path is read, so a Task 6 `.1` rotation
+// the shared reader. Only the live log path is read, so a `.1` rotation
 // sibling sitting alongside it is automatically tolerated (never touched, never
 // mistaken for the live file).
 func runConflictsList(cmd *cobra.Command, limit int) error {

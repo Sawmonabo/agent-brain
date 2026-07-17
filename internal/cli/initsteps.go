@@ -506,9 +506,9 @@ func stepConfigFile(_ context.Context, state *initState) error {
 // installServiceAndReport, startServiceAndReport, and printServiceStatus
 // (service.go) — the same helpers the standalone `service install`/
 // `service start`/`service status` commands use, so the idempotency
-// branches (service.ErrAlreadyInstalled — Task 3b — and
+// branches (service.ErrAlreadyInstalled and
 // service.ErrAlreadyRunning, both errors.Is), the WSL2 linger warning,
-// and the linger advisory line (Task 3c) live in exactly one place
+// and the linger advisory line live in exactly one place
 // rather than being duplicated here (T3 review fix). The start branch is
 // what makes re-running init against a healthy daemon a no-op instead of
 // dying on launchd's already-loaded EIO.
@@ -533,7 +533,7 @@ func stepService(_ context.Context, state *initState) error {
 
 // stepEnrollment offers every discovered-but-unenrolled memory root for
 // enrollment and submits each accepted one to the daemon via
-// client.Track (Task 7) — the CLI process itself never writes units into
+// client.Track — the CLI process itself never writes units into
 // the local registry or the checkout directly (single-writer invariant,
 // spec §2 / ADR 03). Global-scope providers (codex) group ALL their
 // still-unenrolled roots into ONE picker entry (buildEnrollCandidates):

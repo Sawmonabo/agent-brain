@@ -4,7 +4,7 @@
 // (substring, read lazily via the caller-supplied readBody) — so one engine
 // serves every root view's `/` binding without caring which folder a memory
 // belongs to. It holds no state of its own; the global search overlay
-// (Task 15) re-collects memories fresh and calls Query on each keystroke.
+// re-collects memories fresh and calls Query on each keystroke.
 package search
 
 import (

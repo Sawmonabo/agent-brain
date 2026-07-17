@@ -174,7 +174,7 @@ func (e *Engine) integrate(ctx context.Context) (outcome integrateOutcome, err e
 // and the restorative cleanup must still run. A heal failure is JOINED into the
 // returned error — never swallowed, never masking the original — because
 // proceeding past a failed heal would re-open the exact window this closes.
-// Process death between here and the next cycle stays Task 4.6's cycle-start
+// Process death between here and the next cycle stays recoverState's cycle-start
 // backstop; this closes the in-process paths.
 func (e *Engine) healAfterFailedIntegrate(outcome integrateOutcome, err error) error {
 	if outcome.Integrated {

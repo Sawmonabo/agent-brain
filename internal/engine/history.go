@@ -16,7 +16,7 @@ import (
 
 // History and BlobAt are the data source for spec 01-dashboard-hub-spec.md
 // §6 (history & time-travel): pure git reads over the checkout the engine
-// already owns. The daemon (Task 2) serializes calls onto the engine
+// already owns. The daemon serializes calls onto the engine
 // goroutine so these reads never race the sync writer, but neither
 // function here stages, commits, or writes anything itself — that is the
 // whole point of exposing them as reads.
@@ -40,7 +40,7 @@ var (
 	ErrBlobBinary = errors.New("blob is not valid UTF-8 text")
 	// ErrBadHistoryInput means folder, path, or rev failed shape validation
 	// in validateHistoryInputs before any git subprocess ran. The daemon
-	// (Task 2) maps it to a 400 via errors.Is — the caller named something
+	// maps it to a 400 via errors.Is — the caller named something
 	// malformed, not a server failure — rather than pattern-matching
 	// message text.
 	ErrBadHistoryInput = errors.New("history: invalid input")
@@ -86,7 +86,7 @@ type HistoryVersion struct {
 // identity cannot be read off the log line itself. Any failure from this
 // point on (the log itself, or markLive's resolves) is a genuine
 // infrastructure error and returns as-is — never repackaged, so the daemon
-// (Task 2) can tell it apart from an ordinary empty/not-found outcome.
+// can tell it apart from an ordinary empty/not-found outcome.
 //
 // Folder-wide versions carry their changed Paths and never set Live
 // (Live is a path-mode question: "is THIS path's content live", which is
@@ -213,7 +213,7 @@ func (e *Engine) markLive(ctx context.Context, pathspec string, versions []Histo
 // failure from this point on (the size probe, cat-file --textconv, or its
 // size parse) is a genuine infrastructure error on an object git already
 // confirmed exists, and returns as-is — never repackaged — so the daemon
-// (Task 2) maps it to a 500 rather than blaming the caller.
+// maps it to a 500 rather than blaming the caller.
 func (e *Engine) BlobAt(ctx context.Context, folder, path, rev string) ([]byte, error) {
 	if rev == "" {
 		return nil, fmt.Errorf("history: rev is required")
@@ -255,7 +255,7 @@ func (e *Engine) BlobAt(ctx context.Context, folder, path, rev string) ([]byte, 
 }
 
 // validateHistoryInputs fails closed before any git subprocess sees an
-// argument: folder and path are user-influenced wire inputs (Task 2), and
+// argument: folder and path are user-influenced wire inputs, and
 // pathspecs beginning with "-" or containing ".." must never reach git.
 // rev is checked only when non-empty: History has no rev of its own (it
 // calls in with ""); BlobAt requires one and rejects an empty rev itself

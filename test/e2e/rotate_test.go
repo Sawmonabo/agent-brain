@@ -190,7 +190,7 @@ func TestKeyRotationReencryptsWireFailsClosed(t *testing.T) {
 		t.Fatalf("B provider dir corrupted by a failed smudge: fact1 = %q, want %q", got, rotText1)
 	}
 
-	// Task 4.5: doctor's keyset-decrypt probe is the operator-guidance half
+	// doctor's keyset-decrypt probe is the operator-guidance half
 	// of this exact scenario. checkKeyset only loads the keyset file (which
 	// still succeeds — B's key is stale, not corrupt), so without this probe
 	// doctor reports all-OK while every sync keeps degrading. B's own HEAD
@@ -265,7 +265,7 @@ func TestKeyRotationRecoveryViaKeyImport(t *testing.T) {
 }
 
 // TestKeyRotationDegradeThenRecoverKeepsAllFacts is the characterization test
-// for the degrade->recover data-loss class (plan Task 4, integrate worktree
+// for the degrade->recover data-loss class (the in-integrate worktree
 // heal). It runs the FULL realistic sequence a stale peer takes: a degraded
 // cycle on the old key (which, pre-fix, stranded an uncommitted worktree
 // deletion — a fast-forward rebase deletes the old blob, then cannot smudge the

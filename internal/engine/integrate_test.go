@@ -197,7 +197,7 @@ func TestIntegrateMetaConflictDegradesAll(t *testing.T) {
 	t.Parallel()
 	checkout, bare := newTestCheckout(t)
 	engine := newTestEngine(t, checkout)
-	// .agent-brain/** carries `-merge` (Task 2 attributes): an add/add
+	// .agent-brain/** carries `-merge` (the generated .gitattributes): an add/add
 	// there cannot content-merge, forcing the degrade-all path.
 	notePath := repo.MetaDirName + "/note.txt"
 	commitFileOn(t, checkout, notePath, "ours\n", "meta ours")

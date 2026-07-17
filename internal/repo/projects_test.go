@@ -133,8 +133,8 @@ id = "github.com/sawmonabo/shared"
 	}
 }
 
-// TestProjectsRoundtripDottedFolderName pins the dotted-folder case flagged
-// but not committed by Task 3's review: ValidateFolderName allows dots
+// TestProjectsRoundtripDottedFolderName pins the dotted-folder case:
+// ValidateFolderName allows dots
 // (names_test.go's "Repo.Name"), and go-toml/v2 quotes such a key
 // ([projects.'Repo.Name']) rather than nesting it as three tables. Both
 // the roundtrip and Save's determinism must hold for that quoted form too.

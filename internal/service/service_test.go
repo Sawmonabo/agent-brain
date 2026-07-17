@@ -456,7 +456,7 @@ func TestControllerInstallOnNonWSL2NeverInvokesLoginctl(t *testing.T) {
 }
 
 // TestControllerInstallAlreadyInstalledStillAttemptsLinger proves the
-// idempotent "already installed" path (Task 3b) still best-effort enables
+// idempotent "already installed" path still best-effort enables
 // lingering: a user who installed before this feature existed and reruns
 // `service install` should retroactively get a lingering unit.
 func TestControllerInstallAlreadyInstalledStillAttemptsLinger(t *testing.T) {

@@ -172,8 +172,8 @@ func TestInstallFilters(t *testing.T) {
 
 // TestRunContextCanceled pins the hardening beyond the brief: a done context is
 // surfaced as an error by BOTH Run and RunStatus, never mapped to an exit code.
-// This matters for RunStatus, whose non-zero exit is otherwise DATA (Task 9
-// reads git merge-file's conflict count from ExitCode); a cancellation kill
+// This matters for RunStatus, whose non-zero exit is otherwise DATA (git
+// merge-file's conflict count is read from ExitCode); a cancellation kill
 // must not masquerade as a conflict count of -1.
 func TestRunContextCanceled(t *testing.T) {
 	t.Parallel()

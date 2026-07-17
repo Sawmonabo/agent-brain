@@ -2,7 +2,7 @@
 // frontmatter completeness, dangling wiki-links, staleness, and (for the
 // claude provider) index-drift against MEMORY.md. Lint is advisory only —
 // like scan (internal/cli/scan.go), it never joins SafetyGate and never
-// blocks sync — so the dashboard hub's memory browser (Task 11+) can badge
+// blocks sync — so the dashboard hub's memory browser can badge
 // issues without any mutation path depending on this package. It imports
 // only memoryfs + links + stdlib (package-boundary rule, spec §8): no
 // bubbletea, no lipgloss, no engine/daemon/cli-root.

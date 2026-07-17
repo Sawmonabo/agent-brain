@@ -638,12 +638,12 @@ func checkSecretsScan(_ context.Context, _ Deps) (CheckResult, bool) {
 // when there is no remote-tracking ref yet (e.g. immediately after
 // `init`, before any fetch) — is what makes the check actually see the
 // content the stale keyset cannot open. Confirmed empirically: see
-// test/e2e/rotate_test.go's Task 4.5 assertion, which reproduces this
+// test/e2e/rotate_test.go's assertion, which reproduces this
 // exact freeze/advance split with a real second keyset and a real fetch.
 const probeUpstreamRef = "refs/remotes/origin/main"
 
 // checkKeysetDecrypt is an ADVISORY probe closing the operator-guidance
-// gap key rotation (Task 4) exposed: checkKeyset only loads the keyset
+// gap key rotation exposed: checkKeyset only loads the keyset
 // file, which still succeeds for a keyset that is stale relative to this
 // repo (rotated elsewhere, never imported here) — so without this check,
 // every sync on that machine keeps degrading (per-file fail-closed,

@@ -44,7 +44,7 @@ type PaletteModel struct {
 }
 
 // NewPaletteModel opens a palette scoped by available (hides a row with no
-// registered runner — spec plan Task 5's "invisible everywhere" rule) and
+// registered runner — the spec plan's "invisible everywhere" rule) and
 // quiescedNow (greys, but does not hide, a Mutates row — dispatch still
 // refuses it with a toast if chosen, spec §15). It returns the focus Cmd the
 // embedded text input needs to start its cursor blinking, so a caller never

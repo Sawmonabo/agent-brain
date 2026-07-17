@@ -46,7 +46,8 @@ func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
 
 // Sync triggers a cycle and waits (bounded server-side). A non-empty project
 // filters the cycle to that repo folder; "" is a whole-fleet sync and sends
-// no request body (pre-Task-7 wire).
+// no request body — the original wire format, preserved for backward
+// compatibility now that per-project filtering exists.
 func (c *Client) Sync(ctx context.Context, project string) (SyncResponse, error) {
 	var in any
 	if project != "" {

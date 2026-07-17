@@ -410,7 +410,7 @@ func TestPTYPreviewClickFocusIsDisclosed(t *testing.T) {
 // Both halves ride the SAME post-scroll frame: a line that was below the fold
 // before the notches is now visible (the POSITIVE proof it scrolled — never
 // line-001's absence, the wrong predicate this battery documents at length), AND
-// the focus cue Task 3 draws on a focused pane stays absent while the list-scope
+// the focus cue rendered on a focused pane stays absent while the list-scope
 // footer stays present. Had the wheel focused the pane, the cue would render and
 // the footer would swap to the preview-focused set, dropping "o order" — so
 // asserting both on one snapshot is exactly "the wheel scrolled AND left the keys

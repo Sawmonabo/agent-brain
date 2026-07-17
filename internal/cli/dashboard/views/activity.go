@@ -12,16 +12,16 @@ import (
 )
 
 // ActivityView renders the daemon status snapshot (spec §7): uptime, state
-// detail, quiesced-until (Task 2), the fleet watch-trigger total, and the
+// detail, quiesced-until, the fleet watch-trigger total, and the
 // last SyncSummary. It holds no state of its own beyond its styles — the
 // daemon status and the unit list are owned by the root model and passed in
 // at render.
 //
 // The fleet's watch-trigger count (spec §7's "watch trigger counts") is the
-// MAX of the per-unit WatchTriggers the Projects payload now carries (Task
-// 6.5) — the raw trigger count, since triggers are fleet-global (the WHY is
-// at the call site) — so the units are passed in at render, still zero new
-// daemon endpoints.
+// MAX of the per-unit WatchTriggers the Projects payload carries — the raw
+// trigger count, since triggers are fleet-global (the WHY is at the call
+// site) — so the units are passed in at render, still zero new daemon
+// endpoints.
 type ActivityView struct {
 	styles theme.Styles
 

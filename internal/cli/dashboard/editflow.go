@@ -263,7 +263,7 @@ func (m *Model) refuseFlowStart() bool {
 	}
 	if m.updatePhase == updateConfirm || m.updatePhase == updateApplying {
 		// An update confirm/apply owns the interaction the same way the chrome
-		// above does (Task 18): a flow-request message that raced in — the same
+		// above does: a flow-request message that raced in — the same
 		// no-ordering-guarantee class this gate exists for — must not open a
 		// modal underneath the confirm, nor start an editor handoff mid-swap.
 		m.pushToast("an update is in progress — finish it first")

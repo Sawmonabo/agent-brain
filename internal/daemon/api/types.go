@@ -144,16 +144,16 @@ type ReencryptResponse struct {
 }
 
 // UnitInfo is one enrolled (provider, dir) pair and its health. The telemetry
-// fields (WatchState, WatchTriggers, LastCycle) are strictly additive (Task 6.5)
-// and all omitempty: a daemon that has not populated them yet, or an old client,
-// is unaffected — the payload is byte-identical to before when they are unset.
+// fields (WatchState, WatchTriggers, LastCycle) are strictly additive and all
+// omitempty: a daemon that has not populated them yet, or an old client, is
+// unaffected — the payload is byte-identical to before when they are unset.
 type UnitInfo struct {
 	Provider string `json:"provider"`
 	Folder   string `json:"folder"`
 	LocalDir string `json:"local_dir"`
 	// RepoSubdir mirrors repo.Unit.RepoSubdir — the hub needs it to map this
 	// unit's local file to its repo path (<provider>/<repo_subdir>/<file>).
-	// Additive (Task-Phase-5): empty for every unit enrolled before this
+	// Additive: empty for every unit enrolled before this
 	// field existed, so a pre-change payload is byte-identical.
 	RepoSubdir string `json:"repo_subdir,omitempty"`
 	Degraded   bool   `json:"degraded"`
@@ -191,7 +191,7 @@ type ProjectsResponse struct {
 }
 
 // HistoryVersion is one commit touching the queried folder/path, newest
-// first (spec §6). It mirrors engine.HistoryVersion (Task 1) with one
+// first (spec §6). It mirrors engine.HistoryVersion with one
 // deliberate wire-shape difference: Timestamp is a *time.Time, omitempty,
 // nil meaning "not a capture subject" — the engine's own HistoryVersion
 // instead carries a zero time.Time for that same case, which would encode

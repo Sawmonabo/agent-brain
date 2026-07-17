@@ -105,8 +105,8 @@ func newServiceCmd() *cobra.Command {
 // installServiceAndReport installs the service and prints the outcome —
 // the idempotency branch (a second install against an already-installed
 // unit, service.ErrAlreadyInstalled matched with errors.Is, never a
-// string match, Task 3b), the ok/nothing-to-do message, and any non-fatal
-// WSL2 linger warning (Task 3c) all live here ONCE: runServiceInstall
+// string match), the ok/nothing-to-do message, and any non-fatal
+// WSL2 linger warning all live here ONCE: runServiceInstall
 // (the standalone `service install` command) and stepService (init's own
 // service step, internal/cli/initsteps.go) both delegate to this rather
 // than hand-rolling the same three branches (T3 review fix). A genuine
@@ -210,7 +210,7 @@ func runServiceStop(out io.Writer, controller service.Controller) error {
 }
 
 // printServiceStatus writes the plain status line plus, on WSL2, the
-// systemd user-lingering advisory line (Task 3c) — runServiceStatus (the
+// systemd user-lingering advisory line — runServiceStatus (the
 // standalone `service status` command) and stepService (init's own
 // service step) both delegate to this rather than hand-rolling the same
 // linger-line branch (T3 review fix). LingerStatus returns "" when there

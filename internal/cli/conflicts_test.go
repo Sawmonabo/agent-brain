@@ -131,7 +131,7 @@ func TestConflictsListEmptyState(t *testing.T) {
 	}
 }
 
-// TestConflictsListToleratesRotationSibling proves Task 6's mid-run 5 MiB
+// TestConflictsListToleratesRotationSibling proves the mid-run 5 MiB
 // rotation (a .1 generation sibling of conflicts.jsonl) never breaks the
 // reader — it must keep reading the live file cleanly.
 func TestConflictsListToleratesRotationSibling(t *testing.T) {

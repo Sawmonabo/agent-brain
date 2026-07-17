@@ -27,7 +27,7 @@ import (
 // ProjectsView is the enrolled-fleet table (spec §7). Its columns are
 // genuinely per-unit — provider · folder · health · watch · last-cycle —
 // with an optional local-dir column on a roomy terminal. Watch state and
-// last-cycle are the per-unit telemetry Task 6.5 added to api.UnitInfo; they
+// last-cycle are the per-unit telemetry api.UnitInfo carries; they
 // are real per-row signals now. Fleet-level posture the API cannot break
 // down per unit (daemon state, quiesce) stays once in the root's persistent
 // status header, never fabricated down every identical row.

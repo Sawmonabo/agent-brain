@@ -48,7 +48,7 @@ type DataSource interface {
 	Doctor(context.Context) (doctor.Report, error)
 	Conflicts() ([]config.ConflictRecord, error)
 	// History and Blob are the read-only version surfaces the History screen
-	// (Task 14) drills into, served through the daemon's read funnel (ADR 20
+	// drills into, served through the daemon's read funnel (ADR 20
 	// D3), never a mutation path. They live on the full DataSource — not only
 	// the narrower HistoryDataSource the History screen consumes — so the
 	// root's own m.data value (statically typed DataSource) satisfies that

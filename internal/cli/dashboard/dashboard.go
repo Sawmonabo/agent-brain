@@ -141,7 +141,7 @@ func (t *toast) expired(now time.Time) bool {
 	return !t.visibleSince.IsZero() && !now.Before(t.visibleSince.Add(toastTTL))
 }
 
-// updatePhase is the update banner's lifecycle (spec §11, Task 18). It advances
+// updatePhase is the update banner's lifecycle (spec §11). It advances
 // strictly forward on user action: an available release is OFFERED (banner: "U
 // to update"), U opens the CONFIRM footer prompt, y starts APPLYING (the binary
 // swap + daemon restart are in flight; every key but ctrl+c is frozen), and a
@@ -187,7 +187,7 @@ type Config struct {
 	MigratePreflight func(context.Context) error
 	// Registry is the shared provider registry (buildTrackDeps().registry in
 	// the cli command) — memoryfs classification needs it to resolve each
-	// enrolled unit's pattern table (Task 6).
+	// enrolled unit's pattern table.
 	Registry *provider.Registry
 	// Settings is the loaded config.toml (cli's own loadDashboardSettings,
 	// independent of buildTrackDeps — the cli root command composes it at
@@ -202,9 +202,9 @@ type Config struct {
 	// "" falls back to os.UserCacheDir() itself inside editorx.
 	CacheRoot string
 	// Version is the build's own version string (cli.Version), rendered in the
-	// Projects fleet header (spec §9). The "vs latest" comparison joins in Task
-	// 18 once the release check exists; until then this is shown plain, no
-	// placeholder. Empty in tests that do not set it.
+	// Projects fleet header (spec §9), shown plain with no placeholder — the
+	// "vs latest" comparison lives in the status header's update banner
+	// (updateBanner) instead, not here. Empty in tests that do not set it.
 	Version string
 	// CheckUpdate returns the newer release tag ("v2.1.0"), "" when the running
 	// binary is current, or an error the hub SWALLOWS — the update banner is
@@ -290,8 +290,8 @@ type Model struct {
 
 	// stack is the drill-in navigation stack (spec §2): empty on every tab
 	// view, one level after Projects' enter-to-browse, one more per reading
-	// view a link jump pushes, deeper again once Task 14 (History) lands
-	// its own push. Every mutation flows through pushScreen/popScreen/
+	// view a link jump pushes, deeper again when the History screen pushes
+	// its own. Every mutation flows through pushScreen/popScreen/
 	// replaceStackTop — see withStack's doc for why none of the three ever
 	// writes into a shared backing array in place.
 	stack []views.Screen
@@ -357,7 +357,7 @@ type Model struct {
 	// one place that drops it once the overlay latches Closed.
 	searchOverlay *views.SearchOverlay
 
-	// Update banner + self-update state (spec §11, Task 18). checkUpdate/
+	// Update banner + self-update state (spec §11). checkUpdate/
 	// applyUpdate are the cli-injected closures (nil in tests that do not wire
 	// them, which simply never surfaces a banner — the best-effort posture).
 	// updateCheckFired guards the at-most-once CheckUpdate, flipped true the
@@ -386,8 +386,11 @@ type Model struct {
 	// — cleared only by a gh probe that succeeds (a passing doctor gh row, or the
 	// re-auth handoff's re-probe), never by time, since an invalid token stays
 	// invalid until a human re-auths. reauthGH/probeGHAuth are the Config closures
-	// the Doctor tab's f uses to run the handoff and re-probe; nil disables the
-	// handoff (f then runs the standard doctor --fix for every failure).
+	// the Doctor tab's f uses to run the handoff and re-probe; nil reauthGH
+	// disables the handoff (f then runs the standard doctor --fix for every
+	// failure). nil probeGHAuth does NOT disable the handoff — only the
+	// post-handoff verification, which then reports an honest "unavailable"
+	// rather than falsely clearing the attention.
 	authInvalid bool
 	reauthGH    func() *exec.Cmd
 	probeGHAuth func(context.Context) error
@@ -600,8 +603,8 @@ func (m Model) reloadCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity's fleet watch-trigger total is the max of the per-unit WatchTriggers
-		// (Task 6.5), so it needs the projects payload alongside the status above.
+		// Activity's fleet watch-trigger total is the max of the per-unit
+		// WatchTriggers, so it needs the projects payload alongside the status above.
 		cmds = append(cmds, m.projectsCmd())
 	}
 	return tea.Batch(cmds...)
@@ -623,8 +626,8 @@ func (m Model) switchCmd() tea.Cmd {
 	case tabDoctor:
 		cmds = append(cmds, m.doctorCmd())
 	case tabActivity:
-		// Activity's fleet watch-trigger total is the max of the per-unit WatchTriggers
-		// (Task 6.5), so fetch the projects payload on arrival too, not just status.
+		// Activity's fleet watch-trigger total is the max of the per-unit
+		// WatchTriggers, so fetch the projects payload on arrival too, not just status.
 		cmds = append(cmds, m.projectsCmd())
 	}
 	return tea.Batch(cmds...)
@@ -1937,9 +1940,9 @@ func fitAndFillHeight(body string, exact int) string {
 // honesty rule: the user must see that e exists and learn why it is dead
 // (the toast on pressing it says), never wonder whether the key exists at
 // all. Contrast the tab footer (footerBindingSegments), which HIDES an
-// unavailable row: at tab level "unavailable" means not-built-yet (search
-// until Task 15) or unwired (add without closures) — surfaces where a struck
-// row would advertise something that may never work on this build — while a
+// unavailable row: at tab level "unavailable" means unwired (e.g. add
+// without its Discover/Identify closures) — a surface where a struck row
+// would advertise something that may never work on this build — while a
 // stack row's gates (editor resolution, selection class, an active handoff,
 // quiesce) are all live, momentary state worth explaining.
 // protected mirrors the action's registry NeverDrop flag: an exit affordance
@@ -2071,9 +2074,13 @@ func (m Model) fitFooterLine(cue string, segments []footerSegment) string {
 // caller) — the full line is returned rather than collapsed, since fitting to a
 // zero width would drop everything. The fitter drops rows until the line fits OR
 // only the never-drop content remains (the cue, the protected segments, and the
-// marker); at that degenerate floor the line may exceed width, because hiding a
-// state cue or an exit affordance to satisfy a sub-40-column terminal — out of the
-// design envelope — would be the worse lie (Decision 10).
+// marker); at that degenerate floor the line may exceed width: up to 49 printable
+// columns in the browser's list scope with the mouse-capture cue lit (terminals as
+// wide as 41–48 columns still hit it), 14 with the cue off; the preview-focused
+// scope's cue-off/cue-on floors are 18/53, though 53 is effectively unreachable —
+// the preview pane itself needs 100+ columns before tab can focus it at all.
+// Hiding a state cue or an exit affordance to fit a narrow terminal, out of the
+// design envelope, would be the worse lie (Decision 10).
 func fitFooterSegments(cue string, segments []footerSegment, separator, marker string, width int) string {
 	droppable := 0
 	for _, segment := range segments {
@@ -2724,7 +2731,7 @@ func (m Model) activeScope() actions.Scope {
 
 // statusHeader renders the fleet-level facts once, persistently above the tab
 // bar, so daemon posture is glanceable from every view. Projects rows carry the
-// genuine per-unit telemetry (watch state, last cycle — Task 6.5); the header
+// genuine per-unit telemetry (watch state, last cycle); the header
 // keeps only what is fleet-wide and cannot be broken down per unit (daemon
 // state, quiesce, the last fleet cycle), never repeated down every identical row.
 func (m Model) statusHeader() string {
@@ -2810,8 +2817,8 @@ func watchState(status api.StatusResponse, now time.Time) string {
 // and watching tally read the current fleet snapshot; the outcome reuses
 // lastCycle — the exact verdict the status header shows — with the cycle's
 // relative age appended when there has been one; the version is the build's own
-// (Config.Version). The "vs latest" comparison joins in Task 18 once the release
-// check exists; until then the version is shown plain, with no placeholder.
+// (Config.Version), shown plain with no placeholder — the "vs latest" comparison
+// lives in the status header's update banner (updateBanner) instead, not here.
 func (m Model) fleetHeaderLine() string {
 	units := m.projects.Units
 	total := len(units)

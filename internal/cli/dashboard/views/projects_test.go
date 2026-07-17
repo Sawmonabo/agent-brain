@@ -97,7 +97,7 @@ func (f *fakeData) Conflicts() ([]config.ConflictRecord, error) {
 	return f.conflicts, f.conflictsErr
 }
 
-// History and Blob satisfy the grown DataSource surface (Task 14). The
+// History and Blob satisfy the grown DataSource surface. The
 // ProjectsView tests this fake serves never drill into version history, so
 // they answer empty — the History screen's own suite injects a dedicated
 // HistoryDataSource fake instead.
@@ -329,8 +329,8 @@ func TestProjectsTableRenders(t *testing.T) {
 	data := &fakeData{status: readyStatus(), projects: twoUnits()}
 	view := loadedProjectsView(data)
 
-	// The table carries per-unit columns, now including the genuine per-unit
-	// watch state and last-cycle the API serves (Task 6.5): claude/agent-brain is
+	// The table carries per-unit columns, including the genuine per-unit
+	// watch state and last-cycle the API serves: claude/agent-brain is
 	// watching + ok, codex/_global is a failed watch + degraded.
 	table := plain(view.View(""))
 	for _, want := range []string{

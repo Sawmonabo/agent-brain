@@ -46,7 +46,7 @@ func TestValidateGlob(t *testing.T) {
 	// Rejections fail fast at construction, not silently at match time.
 	// Whitespace / '#' / leading '!' / empty would corrupt or invert the
 	// generated .gitattributes lines this glob eventually becomes
-	// (Task 2's repo.GenerateAttributes) — the same table drives both.
+	// (repo.GenerateAttributes) — the same table drives both.
 	// Empty segments (leading/trailing/doubled '/') would do the same.
 	invalid := []string{"bad[range.md", "has space.md", "has\ttab.md", "#comment.md", "!negated.md", "", "a/", "/a", "a//b"}
 	for _, glob := range invalid {

@@ -134,7 +134,7 @@ func TestRebuildWatcherBuildFailureFallsBackToBackstop(t *testing.T) {
 	}
 }
 
-// TestRebuildWatcherRecordsWatchState pins the WatchState capture (Task 6.5): a
+// TestRebuildWatcherRecordsWatchState pins the WatchState capture: a
 // healthy build records "watching" for every attached root, and a build failure
 // records a "failed:…" state whose wording conveys the ticker/poll backstop
 // still covers the unit — the daemon logs-and-continues, and the per-unit column

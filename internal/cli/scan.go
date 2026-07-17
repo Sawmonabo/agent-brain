@@ -30,7 +30,7 @@ import (
 // reduction (the wire is ciphertext regardless of what gitleaks would
 // find). On-demand `scan` plus doctor's advisory secrets-scan check
 // (internal/doctor/checks.go) is the right cost/benefit for a single-user
-// tool (design brief, Task 5's decided non-goal).
+// tool (a decided non-goal per the design brief).
 
 // errGitleaksMissing names the fix — mirrors ghx.ErrMissing's shape
 // (internal/ghx/ghx.go) for the same reason: a missing external dependency
@@ -160,7 +160,7 @@ type scanFinding struct {
 // ever reaches this process. Every other field (RuleID, File, StartLine,
 // Fingerprint, ...) survives untouched, which is all `agent-brain scan`
 // needs to locate and rotate a finding. This is the Q2 review's binding
-// adjudication on Task 5's flagged judgment call (p4-task-5-review.md): a
+// adjudication on the flagged judgment call (p4-task-5-review.md): a
 // scan command's own `--json` output is exactly the kind of persistent sink
 // (redirected file, CI log, terminal scrollback) this feature exists to
 // keep secrets out of, so redaction is the default, gated off only by the

@@ -135,7 +135,7 @@ type Daemon struct {
 	stateDetail string
 	lastSync    *api.SyncSummary
 	degraded    map[string]bool
-	// Per-unit telemetry (Task 6.5), all read under d.mu and projected onto
+	// Per-unit telemetry, all read under d.mu and projected onto
 	// units by Projects(). watchState/watchTriggers are keyed by root (LocalDir)
 	// — the watcher attaches roots, not units; lastCycle is keyed by folder — a
 	// cycle degrades folders and errors whole-fleet. watchState is replaced
@@ -455,7 +455,7 @@ type liveWatcher struct {
 // watchCtx.Err() — a rebuild must never masquerade as a death, or the
 // loop would rebuild in a tight cycle.
 // recordWatch is passed d.setWatchStates so rebuildWatcher can report each root's
-// posture (Task 6.5) at the one site that knows whether the watch attached — a
+// posture at the one site that knows whether the watch attached — a
 // pure func seam keeps rebuildWatcher testable without a live Daemon.
 func rebuildWatcher(ctx context.Context, cfg watch.Config, old *liveWatcher, roots []string, watchDied chan<- error, logger *slog.Logger, recordWatch func(map[string]string)) *liveWatcher {
 	if old != nil {
@@ -752,7 +752,7 @@ func hostname() string {
 	return name
 }
 
-// --- controller implementation (Task 10 interface) ---
+// --- controller implementation ---
 
 // Status implements controller. QuiescedUntil is reported only while a hold
 // is genuinely active (deadline in the future) — an expired deadline reads as
@@ -1181,8 +1181,8 @@ func mapHistoryError(err error) error {
 	}
 }
 
-// toHistoryResponse projects engine.HistoryVersion (Task 1) onto the wire
-// shape: Timestamp is *time.Time, nil when Stamp is zero (Task 1's "not a
+// toHistoryResponse projects engine.HistoryVersion onto the wire
+// shape: Timestamp is *time.Time, nil when Stamp is zero ("not a
 // capture subject" signal), rather than encoding the misleading literal
 // "0001-01-01T00:00:00Z". A nil versions input (no history) still yields a
 // non-nil, empty Versions slice, matching Projects()'s same

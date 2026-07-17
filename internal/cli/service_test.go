@@ -129,7 +129,7 @@ func TestInstallServiceAndReportHardFailurePrintsNothing(t *testing.T) {
 }
 
 // TestInstallServiceAndReportPrintsWarningAfterMessage proves a non-empty
-// warning (Task 3c: a WSL2 linger failure) is printed after the success
+// warning (a WSL2 linger failure) is printed after the success
 // line, never instead of it.
 func TestInstallServiceAndReportPrintsWarningAfterMessage(t *testing.T) {
 	t.Parallel()
@@ -146,7 +146,7 @@ func TestInstallServiceAndReportPrintsWarningAfterMessage(t *testing.T) {
 }
 
 // TestPrintServiceStatusPrintsLingerLine proves the status line plus, on
-// WSL2, the linger advisory (Task 3c) print together.
+// WSL2, the linger advisory print together.
 func TestPrintServiceStatusPrintsLingerLine(t *testing.T) {
 	t.Parallel()
 	controller := &fakeServiceController{lingerStatus: "linger: enabled (service will survive logout)"}
@@ -356,7 +356,7 @@ func TestRunServiceInstallPropagatesRealErrors(t *testing.T) {
 // --- 3c: WSL2 systemd lingering ---
 
 // TestRunServiceInstallPrintsLingerWarning proves a non-empty warning
-// from Install (Task 3c: a WSL2 enable-linger failure) is printed after
+// from Install (a WSL2 enable-linger failure) is printed after
 // the success line — informational only, never turns a successful
 // install into a failing command.
 func TestRunServiceInstallPrintsLingerWarning(t *testing.T) {
@@ -489,7 +489,7 @@ func TestServiceLogsMissingFile(t *testing.T) {
 }
 
 // TestServiceLogsNotesRotationSibling proves the trailer names the .1
-// rotation generation when Task 6's mid-run rotation has produced one.
+// rotation generation when the mid-run rotation has produced one.
 func TestServiceLogsNotesRotationSibling(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("AGENT_BRAIN_CONFIG_DIR", t.TempDir())

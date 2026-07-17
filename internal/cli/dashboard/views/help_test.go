@@ -9,10 +9,11 @@ import (
 )
 
 // TestHelpListsEveryRegisteredAction pins that the ? overlay is a static,
-// unconditional render of actions.Registry() — every Title appears, INCLUDING
-// rows with no runner registered yet (search, until Task 15): the help
-// overlay is documentation of the eventual surface, unlike the footer and
-// palette which hide what does not work yet.
+// unconditional render of actions.Registry() — every Title appears, including
+// rows with no root-level runner (search and help itself are dispatched
+// directly rather than through the runners() map): the help overlay documents
+// the full action surface, unlike the footer and palette which hide a row
+// that available(id) marks unavailable.
 func TestHelpListsEveryRegisteredAction(t *testing.T) {
 	t.Parallel()
 	help := NewHelpModel(theme.Default(true))

@@ -171,16 +171,15 @@ func TestBindingWithNoKeysIsDisabled(t *testing.T) {
 	}
 }
 
-// TestSeedRegistryShape pins the seed rows Task 5 introduced: stable IDs
-// every later task and the root's dispatch/available/runners keys off of,
-// plus the two rows that task deliberately left inert at the time
-// (sync-fleet has no direct key; search's key was reserved ahead of the
-// overlay that now dispatches it — this test only pins the shape the
-// registry declares, not availability, which is root-private). Later tasks
-// append their own rows as their screens land
-// (spec plan) — TestBrowserRegistryRowsShape below pins Task 11's — so this
-// only asserts Task 5's rows are present with the right shape, not that
-// they are the registry's entire contents.
+// TestSeedRegistryShape pins the original seed rows: stable IDs the root's
+// dispatch/available/runners key off of, plus the two rows deliberately left
+// inert at the time (sync-fleet has no direct key; search's key was reserved
+// ahead of the overlay that now dispatches it — this test only pins the shape
+// the registry declares, not availability, which is root-private). Later
+// screens append their own rows as they land (spec plan) —
+// TestBrowserRegistryRowsShape below pins the memory browser's — so this only
+// asserts these seed rows are present with the right shape, not that they are
+// the registry's entire contents.
 func TestSeedRegistryShape(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -264,7 +263,7 @@ func TestNeverDropFlagsExactlyExitAffordances(t *testing.T) {
 	}
 }
 
-// TestUpdateRegistryRowShape pins Task 18's registry addition (spec §11): the
+// TestUpdateRegistryRowShape pins the registry addition (spec §11): the
 // global update-agent-brain row. NOT Mutates — a self-update is not a daemon
 // mutation, so quiesce never refuses it — and, like help/search, it carries no
 // runner (the root dispatches it directly into the confirm prompt). Its live
@@ -297,12 +296,13 @@ func TestUpdateRegistryRowShape(t *testing.T) {
 	}
 }
 
-// TestBrowserRegistryRowsShape pins Task 11's own registry additions: the
-// Projects tab's entry point into the memory browser (open-browser) and the
-// browser's own in-screen keys (ScopeBrowser). None Mutates, and none has a
-// root-level runner — they are handled by direct view-level key routing,
-// the same "select"/"switch-tabs" discipline Task 5 established — so they
-// are footer/help-only and correctly absent from the palette
+// TestBrowserRegistryRowsShape pins the memory browser's own registry
+// additions: the Projects tab's entry point into the memory browser
+// (open-browser) and the browser's own in-screen keys (ScopeBrowser). None
+// Mutates, and none has a root-level runner — they are handled by direct
+// view-level key routing, the same "select"/"switch-tabs" discipline the
+// seed rows established — so they are footer/help-only and correctly absent
+// from the palette
 // (TestPaletteListsOnlyDispatchableActions, in the dashboard package, pins
 // that half; this test only pins the declared shape).
 func TestBrowserRegistryRowsShape(t *testing.T) {
@@ -347,13 +347,14 @@ func TestBrowserRegistryRowsShape(t *testing.T) {
 	}
 }
 
-// TestReadingRegistryRowsShape pins Task 12's registry additions (plus the
-// later reading-scroll row, ADR 21): the browser's enter-to-read row and the
-// reading view's own in-screen keys (ScopeReading). Same discipline as the
-// browser rows above: none Mutates, none has a root-level runner (direct
-// view-level key routing), so they are footer/help-only and absent from the
-// palette. h-history is deliberately NOT here — Task 14 registers that row
-// together with its screen; the edit flow's own rows (e/n/r/d, all Mutates)
+// TestReadingRegistryRowsShape pins the reading view's registry additions
+// (plus the later reading-scroll row, ADR 21): the browser's enter-to-read
+// row and the reading view's own in-screen keys (ScopeReading). Same
+// discipline as the browser rows above: none Mutates, none has a root-level
+// runner (direct view-level key routing), so they are footer/help-only and
+// absent from the palette. h-history is deliberately NOT here — the History
+// screen registers that row together with its own screen; the edit flow's
+// own rows (e/n/r/d, all Mutates)
 // are pinned separately by TestFlowRegistryRowsShape below.
 func TestReadingRegistryRowsShape(t *testing.T) {
 	t.Parallel()
@@ -417,8 +418,8 @@ func TestReadingScrollLeadsReadingScope(t *testing.T) {
 	}
 }
 
-// TestFlowRegistryRowsShape pins Task 13's registry additions: the edit
-// flow's mutation keys in the browser (e/n/r/d) and the reading view's e.
+// TestFlowRegistryRowsShape pins the edit flow's registry additions: the
+// mutation keys in the browser (e/n/r/d) and the reading view's e.
 // All Mutates — they land provider-file writes — which is what makes the
 // stack footer grey them while the daemon is quiesced (spec §15). Like
 // every other stack-scope row they have no root-level runner: the views
@@ -465,7 +466,7 @@ func TestFlowRegistryRowsShape(t *testing.T) {
 	}
 }
 
-// TestDoctorRegistryRowsShape pins Task 19's registry additions (spec §11/§12):
+// TestDoctorRegistryRowsShape pins the registry additions (spec §11/§12):
 // the Doctor tab's r/f/s actions. The Mutates flags are the load-bearing part —
 // doctor-fix quiesces the daemon, so it MUST be Mutates (greyed and refused
 // while quiesced); re-run (a read-only refetch) and scan (an advisory sweep
@@ -511,7 +512,7 @@ func TestDoctorRegistryRowsShape(t *testing.T) {
 	}
 }
 
-// TestBrowserPreviewFocusedRegistryRowsShape pins this wave's ScopeBrowserPreviewFocused
+// TestBrowserPreviewFocusedRegistryRowsShape pins the ScopeBrowserPreviewFocused
 // rows: the footer set the browser swaps to while the preview pane holds keyboard
 // focus (dashboard.go's stackFooterRows consults Browser.PreviewFocused()). Each
 // row re-uses a key ScopeBrowser also binds under a different ID — legal because
@@ -584,9 +585,9 @@ func TestBrowserPreviewFocusedReturnLeadsScope(t *testing.T) {
 	}
 }
 
-// TestScrollRegistryRowsShape pins this wave's registry additions: the bounded
+// TestScrollRegistryRowsShape pins the registry additions for the bounded
 // tab bodies' scroll rows — doctor-scroll in the Doctor scope and activity-scroll
-// in the new Activity scope. Both carry exactly the half/full-page keys (g/G are
+// in the Activity scope. Both carry exactly the half/full-page keys (g/G are
 // table-stakes viewport keys handled directly, off the registry), never Mutates
 // (a scroll touches no daemon state, so a quiesce must not refuse it), and have
 // no root runner — routed straight to the pane's own keymap in the root's
@@ -632,7 +633,7 @@ func TestScrollRegistryRowsShape(t *testing.T) {
 	}
 }
 
-// TestMouseCaptureToggleRegistryRowShape pins this wave's mouse-capture toggle
+// TestMouseCaptureToggleRegistryRowShape pins the mouse-capture toggle
 // row: the browser's m, which disarms the preview pane's cell-motion mouse
 // capture so the terminal's own drag-select works — capture is terminal-global
 // (scoped capture is not expressible), so a runtime switch that turns it off

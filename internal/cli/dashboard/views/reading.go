@@ -167,8 +167,8 @@ func NewReading(deps ReadingDeps) *Reading {
 // own defaults would swallow reading-view keys: b (its page-up) is the
 // backlinks toggle, u/d (half page) shadow future bindings, f/space page
 // keys and h/l horizontal scrolling serve no purpose in a render already
-// wrapped to the viewport width — h in particular is history's reserved key
-// (Task 14). Keyless bindings never match (bubbles' Enabled contract), so
+// wrapped to the viewport width — h in particular is history's reserved key.
+// Keyless bindings never match (bubbles' Enabled contract), so
 // Left/Right are disabled outright. g/G are handled by Reading.updateKey
 // directly: the viewport has GotoTop/GotoBottom methods but no bindings for
 // them.

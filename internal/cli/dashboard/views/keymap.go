@@ -44,10 +44,10 @@ type DashboardKeymap struct {
 	Open keybinding.Binding
 	Quit keybinding.Binding
 	// Browser* bindings own the keyboard while a memory browser Screen is
-	// on the root's navigation stack (Task 11+); Select above is reused
+	// on the root's navigation stack; Select above is reused
 	// verbatim for its list cursor, the same cross-context reuse ForModal
-	// already applies to the add picker. Edit/New/Rename/Delete (Task 13,
-	// spec §5) only EMIT flow-request messages — every gate and modal is
+	// already applies to the add picker. Edit/New/Rename/Delete (spec §5)
+	// only EMIT flow-request messages — every gate and modal is
 	// the root's — and stay typable literals while the in-browser filter
 	// owns input focus (updateFiltering forwards them to the text input
 	// before these bindings are ever matched).
@@ -60,7 +60,7 @@ type DashboardKeymap struct {
 	BrowserDelete      keybinding.Binding
 	BrowserHistory     keybinding.Binding
 	BrowserShowDeleted keybinding.Binding
-	// BrowserInsights (i) opens the project insights screen (Task 16), matched
+	// BrowserInsights (i) opens the project insights screen, matched
 	// directly by Browser.updateKey like the other browser read surfaces.
 	BrowserInsights keybinding.Binding
 	// BrowserCopy (y) copies the selected memory's raw body to the system
@@ -87,7 +87,7 @@ type DashboardKeymap struct {
 	// key it identically, so matching either resolves the same keystroke.
 	BrowserMouseCapture keybinding.Binding
 	// Reading* bindings own the keyboard while a reading view Screen is on
-	// the stack (Task 12+). ReadingCycleLinks bundles tab/shift+tab under
+	// the stack. ReadingCycleLinks bundles tab/shift+tab under
 	// one hint; Reading.updateKey matches it for membership, then picks the
 	// direction from the concrete key — the TabSwitch idiom. The viewport's
 	// scroll keys (spec §4's j/k, ctrl+d/u, g/G) are not registry actions,
@@ -105,7 +105,7 @@ type DashboardKeymap struct {
 	ReadingHistory  keybinding.Binding
 	ReadingBack     keybinding.Binding
 	// History* bindings own the keyboard while a version-history Screen is on
-	// the stack (Task 14). View/Diff/DiffOlder/Restore/Back are matched
+	// the stack. View/Diff/DiffOlder/Restore/Back are matched
 	// directly by History.updateKey; the list cursor reuses Select verbatim
 	// (the browser precedent) and the restore confirm reuses ConfirmDecision
 	// (y/Y/n/N), so neither needs a binding of its own here.
@@ -114,7 +114,7 @@ type DashboardKeymap struct {
 	HistoryDiffOlder keybinding.Binding
 	HistoryRestore   keybinding.Binding
 	HistoryBack      keybinding.Binding
-	// InsightsBack owns the pushed insights screen's esc (Task 16). The screen's
+	// InsightsBack owns the pushed insights screen's esc. The screen's
 	// stat sections scroll through the viewport's own keys (not registry
 	// actions, like every screen's table-stakes scroll set), so esc is its only
 	// binding here, matched directly by Insights.updateKey.
@@ -123,7 +123,7 @@ type DashboardKeymap struct {
 	// and its drill-in to a detail screen; ConflictsSelect reuses the same
 	// ↑/↓/k/j keys as Select, kept a distinct binding so its footer row scopes
 	// to Conflicts rather than Projects. ConflictDetail* own the pushed detail
-	// screen (Task 17): Read jumps to the reading view, Edit only EMITS
+	// screen: Read jumps to the reading view, Edit only EMITS
 	// EditRequestMsg (the root owns the handoff and every gate), History pushes
 	// the version-history screen when the path resolves to a unit, Back pops.
 	ConflictsSelect       keybinding.Binding

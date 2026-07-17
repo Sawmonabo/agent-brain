@@ -2727,7 +2727,7 @@ func TestBrowserClickFocusesPreview(t *testing.T) {
 }
 
 // TestBrowserClickListBlursAndRestoresKeymap pins the click-to-blur invariant
-// (the keymap-state consistency Task 2's blur established): a left-click on the
+// (the keymap-state consistency blurPreview established): a left-click on the
 // list column must not just flip previewFocused off but also restore the
 // unfocused preview keymap, exactly as blurPreview does. Otherwise the focused
 // keymap — lazily installed on the first focused keystroke — outlives the focus
