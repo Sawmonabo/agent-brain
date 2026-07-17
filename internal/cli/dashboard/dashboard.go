@@ -1839,6 +1839,18 @@ func (m Model) stackFooterRows() []stackFooterRow {
 		return nil
 	}
 	scope := m.stackScope(top)
+	// While the browser's preview pane holds keyboard focus, the list-scope keys
+	// are all swallowed by the browser's focused block, so the footer swaps to the
+	// focused set — exactly the keys that do something in that mode — the same way
+	// the Projects modal footers swap to their owned-input binding set. This
+	// mirrors that idiom rather than inventing a new one: a state the active
+	// surface owns selects a different, complete binding set for the footer.
+	// PreviewFocused() is the browser's own effective-focus gate (previewFocused
+	// AND the pane on screen), so a focus stranded off-screen by a narrow resize
+	// keeps the normal browser footer, matching where the keys actually route.
+	if browser, isBrowser := top.(*views.Browser); isBrowser && browser.PreviewFocused() {
+		scope = actions.ScopeBrowserPreviewFocused
+	}
 	var rows []stackFooterRow
 	for _, action := range actions.Registry() {
 		if len(action.Keys) == 0 || action.Scope != scope {
@@ -2036,6 +2048,8 @@ func (m *Model) available(id string) bool {
 		"open-browser", "browser-read", "browser-order", "browser-filter",
 		"browser-history", "browser-show-deleted", "browser-insights", "browser-copy",
 		"browser-scroll-preview", "browser-focus-preview", "browser-back",
+		"browser-preview-list", "browser-preview-scroll", "browser-preview-half-page",
+		"browser-preview-page", "browser-preview-ends", "browser-preview-copy",
 		"reading-scroll", "reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
 		"reading-history", "reading-back",
 		"history-view", "history-diff", "history-diff-older", "history-back",
@@ -2049,6 +2063,10 @@ func (m *Model) available(id string) bool {
 		// routed straight to the pane in the tab-key dispatch (like
 		// browser-scroll-preview): always available so the footer keeps naming
 		// them, their effect situational (only a body that overflows scrolls).
+		// The browser-preview-* rows are the preview-focused footer set, matched
+		// directly by the browser's focused block (list/scroll/half-page/page/ends/
+		// copy): always available so that swapped footer renders every key lit, its
+		// whole reason for existing being to name the keys that DO work in that mode.
 		return true
 	case "scan":
 		// Advisory gitleaks sweep — live exactly when its runner is wired.

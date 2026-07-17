@@ -38,23 +38,24 @@ func openLongMemory(t *testing.T, s *hubSession) {
 	t.Helper()
 	openBrowser(t, s)
 	s.send("j")
-	s.waitScreen(func(screen string) bool { return lineHasMarker(screen, ">", longMemoryName) })
+	s.waitScreen(func(screen string) bool { return selectionOnLongMemory(screen) })
 	s.send("\r")
 	s.waitScreen(func(screen string) bool { return strings.Contains(screen, "backlinks") })
 }
 
-// lineHasMarker reports whether one rendered line's LIST-PANE columns (see
-// listPaneOf, ptyharness_test.go) contain BOTH marker and token — the test for
-// "the selection cursor (>) is on the row that names X", as distinct from "> and
-// X each appear somewhere on screen". Anchoring to the list pane matters
-// concretely here: the index's own previewed body contains the prose "See
-// long-scroll-target.", so an unanchored scan of the FULL screen could satisfy
-// "X appears on this row" from the preview pane rather than the list row this
-// helper is meant to test for.
-func lineHasMarker(screen, marker, token string) bool {
+// selectionOnLongMemory reports whether the LIST-PANE columns (see listPaneOf,
+// ptyharness_test.go) of some rendered line contain BOTH the selection cursor
+// (">") and longMemoryName — the test for "the selection cursor is on the row
+// that names the long memory", as distinct from "> and that name each appear
+// somewhere on screen". Anchoring to the list pane matters concretely here: the
+// index's own previewed body contains the prose "See long-scroll-target.", so an
+// unanchored scan of the FULL screen could satisfy "the name is on this row"
+// from the preview pane rather than the list row this helper is meant to test
+// for.
+func selectionOnLongMemory(screen string) bool {
 	for line := range strings.SplitSeq(screen, "\n") {
 		pane := listPaneOf(line)
-		if strings.Contains(pane, marker) && strings.Contains(pane, token) {
+		if strings.Contains(pane, ">") && strings.Contains(pane, longMemoryName) {
 			return true
 		}
 	}
@@ -289,7 +290,7 @@ func TestPTYClickBytesSelectBrowserRow(t *testing.T) {
 	// Baseline: the index is selected and previewed, so the long memory is
 	// neither the marked row nor the previewed body yet — without this the
 	// post-click assertion could pass on a hub that opened already selecting it.
-	if lineHasMarker(browser, ">", longMemoryName) {
+	if selectionOnLongMemory(browser) {
 		t.Fatalf("setup: long memory already selected before the click\nscreen:\n%s", browser)
 	}
 	if strings.Contains(browser, "line-001") {
@@ -309,8 +310,63 @@ func TestPTYClickBytesSelectBrowserRow(t *testing.T) {
 	// selection move alone, whereas line-001 can only come from the preview
 	// pane actually rendering the long memory's body.
 	s.waitScreen(func(screen string) bool {
-		return lineHasMarker(screen, ">", longMemoryName) && strings.Contains(screen, "line-001")
+		return selectionOnLongMemory(screen) && strings.Contains(screen, "line-001")
 	})
+	s.quitAndDrain()
+}
+
+// TestPTYPreviewClickFocusIsDisclosed drives the live-hub "freeze" narrative end
+// to end on a real pty. A click into the preview COLUMN of a SHORT (fitting)
+// memory — the seeded index's body ("See long-scroll-target.") fits its pane, so
+// it renders no scroll hint, the exact case where focus used to show nothing and
+// every keypress read as dead until esc — must now disclose the focus two ways:
+// the cue text on the pane AND the footer swapped to the focused set. "esc/tab
+// list" is the focused footer's return row (the cue reads "esc/tab returns to
+// list", a different string), so matching it proves the FOOTER swapped, distinct
+// from the cue rendering. esc then hands focus back — while the pane holds focus
+// esc blurs rather than popping the browser — restoring the browser footer ("o
+// order" is a list-only key) and clearing the cue, and j moves the LIST cursor
+// again, proof focus truly returned rather than the cue text merely vanishing.
+//
+// The click targets a preview column (>= browserListPaneWidth+2) so overPreview
+// routes it to focus the pane, not select a list row: focusing leaves the
+// selection — and thus the previewed short body — unchanged, so the fitting case
+// is what is under test throughout. It reuses the click scenario's SGR press/
+// release byte form, aimed at a preview column instead of a list column.
+func TestPTYPreviewClickFocusIsDisclosed(t *testing.T) {
+	t.Parallel()
+	s := startHubSession(t, defaultSessionConfig())
+	browser := openBrowser(t, s)
+	// Baseline: the fitting preview is on screen but the LIST holds focus — no cue
+	// and no focused-footer row — so the post-click change is provably the click's
+	// doing, not a state the hub opened in.
+	if strings.Contains(browser, "preview focused") {
+		t.Fatalf("setup: focus cue present before any click\nscreen:\n%s", browser)
+	}
+	if strings.Contains(browser, "esc/tab list") {
+		t.Fatalf("setup: focused-footer row present before any click\nscreen:\n%s", browser)
+	}
+	row := lineRowOf(browser, longMemoryName)
+	if row == 0 {
+		t.Fatalf("setup: no on-screen row to aim the click Y at\nscreen:\n%s", browser)
+	}
+	// SGR left click (press M, release m) of button 0 at a preview column.
+	const previewColumn = 70 // well past browserListPaneWidth+2 (48), inside the preview
+	s.send(fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", previewColumn, row, previewColumn, row))
+	// Both halves of the disclosure the freeze lacked: the cue on the pane and the
+	// footer swapped to the focused set.
+	s.waitScreen(func(screen string) bool {
+		return strings.Contains(screen, "preview focused") && strings.Contains(screen, "esc/tab list")
+	})
+	// esc blurs back to the list: the browser footer returns and the cue clears.
+	s.send("\x1b")
+	s.waitScreen(func(screen string) bool {
+		return strings.Contains(screen, "o order") && !strings.Contains(screen, "preview focused")
+	})
+	// The list owns j again — the cursor advances off the index onto the long
+	// memory, proof focus truly returned to the list.
+	s.send("j")
+	s.waitScreen(func(screen string) bool { return selectionOnLongMemory(screen) })
 	s.quitAndDrain()
 }
 

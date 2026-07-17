@@ -2670,6 +2670,70 @@ func TestStackFooterRendersFocusPreviewLit(t *testing.T) {
 	}
 }
 
+// TestStackFooterSwapsToPreviewFocusedSet pins the footer-honesty fix at the
+// root: once the browser's preview pane holds keyboard focus, the list-scope keys
+// are all swallowed by the browser's focused block, so the stack footer must swap
+// to the focused set (esc/tab back to the list, j/k scroll, g/G ends, y copy) and
+// drop the list keys it would otherwise still name. Advertising e/n/o/h while the
+// focused pane eats them is the exact "every key reads as dead" dishonesty the
+// live-hub freeze report exposed. Blurring restores the browser scope.
+func TestStackFooterSwapsToPreviewFocusedSet(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	browser := views.NewBrowser(views.BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: func(memoryfs.Memory) (string, error) { return "a short body\n", nil },
+		List: func() ([]memoryfs.Memory, error) {
+			return []memoryfs.Memory{{Provider: "claude", RepoPath: "claude/short.md", Name: "short", Class: provider.ClassFact, ModTime: base}}, nil
+		},
+	})
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m, _ = step(m, views.PushScreenMsg{Screen: browser})
+
+	// Render once so the browser's View runs at preview-split width and records
+	// previewShown = true; only then can tab arm focus (a pane the reader cannot
+	// see must never be focusable).
+	_ = m.View()
+	if browser.PreviewFocused() {
+		t.Fatal("setup: preview focused before any tab")
+	}
+	listFooter := plain(m.footer())
+	for _, want := range []string{"o order", "h history", "tab focus preview"} {
+		if !strings.Contains(listFooter, want) {
+			t.Fatalf("setup: unfocused browser footer missing list-scope key %q; got:\n%s", want, listFooter)
+		}
+	}
+
+	m, _ = step(m, key("tab")) // focus the preview pane
+	if !browser.PreviewFocused() {
+		t.Fatal("tab did not focus the preview pane")
+	}
+	focusedFooter := plain(m.footer())
+	for _, want := range []string{"esc/tab list", "j/k scroll", "g/G ends", "y copy"} {
+		if !strings.Contains(focusedFooter, want) {
+			t.Errorf("focused footer missing %q; the footer must swap to the preview-focused set:\n%s", want, focusedFooter)
+		}
+	}
+	for _, absent := range []string{"o order", "h history", "e edit", "enter read", "tab focus preview"} {
+		if strings.Contains(focusedFooter, absent) {
+			t.Errorf("focused footer still advertises the list-scope key %q, which the focused pane swallows:\n%s", absent, focusedFooter)
+		}
+	}
+
+	m, _ = step(m, key("esc")) // hand focus back to the list
+	if browser.PreviewFocused() {
+		t.Fatal("esc did not return focus to the list")
+	}
+	restored := plain(m.footer())
+	for _, want := range []string{"o order", "h history", "tab focus preview"} {
+		if !strings.Contains(restored, want) {
+			t.Errorf("footer did not restore the browser scope after blur; missing %q:\n%s", want, restored)
+		}
+	}
+}
+
 // TestStackFooterRendersBrowserCopyLit pins that browser-copy renders LIT, not
 // struck, in the browser stack footer — the same honesty guard
 // TestStackFooterRendersFocusPreviewLit applies to focus-preview. A runner-less

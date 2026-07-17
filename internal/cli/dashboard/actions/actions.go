@@ -28,16 +28,17 @@ type Scope int
 // Scopes in declaration order — AllScopes and the help overlay's group
 // ordering both depend on this exact sequence.
 const (
-	ScopeGlobal         Scope = iota // any root view
-	ScopeProjects                    // Projects tab
-	ScopeDoctor                      // Doctor tab
-	ScopeActivity                    // Activity tab
-	ScopeBrowser                     // memory browser (Task 11+)
-	ScopeReading                     // reading view (Task 12+)
-	ScopeHistory                     // history view (Task 14+)
-	ScopeInsights                    // project insights screen, pushed from the browser (Task 16+)
-	ScopeConflicts                   // conflicts tab
-	ScopeConflictDetail              // conflict detail screen (pushed from the tab)
+	ScopeGlobal                Scope = iota // any root view
+	ScopeProjects                           // Projects tab
+	ScopeDoctor                             // Doctor tab
+	ScopeActivity                           // Activity tab
+	ScopeBrowser                            // memory browser (Task 11+)
+	ScopeBrowserPreviewFocused              // memory browser while the preview pane holds keyboard focus
+	ScopeReading                            // reading view (Task 12+)
+	ScopeHistory                            // history view (Task 14+)
+	ScopeInsights                           // project insights screen, pushed from the browser (Task 16+)
+	ScopeConflicts                          // conflicts tab
+	ScopeConflictDetail                     // conflict detail screen (pushed from the tab)
 )
 
 // String names a Scope for the help overlay's group headers.
@@ -53,6 +54,8 @@ func (s Scope) String() string {
 		return "Activity"
 	case ScopeBrowser:
 		return "Memory browser"
+	case ScopeBrowserPreviewFocused:
+		return "Memory browser (preview focused)"
 	case ScopeReading:
 		return "Reading"
 	case ScopeHistory:
@@ -73,7 +76,7 @@ func (s Scope) String() string {
 // overlay's group ordering does not depend on ScopeConflicts happening to be
 // the last constant — a scope inserted later stays correct by construction.
 func AllScopes() []Scope {
-	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeActivity, ScopeBrowser, ScopeReading, ScopeHistory, ScopeInsights, ScopeConflicts, ScopeConflictDetail}
+	return []Scope{ScopeGlobal, ScopeProjects, ScopeDoctor, ScopeActivity, ScopeBrowser, ScopeBrowserPreviewFocused, ScopeReading, ScopeHistory, ScopeInsights, ScopeConflicts, ScopeConflictDetail}
 }
 
 // Action is one user-invokable operation. The SAME rows drive the palette
@@ -202,6 +205,30 @@ var registry = []Action{
 	// situational (dashboard.go's available()).
 	{ID: "browser-focus-preview", Title: "focus preview", Keys: []string{"tab"}, KeyHint: "tab", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
+	// ScopeBrowserPreviewFocused rows (this wave): while the preview pane holds
+	// keyboard focus (tab, or a click into it) the browser swaps its footer to
+	// THIS set — exactly the keys that do something in that mode — so a focused
+	// pane is never a silent dead-key state (the live-hub "freeze" where every
+	// list key read as inert with no cue why). All are matched directly by
+	// Browser.updateKey's focused block — esc/tab hand focus back, g/G jump the
+	// ends, j/k + ctrl+d/u + pgup/pgdown scroll the viewport, y copies the
+	// previewed body — so like every other stack-scope row they carry no root
+	// runner. None Mutates: the scroll/return keys touch no daemon state and the
+	// copy is a clipboard write (OSC52), not a provider-file mutation. The keys
+	// deliberately re-use ScopeBrowser's own bindings under distinct IDs
+	// (cross-scope key reuse is fine — only one scope is ever the matched footer
+	// scope at a time); giving them their own scope is what lets the footer swap
+	// be a single scope switch (dashboard.go's stackFooterRows) rather than a
+	// hand-filtered binding list. esc/tab leads the set: the freeze was a user
+	// who could not tell how to get BACK to the list, so the footer names that
+	// first. These rows are runner-less, so paletteAvailable keeps them out of
+	// the command palette exactly as it does the other browser navigation rows.
+	{ID: "browser-preview-list", Title: "list", Keys: []string{"esc", "tab"}, KeyHint: "esc/tab", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-scroll", Title: "scroll", Keys: []string{"j", "k"}, KeyHint: "j/k", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-half-page", Title: "half page", Keys: []string{"ctrl+d", "ctrl+u"}, KeyHint: "ctrl+d/u", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-page", Title: "page", Keys: []string{"pgup", "pgdown"}, KeyHint: "pgup/pgdn", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-ends", Title: "ends", Keys: []string{"g", "G"}, KeyHint: "g/G", Scope: ScopeBrowserPreviewFocused},
+	{ID: "browser-preview-copy", Title: "copy", Keys: []string{"y"}, KeyHint: "y", Scope: ScopeBrowserPreviewFocused},
 	// ScopeReading rows (Task 12; Task 13 added reading-edit): the reading
 	// view's own in-screen keys, matched directly by Reading.updateKey.
 	// h-history is deliberately absent — Task 14 declares that row together

@@ -102,9 +102,10 @@ func TestFuzzyRanksPrefixOverSubsequence(t *testing.T) {
 		got := idsOf(Fuzzy("sy"))
 		want := []string{
 			"sync-project", "sync-fleet", // prefix tier
-			// subsequence tier, registry order — browser-copy carries "sy" too
-			// (brow·s·er…cop·y), between the two history rows it sits amongst.
-			"browser-history", "browser-copy", "reading-history",
+			// subsequence tier, registry order — browser-copy and the focused
+			// preview's own copy row carry "sy" too (brow·s·er…cop·y); in registry
+			// order browser-preview-copy trails browser-copy, amongst the history rows.
+			"browser-history", "browser-copy", "browser-preview-copy", "reading-history",
 			"history-view", "history-diff", "history-diff-older", "history-restore", "history-back",
 			"conflictdetail-history",
 		}
@@ -472,6 +473,78 @@ func TestDoctorRegistryRowsShape(t *testing.T) {
 				t.Error("Title must not be empty — it is the palette/help label")
 			}
 		})
+	}
+}
+
+// TestBrowserPreviewFocusedRegistryRowsShape pins this wave's ScopeBrowserPreviewFocused
+// rows: the footer set the browser swaps to while the preview pane holds keyboard
+// focus (dashboard.go's stackFooterRows consults Browser.PreviewFocused()). Each
+// row re-uses a key ScopeBrowser also binds under a different ID — legal because
+// only one scope is ever the matched footer scope at a time — so this asserts the
+// exact per-row shape the footer renders. None Mutates: the scroll/return keys
+// touch no daemon state, and copy is an OSC52 clipboard write, never a
+// provider-file mutation, so a quiesce must not grey any of them. Runner-less like
+// every stack-scope row, so they stay out of the palette
+// (TestPaletteListsOnlyDispatchableActions pins that half in the dashboard package).
+func TestBrowserPreviewFocusedRegistryRowsShape(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		id      string
+		keys    []string
+		keyHint string
+	}{
+		{id: "browser-preview-list", keys: []string{"esc", "tab"}, keyHint: "esc/tab"},
+		{id: "browser-preview-scroll", keys: []string{"j", "k"}, keyHint: "j/k"},
+		{id: "browser-preview-half-page", keys: []string{"ctrl+d", "ctrl+u"}, keyHint: "ctrl+d/u"},
+		{id: "browser-preview-page", keys: []string{"pgup", "pgdown"}, keyHint: "pgup/pgdn"},
+		{id: "browser-preview-ends", keys: []string{"g", "G"}, keyHint: "g/G"},
+		{id: "browser-preview-copy", keys: []string{"y"}, keyHint: "y"},
+	}
+
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+			action, ok := byID[testCase.id]
+			if !ok {
+				t.Fatalf("registry missing action %q", testCase.id)
+			}
+			if diff := cmp.Diff(testCase.keys, action.Keys); diff != "" {
+				t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+			}
+			if action.KeyHint != testCase.keyHint {
+				t.Errorf("KeyHint = %q, want %q", action.KeyHint, testCase.keyHint)
+			}
+			if action.Mutates {
+				t.Error("Mutates = true, want false — a focused-preview key touches no daemon state")
+			}
+			if action.Scope != ScopeBrowserPreviewFocused {
+				t.Errorf("Scope = %v, want %v", action.Scope, ScopeBrowserPreviewFocused)
+			}
+			if action.Title == "" {
+				t.Error("Title must not be empty — it is the palette/help label")
+			}
+		})
+	}
+}
+
+// TestBrowserPreviewFocusedReturnLeadsScope pins that browser-preview-list (esc/tab
+// back to the list) leads its scope, not just belongs to it: the footer renders a
+// scope's rows in registry order, and the whole point of this footer swap is a user
+// who cannot tell how to get BACK from a focused pane — so "return to list" must be
+// the first thing the focused footer names.
+func TestBrowserPreviewFocusedReturnLeadsScope(t *testing.T) {
+	t.Parallel()
+	rows := ForScope(ScopeBrowserPreviewFocused)
+	if len(rows) == 0 {
+		t.Fatal("ForScope(ScopeBrowserPreviewFocused) returned no rows")
+	}
+	if got := rows[0].ID; got != "browser-preview-list" {
+		t.Errorf("first ScopeBrowserPreviewFocused row = %q, want %q (return-to-list must lead the focused footer)", got, "browser-preview-list")
 	}
 }
 

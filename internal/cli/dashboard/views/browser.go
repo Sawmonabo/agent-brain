@@ -474,8 +474,10 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 	// guard this block would keep swallowing j/k/Tab/Esc into an off-screen
 	// viewport, leaving the list cursor dead. Tab and Esc hand focus back to the
 	// list; g/G jump the pane's ends (GotoTop/GotoBottom — the viewport exposes
-	// the methods but binds no keys, exactly as reading.go handles them); every
-	// other key runs through the focused keymap installed just below.
+	// the methods but binds no keys, exactly as reading.go handles them); y copies
+	// the previewed body, reached here rather than only in the list-focused switch
+	// below so the focused footer's advertised "y copy" is honest and not a dead
+	// key; every other key runs through the focused keymap installed just below.
 	if b.previewFocused && b.previewShown {
 		switch {
 		case keybinding.Matches(msg, DashboardKeys.BrowserFocusPreview),
@@ -488,6 +490,8 @@ func (b *Browser) updateKey(msg tea.KeyPressMsg) (Screen, tea.Cmd) {
 		case msg.String() == "G":
 			b.previewViewport.GotoBottom()
 			return b, nil
+		case keybinding.Matches(msg, DashboardKeys.BrowserCopy):
+			return b, b.copyRequest()
 		}
 		b.previewViewport.KeyMap = browserPreviewFocusedKeyMap()
 		var cmd tea.Cmd
@@ -591,6 +595,19 @@ func (b *Browser) Units() []api.UnitInfo {
 // interface.
 func (b *Browser) WantsMouse() bool {
 	return b.previewShown
+}
+
+// PreviewFocused reports whether the preview pane holds EFFECTIVE keyboard focus
+// — previewFocused AND previewShown, the exact compound gate updateKey's focused
+// block uses (a focus armed then stranded off-screen by a narrow resize reads as
+// false here, never advertising a focus the reader cannot act on). The root reads
+// it to swap the footer to the preview-focused binding set and the pane's own
+// render reads it to draw the focus cue, so the footer, the cue, and the block
+// that actually routes the keys can never disagree about whether the preview is
+// focused. Same root-reaches-the-concrete-type seam as Selected/WantsMouse, not
+// part of the Screen interface.
+func (b *Browser) PreviewFocused() bool {
+	return b.previewFocused && b.previewShown
 }
 
 // selectedRequest builds the Cmd that emits wrap's flow-request message for
@@ -1365,18 +1382,21 @@ func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int)
 	return headerBlock + "\n" + b.previewViewport.View() + "\n" + b.previewScrollHint(width)
 }
 
-// previewHeaderLines composes the preview pane's header zone: an
-// unconditional leading blank line — rendered whether or not selected has any
-// issues, because it is alignment padding, not a warning — so the pane's
-// first body line always sits one row below the pane's top, level with the
-// list column's first row (always a provider-header line; see renderList's
-// own doc). One Warn-styled "⚠ <Rule>: <Detail>" line then follows per lint
-// issue recorded against selected (b.lintIssues, keyed by RepoPath), each
-// measured and ansi-truncated to width as PLAIN text before styling — exactly
-// fitListRow's rule for its own badge — so a long Detail sentence can never
-// wrap the pane. More than three issues collapse the remainder into one
-// trailing "⚠ +N more" line rather than growing the header zone without
-// bound, which would crowd the body entirely out of a short pane.
+// previewHeaderLines composes the preview pane's header zone: an unconditional
+// leading chrome line — the focus cue while the preview holds focus
+// (previewCueLine), otherwise an empty alignment-padding line — so the pane's
+// first body line always sits one row below the pane's top, level with the list
+// column's first row (always a provider-header line; see renderList's own doc).
+// The cue occupies that SAME single row the padding blank otherwise would, so
+// focusing the pane changes what the top row says without moving the body: the
+// Task-2 alignment invariant and the pane's height budget hold identically
+// whether or not the preview is focused. One Warn-styled "⚠ <Rule>: <Detail>"
+// line then follows per lint issue recorded against selected (b.lintIssues,
+// keyed by RepoPath), each measured and ansi-truncated to width as PLAIN text
+// before styling — exactly fitListRow's rule for its own badge — so a long
+// Detail sentence can never wrap the pane. More than three issues collapse the
+// remainder into one trailing "⚠ +N more" line rather than growing the header
+// zone without bound, which would crowd the body entirely out of a short pane.
 //
 // Returned as a slice, not pre-joined, so renderPreviewPane can both render it
 // and size the viewport's remaining budget off its exact line count (len) —
@@ -1384,7 +1404,7 @@ func (b *Browser) renderPreviewPane(selected memoryfs.Memory, width, height int)
 // more slice entry, not a change to the height arithmetic.
 func (b *Browser) previewHeaderLines(selected memoryfs.Memory, width int) []string {
 	const maxShownIssues = 3
-	lines := []string{""}
+	lines := []string{b.previewCueLine(width)}
 	issues := b.lintIssues[selected.RepoPath]
 	if len(issues) == 0 {
 		return lines
@@ -1401,6 +1421,35 @@ func (b *Browser) previewHeaderLines(selected memoryfs.Memory, width int) []stri
 		lines = append(lines, b.deps.Styles.Warn.Render(fitWidth(fmt.Sprintf("⚠ +%d more", overflow), width)))
 	}
 	return lines
+}
+
+// previewFocusCue is the text of the pane's focus cue, before styling and width
+// truncation. Kept a package constant so the render and its tests name the same
+// string. It leads with an accent glyph and states the ONE thing the live-hub
+// "freeze" report proved a focused reader could not tell: that the preview holds
+// the keys now and esc (or tab) hands them back to the list — the full focused
+// keyset lives in the footer, so the cue stays a short "you are here, here is the
+// way out" banner rather than repeating it.
+const previewFocusCue = "▶ preview focused — esc/tab returns to list"
+
+// previewCueLine renders the focus cue for the preview pane's top chrome row, or
+// the empty alignment-padding line when the pane is not focused. It is the pane's
+// half of the focus-honesty fix: an earlier design surfaced the focus state only
+// through the overflow scroll hint, so a SHORT (fitting) preview — which renders
+// no scroll hint at all — entered focus with no on-screen cue and every keypress
+// read as dead (the reported "freeze"). Rendering the cue here, from the header
+// zone that ALWAYS renders, discloses focus for a fitting and an overflowing
+// preview alike; the cue occupies the same single row the alignment blank
+// otherwise would, so it costs no extra pane height. Accent-styled (Header, the
+// same emphasis the reading view gives its own chrome) so it reads as a state
+// banner, not body text. Gated on PreviewFocused (not the bare previewFocused
+// bool) so a focus stranded off-screen by a narrow resize shows no cue, matching
+// the key routing.
+func (b *Browser) previewCueLine(width int) string {
+	if !b.PreviewFocused() {
+		return ""
+	}
+	return b.deps.Styles.Header.Render(fitWidth(previewFocusCue, width))
 }
 
 // syncPreview brings the preview viewport's content up to date with the
@@ -1460,23 +1509,18 @@ func (b *Browser) syncPreview(selected memoryfs.Memory, width int) {
 // screen edge — but the browser's preview is one column of a split, with content
 // beside and below it and no other signal that text continues past the fold. It
 // reports how far through the body the window sits (ScrollPercent) and names the
-// scroll keys, fit to the pane width (plain text first, styled after — a styled
-// string is never width-sliced, the same rule fitListRow follows) so the
-// affordance can never itself overflow the pane it labels.
+// scroll keys through the shared scrollHintLine — the same percent-through
+// readout and key list the Doctor/Activity tabs render, built in one place so
+// the format never drifts between the panes.
+//
+// It reports scroll POSITION only, in both focus states: the focus cue is the
+// header zone's own row now (previewCueLine), so the reader learns the preview
+// is focused from the top of the pane whether or not the body overflows — this
+// affordance no longer has to double as the focus banner, which is what left a
+// short preview with no cue at all when it was the only place focus was ever
+// disclosed.
 func (b *Browser) previewScrollHint(width int) string {
 	percent := int(b.previewViewport.ScrollPercent() * 100)
-	// When the pane holds focus, the hint doubles as the focus cue (spec §3):
-	// it names the fuller focused keyset and renders emphasized (Header, not the
-	// unfocused Dim) so the reader can see at a glance that the preview — not the
-	// list — now owns the scroll keys, and that esc/tab hands focus back. It
-	// reuses the existing hint line, so the pane's height budget is unchanged.
-	if b.previewFocused {
-		label := fmt.Sprintf("── %d%% · preview focused — j/k ctrl+d/u scroll · esc/tab list ──", percent)
-		return b.deps.Styles.Header.Render(fitWidth(label, width))
-	}
-	// The unfocused hint is the shared tab-body affordance (scrollHintLine): the
-	// same percent-through readout and key list the Doctor/Activity tabs render,
-	// built in one place so the format never drifts between the panes.
 	return scrollHintLine(b.deps.Styles, percent, width)
 }
 

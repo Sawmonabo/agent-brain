@@ -2375,6 +2375,93 @@ func TestBrowserPreviewFocusRoutesScrollKeys(t *testing.T) {
 	}
 }
 
+// TestBrowserPreviewFocusShowsCueForFittingPreview pins the freeze fix at its
+// exact vacuity: a SHORT preview that FITS its pane renders no scroll hint, so
+// when the focus cue lived only in that hint, focusing a fitting preview showed
+// NOTHING — no on-screen sign the preview now owned the keys — and every keypress
+// read as dead (the reported "freeze until esc"). The cue must appear the moment a
+// FITTING preview is focused, and must be absent while the list holds focus.
+func TestBrowserPreviewFocusShowsCueForFittingPreview(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/short.md", Name: "short", Class: provider.ClassFact, ModTime: base},
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(map[string]string{"claude/short.md": "a short body that fits its pane\n"}),
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+	const width, height = 120, 30
+
+	unfocused := plain(browser.View(width, height))
+	if strings.Contains(unfocused, previewFocusCue) {
+		t.Errorf("fitting preview shows the focus cue while the LIST holds focus; the cue must appear only while the pane is focused:\n%s", unfocused)
+	}
+
+	next, _ := browser.Update(key("tab")) // focus the fitting preview
+	browser = next.(*Browser)
+	if !browser.PreviewFocused() {
+		t.Fatal("tab did not focus the fitting preview (is the pane on screen at this width?)")
+	}
+	focused := plain(browser.View(width, height))
+	if !strings.Contains(focused, previewFocusCue) {
+		t.Errorf("focused fitting preview shows no cue — the reported freeze; want %q in:\n%s", previewFocusCue, focused)
+	}
+	// The freeze case is precisely a preview with NO scroll hint (the body fits),
+	// so the cue is the ONLY focus signal here — this guards that the fixture is
+	// genuinely the fitting case and not an overflow that would render a hint.
+	if strings.Contains(focused, "scroll") {
+		t.Errorf("fitting-preview fixture unexpectedly rendered a scroll affordance; the freeze case under test has none:\n%s", focused)
+	}
+}
+
+// TestBrowserPreviewFocusCopyEmitsSelectedBody pins that y copies the previewed
+// memory WHILE the preview holds focus. The focused footer advertises "y copy", so
+// it must not be a dead key there: y is reached in the focused key block, not only
+// the list-focused switch, so a copy works identically whether the list or the
+// pane is focused, and the copy leaves the pane focused (y copies, it does not
+// blur).
+func TestBrowserPreviewFocusCopyEmitsSelectedBody(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	const body = "the raw body to copy\n"
+	memories := []memoryfs.Memory{
+		{Provider: "claude", RepoPath: "claude/short.md", Name: "Short", Class: provider.ClassFact, ModTime: base},
+	}
+	browser := NewBrowser(BrowserDeps{
+		Folder:   "acme",
+		Now:      base,
+		ReadBody: fakeReadBody(map[string]string{"claude/short.md": body}),
+		List:     func() ([]memoryfs.Memory, error) { return append([]memoryfs.Memory(nil), memories...), nil },
+	})
+	const width, height = 120, 30
+	_ = browser.View(width, height) // render so the preview is on screen
+
+	next, _ := browser.Update(key("tab")) // focus the preview
+	browser = next.(*Browser)
+	if !browser.PreviewFocused() {
+		t.Fatal("tab did not focus the preview")
+	}
+
+	next, cmd := browser.Update(key("y")) // copy while focused
+	browser = next.(*Browser)
+	if cmd == nil {
+		t.Fatal("y while focused produced no Cmd; the focused footer advertises \"y copy\", so it must not be a dead key")
+	}
+	copyMemory, ok := cmd().(CopyMemoryMsg)
+	if !ok {
+		t.Fatalf("y while focused produced %#v, want CopyMemoryMsg", cmd())
+	}
+	if copyMemory.Body != body {
+		t.Errorf("CopyMemoryMsg.Body = %q, want the previewed memory's raw body %q", copyMemory.Body, body)
+	}
+	if !browser.previewFocused {
+		t.Error("y while focused cleared the focus; copy must leave the pane focused")
+	}
+}
+
 // TestBrowserPreviewFocusGGJumpEnds pins that g/G jump the focused preview to
 // its head and foot — the reading view's own end-jump keys, handled by
 // Browser.updateKey directly (the viewport exposes GotoTop/GotoBottom but binds
