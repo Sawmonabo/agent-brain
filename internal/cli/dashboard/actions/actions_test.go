@@ -595,3 +595,43 @@ func TestScrollRegistryRowsShape(t *testing.T) {
 		})
 	}
 }
+
+// TestMouseCaptureToggleRegistryRowShape pins this wave's mouse-capture toggle
+// row: the browser's m, which disarms the preview pane's cell-motion mouse
+// capture so the terminal's own drag-select works — capture is terminal-global
+// (scoped capture is not expressible), so a runtime switch that turns it off
+// entirely is the only honest remedy. ScopeBrowser, like every other browser
+// navigation row, and never Mutates: it flips a root render flag, touching no
+// daemon state, so a quiesce must not grey it. Runner-less (the root matches m
+// directly while a browser owns the stack), so it stays out of the palette —
+// TestPaletteListsOnlyDispatchableActions pins that half in the dashboard
+// package. Its m is free WITHIN ScopeBrowser; migrate also binds m but under
+// ScopeProjects, and cross-scope reuse is legal (only one scope is ever the
+// matched footer scope at a time), which TestRegistryIDsUniqueAndKeysDisjointPerScope
+// enforces across the whole enumeration.
+func TestMouseCaptureToggleRegistryRowShape(t *testing.T) {
+	t.Parallel()
+	byID := make(map[string]Action)
+	for _, a := range Registry() {
+		byID[a.ID] = a
+	}
+	action, ok := byID["mouse-capture-toggle"]
+	if !ok {
+		t.Fatal("registry missing action \"mouse-capture-toggle\"")
+	}
+	if diff := cmp.Diff([]string{"m"}, action.Keys); diff != "" {
+		t.Errorf("Keys mismatch (-want +got):\n%s", diff)
+	}
+	if action.KeyHint != "m" {
+		t.Errorf("KeyHint = %q, want \"m\"", action.KeyHint)
+	}
+	if action.Mutates {
+		t.Error("Mutates = true, want false — the toggle flips a render flag, not daemon state")
+	}
+	if action.Scope != ScopeBrowser {
+		t.Errorf("Scope = %v, want ScopeBrowser", action.Scope)
+	}
+	if action.Title == "" {
+		t.Error("Title must not be empty — it is the palette/help label")
+	}
+}

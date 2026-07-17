@@ -4800,6 +4800,100 @@ func TestRootViewMouseModeGate(t *testing.T) {
 	}
 }
 
+// TestMouseCaptureToggleDisarmsAndRearms pins the m toggle end to end at the
+// root: an armed browser-with-preview frame reports CellMotion; m disarms it to
+// None on the very next frame — the arming gate now also reads mouseCaptureOff,
+// so the renderer diffs MouseMode back to None with no explicit teardown, the
+// same path the every-non-browser-frame disarm already takes — and m again
+// re-arms it. This is the toggle's whole purpose: native drag-select needs the
+// capture actually gone, and re-arming restores the wheel and click-select.
+func TestMouseCaptureToggleDisarmsAndRearms(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("setup: armed browser preview MouseMode = %v, want CellMotion", got)
+	}
+	m, _ = step(m, key("m"))
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("after m, MouseMode = %v, want None (capture disarmed for native select)", got)
+	}
+	m, _ = step(m, key("m"))
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("after a second m, MouseMode = %v, want CellMotion (capture re-armed)", got)
+	}
+}
+
+// TestMouseCaptureDisclosureRendersEveryFrameWhileOff pins the footer-honesty
+// half: while capture is armed the footer says nothing about the mouse; the
+// frame m disarms it and EVERY frame after, the footer discloses that native
+// select is live and how to bring capture back. The cue is derived from the
+// persistent mouseCaptureOff state, not the toggle event, so an unrelated
+// message arriving after the flip (here a resize) must not drop it — the pin is
+// deliberately a frame AFTER the flip, not the flip frame. m again clears it.
+func TestMouseCaptureDisclosureRendersEveryFrameWhileOff(t *testing.T) {
+	t.Parallel()
+	const cue = "mouse: native select (m re-arms)"
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View() // record previewShown so the browser owns the stack at split width
+
+	if footer := plain(m.footer()); strings.Contains(footer, "native select") {
+		t.Fatalf("armed browser footer discloses native select before any toggle:\n%s", footer)
+	}
+
+	m, _ = step(m, key("m"))
+	if footer := plain(m.footer()); !strings.Contains(footer, cue) {
+		t.Fatalf("footer after m missing the disclosure %q; got:\n%s", cue, footer)
+	}
+
+	// An unrelated message (a same-size resize) must not clear a state-driven
+	// cue: the frame AFTER the flip still discloses it. This is the event-vs-
+	// state pin — a cue tied to the keypress alone would vanish here.
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	if footer := plain(m.footer()); !strings.Contains(footer, cue) {
+		t.Errorf("disclosure dropped on the frame after the flip; it must track the mouseCaptureOff STATE, not the toggle event:\n%s", footer)
+	}
+
+	m, _ = step(m, key("m"))
+	if footer := plain(m.footer()); strings.Contains(footer, "native select") {
+		t.Errorf("footer still discloses native select after re-arming:\n%s", footer)
+	}
+}
+
+// TestMouseCaptureToggleFooterRowLit pins that the mouse-capture toggle renders
+// LIT, not struck, in the browser stack footer — the same honesty pin
+// TestStackFooterRendersFocusPreviewLit applies to focus-preview: a runner-less
+// row missing from available()'s unconditional whitelist would render struck
+// though its key works. Inspects the raw (styled) footer so the strikethrough
+// SGR a plain() check strips cannot hide the gap.
+func TestMouseCaptureToggleFooterRowLit(t *testing.T) {
+	t.Parallel()
+	m := newTestModel(&fakeData{})
+	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m.pushScreen(mouseBrowser(t))
+	_ = m.View() // browser owns the stack at split width
+
+	if !m.available("mouse-capture-toggle") {
+		t.Fatal("available(mouse-capture-toggle) = false; the footer would render it struck (spec §14 honesty)")
+	}
+
+	raw := m.footer()
+	const segment = "m mouse capture" // KeyHint + Title, exactly as stackFooterLine composes it
+	if !strings.Contains(plain(raw), segment) {
+		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
+	}
+	if struck := m.styles.Dim.Strikethrough(true).Render(segment); strings.Contains(raw, struck) {
+		t.Errorf("%q renders struck in the browser footer — its available() whitelist entry regressed", segment)
+	}
+	if lit := m.styles.Dim.Render(segment); !strings.Contains(raw, lit) {
+		t.Errorf("%q does not render lit in the browser footer; got:\n%q", segment, raw)
+	}
+}
+
 // frameLineContaining returns the 0-based index of the first frame line holding
 // sub — the terminal-absolute Y a click on that line carries — failing if none
 // does.

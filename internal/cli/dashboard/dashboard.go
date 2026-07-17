@@ -280,6 +280,19 @@ type Model struct {
 	// writes into a shared backing array in place.
 	stack []views.Screen
 
+	// mouseCaptureOff, when true, holds the browser preview's cell-motion mouse
+	// capture disarmed so the terminal's own drag-select works in the pane.
+	// Capture is terminal-global — scoped capture is not expressible — so the
+	// only honest fix is to turn it off entirely: View's arming gate reads this
+	// and keeps mouseWanted false on the one frame it would otherwise arm, and
+	// the renderer diffs MouseMode back to None with no explicit teardown (the
+	// same path every non-browser frame already takes). The browser's m toggles
+	// it (handleKey), and the footer discloses the state every frame it is off
+	// (mouseCaptureDisclosure). Root-level and persistent across navigation on
+	// purpose — it is a preference about the terminal, not a per-screen mode, so
+	// leaving and re-entering the browser preserves it.
+	mouseCaptureOff bool
+
 	status     api.StatusResponse
 	statusErr  error
 	daemonDown bool
@@ -1162,7 +1175,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// happens to share the same key. See ScopeBrowser's registry rows
 	// (actions.go) and stackFooterRows for the matching footer/help
 	// surface of this same priority.
-	if _, ok := m.stackTop(); ok {
+	if top, ok := m.stackTop(); ok {
+		// The mouse-capture toggle is a ROOT terminal-mode control, not a browser
+		// key: the arming gate that reads mouseCaptureOff lives in View (root), so
+		// m is consumed HERE — while a browser owns the stack, the one surface the
+		// mouse is ever armed for — flipping the root flag rather than being
+		// forwarded down. The browser binds no m, so consuming it shadows nothing;
+		// gating on the browser type keeps the ScopeBrowser row honest (a Reading
+		// or History screen pushed on top neither arms the mouse nor answers to m).
+		if _, isBrowser := top.(*views.Browser); isBrowser && matchesMouseCaptureToggle(msg) {
+			m.mouseCaptureOff = !m.mouseCaptureOff
+			return m, nil
+		}
 		return m.forwardToStack(msg)
 	}
 
@@ -1940,6 +1964,18 @@ func (m Model) buildConflictDetailDeps(record config.ConflictRecord) views.Confl
 	}
 }
 
+// matchesMouseCaptureToggle reports whether msg is the mouse-capture toggle's
+// key. Resolved from the registry row rather than a hardcoded "m" so the key the
+// root consumes and the hint the footer/help advertise can never diverge — the
+// single-source discipline every other action follows (actions.go).
+func matchesMouseCaptureToggle(msg tea.KeyPressMsg) bool {
+	action, ok := findAction("mouse-capture-toggle")
+	if !ok {
+		return false
+	}
+	return keybinding.Matches(msg, actions.Binding(action))
+}
+
 // findAction looks up a registry row by ID. Registry() is a handful of
 // entries, so a linear scan costs nothing next to a keypress or a render.
 func findAction(id string) (actions.Action, bool) {
@@ -2047,7 +2083,7 @@ func (m *Model) available(id string) bool {
 	case "switch-tabs", "select", "help", "search",
 		"open-browser", "browser-read", "browser-order", "browser-filter",
 		"browser-history", "browser-show-deleted", "browser-insights", "browser-copy",
-		"browser-scroll-preview", "browser-focus-preview", "browser-back",
+		"browser-scroll-preview", "browser-focus-preview", "mouse-capture-toggle", "browser-back",
 		"browser-preview-list", "browser-preview-scroll", "browser-preview-half-page",
 		"browser-preview-page", "browser-preview-ends", "browser-preview-copy",
 		"reading-scroll", "reading-links", "reading-follow", "reading-backlinks", "reading-copy-path", "reading-copy-body",
@@ -2067,6 +2103,10 @@ func (m *Model) available(id string) bool {
 		// directly by the browser's focused block (list/scroll/half-page/page/ends/
 		// copy): always available so that swapped footer renders every key lit, its
 		// whole reason for existing being to name the keys that DO work in that mode.
+		// mouse-capture-toggle is the same shape — matched directly by the root
+		// while a browser owns the stack (handleKey), never a runner — so it is
+		// always offerable, its effect situational (only a shown preview has a
+		// captured mouse to hand back), and renders lit rather than struck.
 		return true
 	case "scan":
 		// Advisory gitleaks sweep — live exactly when its runner is wired.
@@ -2273,8 +2313,11 @@ func (m Model) View() tea.View {
 			// top.View just ran, so a browser's previewShown — and thus WantsMouse —
 			// now reflects this exact frame: read it here, before the tea.View is
 			// built, to arm the mouse only while the preview pane the wheel/click act
-			// on is actually drawn.
-			if browser, isBrowser := top.(*views.Browser); isBrowser && browser.WantsMouse() {
+			// on is actually drawn. mouseCaptureOff vetoes the arm: the runtime
+			// toggle that hands the pane back to the terminal's own drag-select
+			// (mouse capture is terminal-global — there is no scoped capture to arm
+			// instead), disclosed in the footer every frame it holds.
+			if browser, isBrowser := top.(*views.Browser); isBrowser && browser.WantsMouse() && !m.mouseCaptureOff {
 				mouseWanted = true
 			}
 			body = strings.Join([]string{header, m.breadcrumb(), screen, m.footer()}, "\n\n")
@@ -2366,10 +2409,40 @@ func (m Model) footer() string {
 		return m.styles.Dim.Render(views.HelpLine(bindings))
 	default:
 		if _, ok := m.stackTop(); ok {
-			return m.stackFooterLine()
+			footer := m.stackFooterLine()
+			if cue := m.mouseCaptureDisclosure(); cue != "" {
+				// Appended to the SAME footer line (a state cue, not a new row) so
+				// the frame keeps its exact height and the footer stays on the
+				// literal last row (spec §2): it reads as one more " · "-joined
+				// segment, the separator stackFooterLine already uses between hints.
+				footer = strings.Join([]string{footer, cue}, m.styles.Dim.Render(" · "))
+			}
+			return footer
 		}
 		return m.styles.Dim.Render(views.HelpLine(m.footerBindings()))
 	}
+}
+
+// mouseCaptureDisclosure is the footer state cue shown while the mouse-capture
+// toggle is off and a browser owns the stack — the sole surface the mouse is
+// ever armed for. It names the current state (native drag-select works) and the
+// key that restores capture, derived purely from the persistent mouseCaptureOff
+// field, so it renders on EVERY frame the toggle is off, not only the frame m
+// flipped it. Empty (the footer says nothing about the mouse) whenever capture
+// is armed or a non-browser screen owns the stack, where m neither toggles nor
+// has anything to disclose.
+func (m Model) mouseCaptureDisclosure() string {
+	if !m.mouseCaptureOff {
+		return ""
+	}
+	top, ok := m.stackTop()
+	if !ok {
+		return ""
+	}
+	if _, isBrowser := top.(*views.Browser); !isBrowser {
+		return ""
+	}
+	return m.styles.Dim.Render("mouse: native select (m re-arms)")
 }
 
 // footerBindings renders the active scope's live keys straight from the

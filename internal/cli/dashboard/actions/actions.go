@@ -204,6 +204,18 @@ var registry = []Action{
 	// same honesty parity as scroll-preview: the key is real, its effect is
 	// situational (dashboard.go's available()).
 	{ID: "browser-focus-preview", Title: "focus preview", Keys: []string{"tab"}, KeyHint: "tab", Scope: ScopeBrowser},
+	// mouse-capture-toggle (m) disarms the preview pane's cell-motion mouse
+	// capture so the terminal's own drag-select works in the pane. Mouse capture
+	// is terminal-global — scoped capture is not expressible — so the only honest
+	// remedy is a runtime switch that turns it off entirely, with the state
+	// disclosed every frame it is off (dashboard.go's mouseCaptureDisclosure).
+	// Runner-less like every other browser navigation row: the root matches m
+	// directly while a browser owns the stack and flips its own mouseCaptureOff
+	// (handleKey), never a daemon mutation, so it never Mutates and a quiesce
+	// leaves it alone. Its m is free within ScopeBrowser; migrate binds m too but
+	// under ScopeProjects, and cross-scope reuse is legal (only one scope is ever
+	// the matched footer scope at a time).
+	{ID: "mouse-capture-toggle", Title: "mouse capture", Keys: []string{"m"}, KeyHint: "m", Scope: ScopeBrowser},
 	{ID: "browser-back", Title: "back", Keys: []string{"esc"}, KeyHint: "esc", Scope: ScopeBrowser},
 	// ScopeBrowserPreviewFocused rows: while the preview pane holds
 	// keyboard focus (tab, or a click into it) the browser swaps its footer to

@@ -65,10 +65,13 @@ every frame regardless of how tall the active view's own content is.
   terminal's own drag-select in the browser. While that capture is armed,
   clicking a browser list row selects it. To copy text: press `y` to copy
   the selected memory to the system clipboard (OSC 52 — carries over SSH, tmux
-  with `allow-passthrough`, and WSL2), or bypass mouse reporting with
-  Option-drag (macOS Terminal/iTerm2) or Shift-drag (Linux terminals, Windows
-  Terminal), or press `enter` into the reading view — which captures no mouse —
-  and select normally.
+  with `allow-passthrough`, and WSL2); press `m` to disarm mouse capture
+  entirely so the terminal's own drag-select works again (mouse reporting is
+  terminal-global — there is no scoped capture to keep — so the footer discloses
+  `mouse: native select (m re-arms)` every frame it is off, and `m` re-arms it);
+  bypass reporting for a single selection with Option-drag (macOS
+  Terminal/iTerm2) or Shift-drag (Linux terminals, Windows Terminal); or press
+  `enter` into the reading view — which captures no mouse — and select normally.
 - Everywhere else the hub captures no mouse. Instead it sets the terminal's
   alternate-scroll mode (DECSET 1007) for the session, so the wheel scrolls
   hub content — delivered as arrow keys — with native drag-select intact on
@@ -81,7 +84,8 @@ every frame regardless of how tall the active view's own content is.
 - In-project filter: `/` inside the browser filters the list (fuzzy on
   name + description).
 - Keys: `enter` read · `e` edit · `n` new · `r` rename · `d` delete ·
-  `h` history · `i` insights · `y` copy to clipboard · `esc` back.
+  `h` history · `i` insights · `y` copy to clipboard · `m` mouse capture ·
+  `esc` back.
 
 ## 4. Reading view
 
