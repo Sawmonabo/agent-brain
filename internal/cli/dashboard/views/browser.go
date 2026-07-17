@@ -1317,11 +1317,13 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 // — renderList's own top-of-window provider header always claims the list's
 // row 0, so the preview needs the same one-line offset for the two columns to
 // align — followed by one Warn-styled reason line per lint issue on the
-// hovered memory, if any. A body that fits sizes the viewport to its own
-// content, so a short preview lets the list drive the joined height and an
-// empty one adds nothing; a body taller than the pane is bounded to the
-// height budget and scrolls in place, its bottom line spent on an overflow
-// hint. Bounding the pane is the whole fix: without it a long memory grew the
+// hovered memory, if any. The header zone itself always renders — it is the
+// BODY that adds nothing when empty: a body that fits sizes the viewport to
+// its own content, so a short preview lets the list drive the joined height
+// and an empty body contributes nothing past the header zone above it; a
+// body taller than the pane is bounded to the height budget and scrolls in
+// place, its bottom line spent on an overflow hint. Bounding the pane is the
+// whole fix: without it a long memory grew the
 // JoinHorizontal block past height and shoved the root's footer — the option
 // keys — off the terminal, hiding both the keys and the text past the fold
 // (the exact defect live-hub testing surfaced).

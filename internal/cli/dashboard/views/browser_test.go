@@ -2125,7 +2125,7 @@ func TestBrowserPreviewHeaderRespectsHeightBudgetWithIssues(t *testing.T) {
 			t.Errorf("view missing issue line %q; got:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "more") {
+	if strings.Contains(got, "⚠ +") {
 		t.Errorf("exactly 3 issues must not trigger the overflow line; got:\n%s", got)
 	}
 }
@@ -2158,6 +2158,69 @@ func TestBrowserPreviewHeaderCapsIssuesWithOverflowLine(t *testing.T) {
 	}
 	if !strings.Contains(got, "⚠ +1 more") {
 		t.Errorf("view missing the overflow line for the 4th issue; got:\n%s", got)
+	}
+}
+
+// TestBrowserPreviewHeaderTruncatesPathologicallyLongReason pins the Produces
+// clause "ansi-truncated to pane width" as an actual failing-test guard.
+// Every OTHER fixture's Detail sentence fits comfortably inside a realistic
+// pane width, so this clause had no test that could ever fail on it — a
+// Detail built from a pathologically long, space-free dangling-link target
+// (Lint Details embed user content, so this is reachable in practice, not
+// contrived) is what actually binds it, two ways:
+//
+//  1. previewHeaderLines' own returned warn line must still fit width — the
+//     truncation's actual point of application.
+//  2. Because the preview column is later rendered through a
+//     Width(previewWidth).MaxWidth(previewWidth) style at View's own call
+//     site, a warn line that escaped that bound would word-wrap into an
+//     uncounted extra physical line there — invisible to renderPreviewPane's
+//     own line-counting, and silent until it pushes the WHOLE view past its
+//     height budget. Paired with a long body (as in
+//     TestBrowserPreviewHeaderRespectsHeightBudgetWithIssues) so the budget is
+//     already tight enough that one such stray line is not just absorbed by
+//     slack — it must actually overflow height for this to be a meaningful
+//     regression guard, not a cosmetic one.
+func TestBrowserPreviewHeaderTruncatesPathologicallyLongReason(t *testing.T) {
+	t.Parallel()
+	registry := browserFixtureRegistry(t)
+	dir := t.TempDir()
+	writeBrowserFile(t, dir, "verbose.md", "---\nname: Verbose\ndescription: a memory with one pathologically long dangling reference\n---\n", time.Now())
+
+	// A single unbroken token far longer than any realistic pane width: with no
+	// spaces of its own, a word-wrap fallback could not hide it behind a tidy
+	// line break — a missing truncation shows up as a forced mid-word wrap.
+	longTarget := strings.Repeat("Overflow", 40)
+	units := []api.UnitInfo{{Provider: "claude", Folder: "acme", LocalDir: dir}}
+	browser := NewBrowser(BrowserDeps{
+		Registry: registry,
+		Units:    units,
+		Folder:   "acme",
+		Now:      time.Now(),
+		ReadBody: fakeReadBody(map[string]string{
+			"claude/verbose.md": numberedRows("") + fmt.Sprintf("see [[%s]] for details\n", longTarget),
+		}),
+		List: func() ([]memoryfs.Memory, error) { return memoryfs.List(registry, units) },
+	})
+
+	const width, height = 150, 30
+	const previewWidth = width - listPaneWidth - 2
+
+	rows := browser.visibleRows()
+	if len(rows) != 1 {
+		t.Fatalf("setup: want exactly one memory, got %d", len(rows))
+	}
+	headerLines := browser.previewHeaderLines(rows[0], previewWidth)
+	if len(headerLines) != 2 {
+		t.Fatalf("setup: want the padding line plus exactly one warn line, got %d: %q", len(headerLines), headerLines)
+	}
+	if w := ansi.StringWidth(headerLines[1]); w > previewWidth {
+		t.Errorf("warn line width %d exceeds the pane width %d — truncation did not bind: %q", w, previewWidth, headerLines[1])
+	}
+
+	got := plain(browser.View(width, height))
+	if lines := strings.Count(got, "\n") + 1; lines > height {
+		t.Errorf("view rendered %d lines with a pathologically long reason present, want <= %d; an untruncated reason word-wraps into an uncounted extra line:\n%s", lines, height, got)
 	}
 }
 
