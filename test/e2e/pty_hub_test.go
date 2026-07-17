@@ -579,13 +579,15 @@ func TestPTYKillSwitchEmitsNoAlternateScrollBytes(t *testing.T) {
 // report described.
 //
 // "enter read" is the browser scope's FIRST key hint (actions.go's
-// browser-read row, rendered by stackFooterLine in registry order) —
+// browser-read row, rendered by stackFooterSegments in registry order) —
 // distinctive against both seeded bodies' text, so a match can only be the
 // footer's own row, never a coincidence in the previewed markdown. It has to
-// be the first hint, not a later one: the full footer line is wider than
-// this session's 120-column width and the terminal clips rather than wraps
-// it, so a hint late in registry order (e.g. "esc back") never reaches the
-// visible grid at all.
+// be the first hint, not a later one: the full browser footer is wider than
+// this session's 120-column width, so the hub's width-aware fitter drops whole
+// trailing rows behind a "… ?" marker to make the line fit — a hint late in
+// registry order (e.g. "esc back") is dropped and never reaches the visible
+// grid, while the first hint is the highest-priority row the fitter always
+// keeps.
 //
 // The row is asserted against the LITERAL last row of the 40-row session (39,
 // 0-indexed) rather than a row derived from the first captured frame:

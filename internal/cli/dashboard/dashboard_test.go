@@ -2790,7 +2790,7 @@ func TestStackFooterAdvertisesScopedKeys(t *testing.T) {
 // so it cannot catch the honesty gap where a runner-less action missing from
 // available()'s unconditional whitelist renders struck though its key works. This
 // inspects the raw (styled) footer: the row must carry the plain Dim rendering
-// stackFooterLine gives an available row, never the Dim+strikethrough one it
+// stackFooterSegments gives an available row, never the Dim+strikethrough one it
 // gives a disabled one.
 func TestStackFooterRendersFocusPreviewLit(t *testing.T) {
 	t.Parallel()
@@ -2808,7 +2808,7 @@ func TestStackFooterRendersFocusPreviewLit(t *testing.T) {
 	}
 
 	raw := m.footer()
-	const segment = "tab focus preview" // KeyHint + Title, exactly as stackFooterLine composes it
+	const segment = "tab focus preview" // KeyHint + Title, exactly as stackFooterSegments composes it
 	if !strings.Contains(plain(raw), segment) {
 		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
 	}
@@ -2839,7 +2839,11 @@ func TestStackFooterSwapsToPreviewFocusedSet(t *testing.T) {
 		},
 	})
 	m := newTestModel(&fakeData{})
-	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	// 200 cols, not the canonical 120: this test pins the SCOPE SWAP, so it must
+	// see the full list-scope row set (e.g. "tab focus preview") — and the
+	// width-aware footer fitter legitimately drops that trailing row behind the
+	// "… ?" marker at 120. A width the whole line fits keeps the swap the subject.
+	m, _ = step(m, tea.WindowSizeMsg{Width: 200, Height: 40})
 	m, _ = step(m, views.PushScreenMsg{Screen: browser})
 
 	// Render once so the browser's View runs at preview-split width and records
@@ -2917,7 +2921,7 @@ func TestStackFooterRendersFocusedPreviewSetLit(t *testing.T) {
 
 	raw := m.footer()
 	// Each row's footer segment is KeyHint + " " + Title, exactly as
-	// stackFooterLine composes it. A row missing from available()'s whitelist
+	// stackFooterSegments composes it. A row missing from available()'s whitelist
 	// renders struck, so its contiguous m.styles.Dim.Render(segment) is absent.
 	rows := []struct {
 		id      string
@@ -2982,7 +2986,12 @@ func TestStackFooterRevertsWhenPreviewFocusStrandedByResize(t *testing.T) {
 	_ = m.View() // re-render narrow so the browser records previewShown = false
 
 	reverted := plain(m.footer())
-	for _, want := range []string{"o order", "h history"} {
+	// Both probes are early list-scope rows: at this stranding width (80) the
+	// width-aware footer fitter drops the browser scope's later rows (e.g.
+	// "h history") behind the "… ?" marker, so the reversion proof must ride keys
+	// that survive the fit — "o order" and "/ filter" are list-only and lead the
+	// registry, so their presence still proves the scope, not the focused set.
+	for _, want := range []string{"o order", "/ filter"} {
 		if !strings.Contains(reverted, want) {
 			t.Errorf("stranded focus did not revert the footer to the browser scope; missing %q:\n%s", want, reverted)
 		}
@@ -3019,7 +3028,7 @@ func TestStackFooterRendersBrowserCopyLit(t *testing.T) {
 	}
 
 	raw := m.footer()
-	const segment = "y copy" // KeyHint + Title, exactly as stackFooterLine composes it
+	const segment = "y copy" // KeyHint + Title, exactly as stackFooterSegments composes it
 	if !strings.Contains(plain(raw), segment) {
 		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
 	}
@@ -3045,7 +3054,7 @@ func TestStackFooterRendersReadingCopyBodyLit(t *testing.T) {
 	}
 
 	raw := m.footer()
-	const segment = "Y copy body" // KeyHint + Title, exactly as stackFooterLine composes it
+	const segment = "Y copy body" // KeyHint + Title, exactly as stackFooterSegments composes it
 	if !strings.Contains(plain(raw), segment) {
 		t.Fatalf("reading stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
 	}
@@ -3073,7 +3082,7 @@ func TestStackFooterRendersReadingScrollLit(t *testing.T) {
 	}
 
 	raw := m.footer()
-	const segment = "j/k scroll" // KeyHint + Title, exactly as stackFooterLine composes it
+	const segment = "j/k scroll" // KeyHint + Title, exactly as stackFooterSegments composes it
 	if !strings.Contains(plain(raw), segment) {
 		t.Fatalf("reading stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
 	}
@@ -5028,7 +5037,11 @@ func TestMouseCaptureDisclosureRendersEveryFrameWhileOff(t *testing.T) {
 func TestMouseCaptureToggleFooterRowLit(t *testing.T) {
 	t.Parallel()
 	m := newTestModel(&fakeData{})
-	m, _ = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	// 200 cols so the full list footer renders: this pins lit-vs-struck, which is
+	// width-independent, but the mouse-capture row sits near the tail of the list
+	// scope and the width-aware fitter drops it behind the "… ?" marker at 120.
+	// A width the whole line fits keeps the row present to inspect its styling.
+	m, _ = step(m, tea.WindowSizeMsg{Width: 200, Height: 40})
 	m = m.pushScreen(mouseBrowser(t))
 	_ = m.View() // browser owns the stack at split width
 
@@ -5037,7 +5050,7 @@ func TestMouseCaptureToggleFooterRowLit(t *testing.T) {
 	}
 
 	raw := m.footer()
-	const segment = "m mouse capture" // KeyHint + Title, exactly as stackFooterLine composes it
+	const segment = "m mouse capture" // KeyHint + Title, exactly as stackFooterSegments composes it
 	if !strings.Contains(plain(raw), segment) {
 		t.Fatalf("browser stack footer does not advertise %q at all; got:\n%s", segment, plain(raw))
 	}
@@ -5068,13 +5081,32 @@ func TestFilterTypingKeepsMouseKeyAsQueryLetter(t *testing.T) {
 
 	m, _ = step(m, key("/")) // open the filter
 	m, _ = step(m, key("a"))
-	m, _ = step(m, key("m")) // the m the earlier build stole
+	// Driven, not stepped: a root-side hoist of m would emit MouseCaptureToggleMsg
+	// as a Cmd, and only executing that Cmd (drive) lands the flip — a bare step
+	// swallows it, so the mouseCaptureOff assertion below would miss an ASYNC steal
+	// and catch only a synchronous root flip.
+	m = drive(t, m, key("m")) // the m the earlier build stole
 
 	if m.mouseCaptureOff {
 		t.Error("typing m into the filter flipped mouseCaptureOff; m must stay a query letter while the filter owns input")
 	}
-	if got := plain(m.View().Content); !strings.Contains(got, "am") {
-		t.Errorf("filter query lost its m — the frame does not show the typed \"am\"; got:\n%s", got)
+	// Assert the EXTRACTED filter line reads the whole typed query, not merely that
+	// "am" occurs somewhere in the frame: a root-side hoist leaves the filter
+	// reading "a" (the m stolen), yet "am" could still appear incidentally
+	// elsewhere on screen, so the substring-anywhere check could pass through the
+	// exact regression. The filter prompt renders "filter: > " + the query.
+	var filterLine string
+	for line := range strings.SplitSeq(plain(m.View().Content), "\n") {
+		if strings.Contains(line, "filter:") {
+			filterLine = line
+			break
+		}
+	}
+	if filterLine == "" {
+		t.Fatalf("no filter line in the frame; the filter is not open:\n%s", plain(m.View().Content))
+	}
+	if want := "filter: > am"; !strings.Contains(filterLine, want) {
+		t.Errorf("filter line lost the typed m; want it to contain %q, got:\n%q", want, filterLine)
 	}
 }
 
@@ -5161,6 +5193,288 @@ func TestMouseCaptureCueLeadsListFooterWithinWidth(t *testing.T) {
 	// multi-byte runes that a byte offset would over-count.
 	if startColumn := lipgloss.Width(beforeCue); startColumn >= 120 {
 		t.Errorf("cue starts at column %d (>= 120); the list footer clips it at the canonical width and it never shows\nfooter: %s", startColumn, footer)
+	}
+}
+
+// TestFitFooterSegments pins the width-aware fitting algorithm in isolation: with
+// plain (unstyled) inputs the exact composed line is predictable, so every
+// invariant is asserted positively against the actual output rather than an
+// absence of error. It covers the whole contract — whole rows drop from the TAIL
+// (registry order is priority), the "… ?" marker renders only when something was
+// dropped, the leading cue is never dropped even below its own width, and a
+// width of 0 means "size unknown, do not fit."
+func TestFitFooterSegments(t *testing.T) {
+	t.Parallel()
+	const (
+		separator = " · "
+		marker    = "… ?"
+	)
+	for _, testCase := range []struct {
+		name       string
+		cue        string
+		segments   []string
+		width      int
+		want       string
+		wantMarker bool
+	}{
+		{
+			name:     "width zero returns the full line unfit",
+			cue:      "CUE",
+			segments: []string{"aa", "bb", "cc"},
+			width:    0,
+			want:     "CUE · aa · bb · cc",
+		},
+		{
+			name:     "wide width keeps every row with no marker",
+			segments: []string{"aa", "bb", "cc"},
+			width:    100,
+			want:     "aa · bb · cc",
+		},
+		{
+			name:       "drops whole rows from the tail behind the marker",
+			segments:   []string{"aaaa", "bbbb", "cccc", "dddd"},
+			width:      18,
+			want:       "aaaa · bbbb · … ?",
+			wantMarker: true,
+		},
+		{
+			name:       "cue leads and is never dropped even below its own width",
+			cue:        "CUE",
+			segments:   []string{"aaaa", "bbbb"},
+			width:      4,
+			want:       "CUE · … ?",
+			wantMarker: true,
+		},
+		{
+			name:     "an exactly fitting line keeps the last row and drops the marker",
+			segments: []string{"aaaa", "bbbb"},
+			width:    11, // "aaaa · bbbb" is exactly 11 columns
+			want:     "aaaa · bbbb",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			got := fitFooterSegments(testCase.cue, testCase.segments, separator, marker, testCase.width)
+			// The exact composed line fully encodes the fit at these plain widths —
+			// which rows survived, their order, and where the marker landed — so a
+			// diff match subsumes the printable-width bound (the integration seams
+			// assert that bound against the real, styled footer). The one deliberate
+			// over-width case is "CUE · … ?" at width 4: the cue is never dropped even
+			// when it cannot fit, so the exact match is the only correct assertion.
+			if diff := cmp.Diff(testCase.want, got); diff != "" {
+				t.Errorf("fitFooterSegments mismatch (-want +got):\n%s", diff)
+			}
+			if gotMarker := strings.Contains(got, marker); gotMarker != testCase.wantMarker {
+				t.Errorf("marker present = %v, want %v; got %q", gotMarker, testCase.wantMarker, got)
+			}
+		})
+	}
+}
+
+// browserFooterRow is the exact "key desc" text stackFooterSegments composes for
+// a ScopeBrowser row, in registry order — the units the stack seam drops from the
+// tail. Kept here so the width assertions below name real, contiguous rows.
+const (
+	browserFirstRow  = "enter read" // registry-first: always kept
+	browserLastRow   = "esc back"   // registry-last: first to drop
+	browserMidRow    = "i insights" // the last row kept at width 120 (armed, no cue)
+	browserNarrowMid = "d delete"   // the last row kept at width 80
+)
+
+// TestFooterFitsStackSeamToWidth pins the STACK footer seam: a pushed browser's
+// list-scope footer overflows the canonical width (188 columns armed), and the
+// fitter must trim it to fit by dropping whole trailing rows behind the "… ?"
+// marker, never a mid-row clip. Deleting the fit at the stack seam leaves the
+// 120/80 lines over-wide, reddening the printable-width assertion here (and no
+// tab-seam test), which is the per-seam pin. Mouse capture stays armed so no cue
+// participates — this isolates pure row fitting.
+func TestFooterFitsStackSeamToWidth(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		width       int
+		wantPresent []string
+		wantAbsent  []string
+		wantMarker  bool
+	}{
+		{
+			name:        "wide width keeps every row",
+			width:       200,
+			wantPresent: []string{browserFirstRow, "m mouse capture", browserLastRow},
+			wantMarker:  false,
+		},
+		{
+			name:        "canonical width drops the tail",
+			width:       120,
+			wantPresent: []string{browserFirstRow, browserMidRow},
+			wantAbsent:  []string{"y copy", browserLastRow},
+			wantMarker:  true,
+		},
+		{
+			name:        "narrow width drops more of the tail",
+			width:       80,
+			wantPresent: []string{browserFirstRow, browserNarrowMid},
+			wantAbsent:  []string{"h history", browserLastRow},
+			wantMarker:  true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: testCase.width, Height: 40})
+			m = m.pushScreen(mouseBrowser(t))
+			_ = m.View() // record previewShown so the browser owns the stack
+
+			raw := m.footer()
+			assertFooterFits(t, raw, testCase.width, testCase.wantPresent, testCase.wantAbsent, testCase.wantMarker)
+		})
+	}
+}
+
+// TestFooterFitsTabSeamToWidth pins the BARE-TAB footer seam through the same
+// helper: the Projects tab footer (globals + Projects rows) overflows a narrow
+// terminal and must fit by dropping trailing rows behind the marker, with the
+// first row always kept. Deleting the fit at the tab seam alone leaves the narrow
+// line over-wide, reddening this test and no stack-seam test — the tab half of
+// the per-seam pin.
+func TestFooterFitsTabSeamToWidth(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		width       int
+		wantPresent []string
+		wantAbsent  []string
+		wantMarker  bool
+	}{
+		{
+			name:        "wide width keeps every row",
+			width:       200,
+			wantPresent: []string{"tab/1–4 switch", "q quit"},
+			wantMarker:  false,
+		},
+		{
+			name:        "narrow width drops the tail",
+			width:       40,
+			wantPresent: []string{"tab/1–4 switch"},
+			wantAbsent:  []string{"q quit"},
+			wantMarker:  true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: testCase.width, Height: 40})
+			m.active = tabProjects
+
+			raw := m.footer()
+			assertFooterFits(t, raw, testCase.width, testCase.wantPresent, testCase.wantAbsent, testCase.wantMarker)
+		})
+	}
+}
+
+// TestFooterKeepsMouseCueAndFitsRowsBothScopes is the both-scopes always-keep-cue
+// pin. While mouse capture is off the state cue must render WHOLE and lead the
+// line at every width, in the LIST scope AND the focused scope — the focused case
+// is the concrete defect the fitter fixes: the focused set plus the cue reached
+// 136 columns with the cue trailing at column 104, so at width 120 its tail
+// clipped and the disclosed state was invisible. Leading the cue (and fitting the
+// rows behind it) keeps the whole cue on screen. Dropping the always-keep-cue rule
+// reddens the cue-visible assertion; reverting the fitter to the old trailing-cue
+// behaviour reddens the focused case at 120.
+func TestFooterKeepsMouseCueAndFitsRowsBothScopes(t *testing.T) {
+	t.Parallel()
+	const cue = "mouse: native select (m re-arms)"
+	for _, testCase := range []struct {
+		name        string
+		width       int
+		focused     bool
+		wantPresent []string
+		wantAbsent  []string
+		wantMarker  bool
+	}{
+		{
+			name:        "list scope canonical width",
+			width:       120,
+			wantPresent: []string{browserFirstRow, browserNarrowMid},
+			wantAbsent:  []string{"h history"},
+			wantMarker:  true,
+		},
+		{
+			name:        "list scope narrow width",
+			width:       80,
+			wantPresent: []string{browserFirstRow, "/ filter"},
+			wantAbsent:  []string{"e edit"},
+			wantMarker:  true,
+		},
+		{
+			name:        "focused scope canonical width",
+			width:       120,
+			focused:     true,
+			wantPresent: []string{"esc/tab list", "g/G ends"},
+			wantAbsent:  []string{"m mouse capture"},
+			wantMarker:  true,
+		},
+		{
+			name:        "focused scope wide width",
+			width:       200,
+			focused:     true,
+			wantPresent: []string{"esc/tab list", "m mouse capture"},
+			wantMarker:  false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			m := newTestModel(&fakeData{})
+			m, _ = step(m, tea.WindowSizeMsg{Width: testCase.width, Height: 40})
+			m = m.pushScreen(mouseBrowser(t))
+			_ = m.View() // record previewShown so the pane can hold focus
+			if testCase.focused {
+				m = drive(t, m, key("tab"))
+				if !m.stack[0].(*views.Browser).PreviewFocused() {
+					t.Fatalf("setup: tab did not focus the preview pane at width %d", testCase.width)
+				}
+			}
+			m.mouseCaptureOff = true // disclose native-select; the cue must lead and survive
+
+			raw := m.footer()
+			printable := plain(raw)
+			// The cue renders WHOLE and its tail sits within the width — the visible
+			// half of the always-keep-cue rule. Measured with lipgloss.Width because
+			// the " · " separators are multi-byte and a byte offset would over-count.
+			before, _, found := strings.Cut(printable, cue)
+			if !found {
+				t.Fatalf("footer dropped the state cue %q; it must always render while capture is off\nfooter: %s", cue, printable)
+			}
+			if cueEnd := lipgloss.Width(before) + lipgloss.Width(cue); cueEnd > testCase.width {
+				t.Errorf("cue tail ends at column %d (> width %d); it clips at the terminal edge\nfooter: %s", cueEnd, testCase.width, printable)
+			}
+			assertFooterFits(t, raw, testCase.width, testCase.wantPresent, testCase.wantAbsent, testCase.wantMarker)
+		})
+	}
+}
+
+// assertFooterFits checks the shared footer-fitting invariants against the raw
+// (styled) footer line: printable width within the terminal (ANSI-aware), the
+// exact "… ?" marker present exactly when rows were dropped, every wanted row
+// present intact (whole, never a mid-row fragment), and every dropped row absent.
+func assertFooterFits(t *testing.T, raw string, width int, wantPresent, wantAbsent []string, wantMarker bool) {
+	t.Helper()
+	printable := plain(raw)
+	if got := lipgloss.Width(raw); got > width {
+		t.Errorf("footer is %d columns wide, exceeds terminal width %d\nfooter: %s", got, width, printable)
+	}
+	if gotMarker := strings.Contains(printable, footerOverflowMarker); gotMarker != wantMarker {
+		t.Errorf("overflow marker %q present = %v, want %v\nfooter: %s", footerOverflowMarker, gotMarker, wantMarker, printable)
+	}
+	for _, want := range wantPresent {
+		if !strings.Contains(printable, want) {
+			t.Errorf("footer missing kept row %q (a mid-row cut or an over-eager drop)\nfooter: %s", want, printable)
+		}
+	}
+	for _, absent := range wantAbsent {
+		if strings.Contains(printable, absent) {
+			t.Errorf("footer still shows %q; it should have been dropped from the tail to fit\nfooter: %s", absent, printable)
+		}
 	}
 }
 

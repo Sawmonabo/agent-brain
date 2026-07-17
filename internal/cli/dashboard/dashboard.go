@@ -1985,14 +1985,16 @@ func (m Model) stackFooterRows() []stackFooterRow {
 	return rows
 }
 
-// stackFooterLine renders stackFooterRows in views.HelpLine's exact "key
-// desc · key desc" shape, but styled per row: enabled rows dim (the whole
-// footer's usual treatment), disabled rows dim + struck through — the
-// visible half of the availability gate. Segments are styled individually
-// because lipgloss terminates each Render with a reset, so one outer
-// Dim.Render over a line containing an inner strikethrough render would
-// lose the dim for everything after the inner reset.
-func (m Model) stackFooterLine() string {
+// stackFooterSegments renders stackFooterRows as individually styled "key desc"
+// segments in registry (priority) order: enabled rows dim (the whole footer's
+// usual treatment), disabled rows dim + struck through — the visible half of the
+// availability gate. It returns the segments still separable rather than a
+// pre-joined line because the width-aware footer fitter (fitFooterLine) drops
+// WHOLE trailing rows to fit the terminal, so it must see the row boundaries.
+// Styling is per segment because lipgloss terminates each Render with a reset, so
+// one outer Dim.Render over a line holding an inner strikethrough render would
+// lose the dim for everything after that inner reset.
+func (m Model) stackFooterSegments() []string {
 	rows := m.stackFooterRows()
 	segments := make([]string, len(rows))
 	for i, row := range rows {
@@ -2004,7 +2006,78 @@ func (m Model) stackFooterLine() string {
 			segments[i] = m.styles.Dim.Render(segment)
 		}
 	}
-	return strings.Join(segments, m.styles.Dim.Render(" · "))
+	return segments
+}
+
+// footerSeparator joins footer row segments; footerOverflowMarker is the trailing
+// continuation marker fitFooterLine renders in place of whatever rows it had to
+// drop. The marker names the ? key on purpose: the help overlay is the full-truth
+// surface that always lists every binding, so a row dropped to fit the width is
+// pointed at, never silently lost (Decision 9).
+const (
+	footerSeparator      = " · "
+	footerOverflowMarker = "… ?"
+)
+
+// fitFooterLine is the single width-aware fitting step every registry-driven
+// footer line passes through — the stack-screen seam and the bare-tab seam both
+// call it, so the two can never drift in how a footer fits (spec §14's single
+// source, Decision 9). cue is the always-kept leading state cue
+// (mouseCaptureDisclosure, or "" when there is none); segments are the active
+// scope's rows, already styled, in registry-priority order. It composes them with
+// the footer's dim separator and, only when it must drop trailing rows to fit
+// m.width, the dim "… ?" marker. The separator and marker are styled here so
+// fitFooterSegments stays a pure width computation.
+func (m Model) fitFooterLine(cue string, segments []string) string {
+	return fitFooterSegments(
+		cue,
+		segments,
+		m.styles.Dim.Render(footerSeparator),
+		m.styles.Dim.Render(footerOverflowMarker),
+		m.width,
+	)
+}
+
+// fitFooterSegments composes cue + segments into one footer line fitting within
+// width, dropping WHOLE segments from the TAIL — the registry order they arrive
+// in IS their priority (earlier rows matter more), so the least important rows go
+// first — and rendering marker in place of whatever it dropped. There is no
+// wrapping and no mid-row truncation: a row is kept whole or dropped whole, so a
+// key hint is never cut into an unreadable fragment. The cue always LEADS and is
+// never a droppable segment (Decision 8 — the disclosed state must survive at
+// narrow widths); an empty cue contributes no leading segment. Width is measured
+// ANSI-aware (lipgloss.Width) so the styling woven through the segments,
+// separator, and marker never inflates the count. width <= 0 means the terminal
+// size is not known yet (no WindowSizeMsg has arrived, or a width-agnostic
+// caller) — the full line is returned rather than collapsed, since fitting to a
+// zero width would drop everything. Whenever width > 0 and the cue itself fits,
+// the returned line's printable width is <= width.
+func fitFooterSegments(cue string, segments []string, separator, marker string, width int) string {
+	kept := make([]string, 0, len(segments)+2)
+	if cue != "" {
+		kept = append(kept, cue)
+	}
+	if width <= 0 {
+		return strings.Join(append(kept, segments...), separator)
+	}
+	placed := 0
+	for i, segment := range segments {
+		trial := append(slices.Clone(kept), segment)
+		if i+1 < len(segments) {
+			// More rows follow this candidate, so the marker will render; it must
+			// fit alongside the candidate or the candidate itself cannot be kept.
+			trial = append(trial, marker)
+		}
+		if lipgloss.Width(strings.Join(trial, separator)) > width {
+			break
+		}
+		kept = append(kept, segment)
+		placed = i + 1
+	}
+	if placed < len(segments) {
+		kept = append(kept, marker)
+	}
+	return strings.Join(kept, separator)
 }
 
 // buildBrowserDeps assembles a views.BrowserDeps for folder from the root's
@@ -2507,33 +2580,23 @@ func (m Model) footer() string {
 		}
 		return m.styles.Dim.Render(views.HelpLine(bindings))
 	default:
-		if top, ok := m.stackTop(); ok {
-			footer := m.stackFooterLine()
-			if cue := m.mouseCaptureDisclosure(); cue != "" {
-				// The cue joins the SAME footer line (a state cue, not a new row) so
-				// the frame keeps its exact height and the footer stays on the literal
-				// last row (spec §2): it reads as one more " · "-joined segment, the
-				// separator stackFooterLine already uses between hints. WHERE on the
-				// line it sits depends on scope. The LIST footer overflows the
-				// canonical PTY width (188 cols even armed) and the v2 compositor
-				// CLIPS rather than wraps, so a cue appended last would begin past the
-				// right edge and never render — the disclosed state would be invisible
-				// at the one width that matters. So in list scope the cue LEADS,
-				// surviving the clip. The focused footer is the short swapped preview
-				// set and comfortably fits, so there the cue trails as the last
-				// segment, leaving the return/scroll keys reading first. (The general
-				// list-footer overflow — even "esc back" clips — is a separate
-				// width-aware-fitting task, not this cue placement.)
-				separator := m.styles.Dim.Render(" · ")
-				if browser, isBrowser := top.(*views.Browser); isBrowser && browser.PreviewFocused() {
-					footer = strings.Join([]string{footer, cue}, separator)
-				} else {
-					footer = strings.Join([]string{cue, footer}, separator)
-				}
-			}
-			return footer
+		if _, ok := m.stackTop(); ok {
+			// One width-aware fitting step (fitFooterLine) owns the whole line: the
+			// mouse-capture cue joins as a state cue (not a registry row) so the frame
+			// keeps its exact height and the footer stays on the literal last row
+			// (spec §2), the scope's rows follow in registry-priority order, and whole
+			// trailing rows give way to the "… ?" marker when the line would exceed
+			// the terminal width — never a mid-row clip (Decision 9). The cue LEADS in
+			// every scope, list and focused alike: the focused set plus the cue also
+			// overran the canonical width (the cue began past the right edge and never
+			// showed), so trailing it there — as an earlier build did — reintroduced
+			// the very invisibility the lead placement exists to prevent (Decision 8).
+			return m.fitFooterLine(m.mouseCaptureDisclosure(), m.stackFooterSegments())
 		}
-		return m.styles.Dim.Render(views.HelpLine(m.footerBindings()))
+		// The bare-tab seam fits through the identical helper. No cue: the mouse is
+		// only ever armed over a pushed browser, so a tab-level footer never has a
+		// mouse state to disclose.
+		return m.fitFooterLine("", m.footerBindingSegments())
 	}
 }
 
@@ -2585,6 +2648,23 @@ func (m Model) footerBindings() []keybinding.Binding {
 		bindings = append(bindings, actions.Binding(action))
 	}
 	return bindings
+}
+
+// footerBindingSegments renders the active tab scope's live bindings as
+// individually dim-styled "key desc" segments — the bare-tab seam's per-row unit
+// the width-aware fitter (fitFooterLine) drops from the tail. It is footerBindings
+// rendered a row at a time rather than through one views.HelpLine join, because
+// the fitter needs the rows separable to drop whole trailing ones; every segment
+// is dim (no per-row strikethrough like the stack footer carries), so the
+// individual renders read identically to one outer Dim over the joined line.
+func (m Model) footerBindingSegments() []string {
+	bindings := m.footerBindings()
+	segments := make([]string, len(bindings))
+	for i, binding := range bindings {
+		help := binding.Help()
+		segments[i] = m.styles.Dim.Render(help.Key + " " + help.Desc)
+	}
+	return segments
 }
 
 // activeScope maps the active tab to its actions.Scope, so the footer
