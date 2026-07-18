@@ -113,6 +113,13 @@ AppleSystemPolicy blocks execution before dyld even loads the binary. See decisi
    withholds secrets from fork-triggered workflow runs (moot here anyway: the
    workflow fires only on tag push, which outside contributors cannot do).
    `GITHUB_TOKEN` still cannot push cross-repo — that premise is unchanged.
+   *Amendment (2026-07-17, same day as shipped):* the action deprecates the
+   `app-id` input in favor of `client-id` (its README's inputs table: "`client-id`
+   or `app-id` — Required: GitHub App Client ID"). The workflow now passes the
+   App's Client ID via the repo **variable** `TAP_PUBLISHER_CLIENT_ID` — client
+   IDs are public identifiers, so a variable (the action's own documented
+   pattern) is the honest storage class; the secret `TAP_PUBLISHER_APP_ID` is
+   retired. `TAP_PUBLISHER_APP_PRIVATE_KEY` remains the sole secret.
 7. **First public tag: `v1.0.0`. (Owner decision 2026-07-17, T12 — supersedes
    every `v2.0.0`-as-first-tag reference in this ADR, ADR 13, ADR 18, and the
    phase plans.)** The published history contains no v1 era at all (ADR 13
