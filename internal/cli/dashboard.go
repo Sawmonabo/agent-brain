@@ -61,7 +61,7 @@ func launchHub(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	binaryPath, err := resolveBinary()
+	binaryPath, err := invokedBinary()
 	if err != nil {
 		return err
 	}

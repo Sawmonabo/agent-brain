@@ -81,7 +81,12 @@ func newUpdateCmd() *cobra.Command {
 				}
 				return writeReleaseList(cmd.OutOrStdout(), releasePickerCandidates(releases, Version), jsonOut)
 			}
-			binaryPath, err := resolveBinary()
+			// resolvedBinary (symlink-free) is required here, unlike every
+			// other call site: selfupdate.brewManaged detects a Homebrew
+			// install by a /Cellar/ segment in TargetPath, and the atomic swap
+			// must replace the real file, not a symlink pointing at it
+			// (resolvedBinary's doc, service.go).
+			binaryPath, err := resolvedBinary()
 			if err != nil {
 				return err
 			}

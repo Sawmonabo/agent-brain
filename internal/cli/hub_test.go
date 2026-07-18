@@ -30,18 +30,18 @@ func (m stubBareModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
 func (m stubBareModel) View() tea.View                      { return tea.NewView("") }
 
 // TestMaybeReExec pins launchHub's post-Run re-exec seam (spec §11): a model
-// that latched the R restart execs the resolved binary with the current argv
+// that latched the R restart execs the invoked binary with the current argv
 // and environment (so the restarted hub is the same invocation on the new
 // binary); every other case leaves the process alone, and an exec failure
 // propagates.
 func TestMaybeReExec(t *testing.T) {
 	t.Parallel()
-	binary, err := resolveBinary()
+	binary, err := invokedBinary()
 	if err != nil {
-		t.Fatalf("resolveBinary: %v", err)
+		t.Fatalf("invokedBinary: %v", err)
 	}
 
-	t.Run("requested re-exec runs the resolved binary with argv+env", func(t *testing.T) {
+	t.Run("requested re-exec runs the invoked binary with argv+env", func(t *testing.T) {
 		t.Parallel()
 		called := false
 		var gotArgv0 string
@@ -57,7 +57,7 @@ func TestMaybeReExec(t *testing.T) {
 			t.Fatal("execFn not called when a re-exec was requested")
 		}
 		if gotArgv0 != binary {
-			t.Errorf("argv0 = %q, want the resolved binary %q", gotArgv0, binary)
+			t.Errorf("argv0 = %q, want the invoked binary %q", gotArgv0, binary)
 		}
 		if diff := cmp.Diff(os.Args, gotArgv); diff != "" {
 			t.Errorf("argv mismatch (-want +got):\n%s", diff)

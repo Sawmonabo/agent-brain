@@ -26,6 +26,24 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// writeStandInBinary creates a regular file standing in for an installed
+// binary (agent-brain or gh). The filter/credential checks only ever
+// os.Stat / os.SameFile the recorded and running paths — they NEVER execute
+// this file, and the tests that use it wire no .gitattributes and perform no
+// add/checkout, so no git clean/smudge/merge driver is ever fired at it (the
+// fork-bomb hazard CLAUDE.md forbids requires exactly that no real filter
+// invocation occurs). The content is therefore irrelevant; only the file's
+// identity (its inode, and whether it exists at all) matters.
+func writeStandInBinary(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("stand-in for an installed binary — never executed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testRegistry(t *testing.T) *provider.Registry {
 	t.Helper()
 	fake := providertest.New("claude", provider.ScopePerProject, []provider.Pattern{
@@ -378,12 +396,64 @@ func TestRunCredentialHelperWiredOnHTTPSRemote(t *testing.T) {
 	fx := newFixture(t)
 	fx.deps.Offline = true
 	mustGit(t, fx.dir, "remote", "set-url", "origin", "https://example.invalid/agent-brain-memories.git")
-	if err := gitx.InstallCredentialHelper(context.Background(), fx.dir, "/usr/bin/gh"); err != nil {
+	// A gh that EXISTS on disk: checkCredentialHelper now requires the wired gh
+	// binary to be present (a helper pointing at an uninstalled/moved gh passes
+	// a presence-only grep yet fails every HTTPS push), so wire a real stand-in
+	// rather than a bare /usr/bin/gh that need not exist on the test host.
+	ghPath := filepath.Join(fx.base, "bin", "gh")
+	writeStandInBinary(t, ghPath)
+	if err := gitx.InstallCredentialHelper(context.Background(), fx.dir, ghPath); err != nil {
 		t.Fatal(err)
 	}
 	got := result(t, doctor.Run(context.Background(), fx.deps), "credential-helper")
 	if got.Status != doctor.StatusOK {
 		t.Fatalf("credential-helper check = %+v, want ok", got)
+	}
+}
+
+// TestRunCredentialHelperDeadGhPath pins the credential-helper hardening: a
+// helper wired to a gh path that no longer exists (gh uninstalled or moved)
+// passes the presence-only "auth git-credential" grep yet fails every HTTPS
+// push at sync time. The wired gh must os.Stat successfully; a dead path is a
+// named FAIL, distinct from "not wired", carrying the doctor --fix remedy.
+func TestRunCredentialHelperDeadGhPath(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	fx.deps.Offline = true
+	mustGit(t, fx.dir, "remote", "set-url", "origin", "https://example.invalid/agent-brain-memories.git")
+	deadGh := filepath.Join(fx.base, "bin", "gh") // wired but never created on disk
+	if err := gitx.InstallCredentialHelper(context.Background(), fx.dir, deadGh); err != nil {
+		t.Fatal(err)
+	}
+	got := result(t, doctor.Run(context.Background(), fx.deps), "credential-helper")
+	if got.Status != doctor.StatusFail {
+		t.Fatalf("credential-helper check = %+v, want fail on a dead gh path", got)
+	}
+	if got.Fix == "" {
+		t.Errorf("a dead-gh FAIL must carry the doctor --fix remedy, got %+v", got)
+	}
+	// Distinct from the "not wired" failure: the Detail must name the dead path.
+	if !strings.Contains(got.Detail, deadGh) {
+		t.Errorf("Detail %q should name the dead gh path %q", got.Detail, deadGh)
+	}
+}
+
+// TestRunCredentialHelperResetSentinelOnly pins that the empty reset-sentinel
+// entry InstallCredentialHelper writes first (install.go) is NOT mistaken for a
+// wired gh: with only that empty entry present (no gh command line), the check
+// reports the existing "not wired to gh" failure, never a spurious pass off the
+// empty value.
+func TestRunCredentialHelperResetSentinelOnly(t *testing.T) {
+	t.Parallel()
+	fx := newFixture(t)
+	fx.deps.Offline = true
+	mustGit(t, fx.dir, "remote", "set-url", "origin", "https://example.invalid/agent-brain-memories.git")
+	// Only the empty reset sentinel, no gh line — the state InstallCredentialHelper
+	// would leave if its --add step never ran.
+	mustGit(t, fx.dir, "config", "--local", "--replace-all", "credential.helper", "")
+	got := result(t, doctor.Run(context.Background(), fx.deps), "credential-helper")
+	if got.Status != doctor.StatusFail {
+		t.Fatalf("credential-helper check = %+v, want fail with only the reset sentinel", got)
 	}
 }
 

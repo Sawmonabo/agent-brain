@@ -95,16 +95,20 @@ type initState struct {
 // stepIdentity resolves this machine's paths, settings, provider
 // registry, and the absolute binary path everything else in init wires
 // into git config. binaryPath prefers AGENT_BRAIN_TEST_BINARY_PATH
-// (testBinaryPathEnv, doctor.go) over resolveBinary()'s real
+// (testBinaryPathEnv, doctor.go) over invokedBinary()'s raw
 // os.Executable() — the same seam buildDoctorDeps uses, and for the
 // identical reason: inside a test process os.Executable() is the
 // compiled cli.test binary, and wiring a git filter at it re-invokes
 // the whole suite as a "clean"/"smudge" driver, recursing without bound
-// (see testBinaryPath's doc comment, testmain_test.go).
+// (see testBinaryPath's doc comment, testmain_test.go). The invoked
+// (unresolved) spelling is deliberate: it is the upgrade-stable path the
+// daemon and doctor also read, so the filter wiring this records never
+// drifts from what the checker compares against (invokedBinary's doc,
+// service.go).
 func stepIdentity(_ context.Context, state *initState) error {
 	binaryPath := os.Getenv(testBinaryPathEnv)
 	if binaryPath == "" {
-		resolved, err := resolveBinary()
+		resolved, err := invokedBinary()
 		if err != nil {
 			return err
 		}

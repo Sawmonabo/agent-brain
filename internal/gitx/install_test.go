@@ -90,6 +90,82 @@ func TestInstallMaintenancePostureNonRepoErrors(t *testing.T) {
 	}
 }
 
+// TestWiredBinaryPath pins the reader half of shellQuote: whatever
+// InstallFilters (shellQuote(path) + " <subcommand>") or
+// InstallCredentialHelper ("!" + shellQuote(path) + " auth git-credential")
+// wrote, WiredBinaryPath reads the binary path back — including a path with a
+// space (that the quoting exists to preserve) and an embedded single quote
+// (shellQuote's close-quote, backslash-quote, reopen-quote seam). Unquoted
+// legacy values fall back to the first
+// space-delimited field; an empty value is undecodable.
+func TestWiredBinaryPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		value  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "plain path round-trips through the filter shape",
+			value:  shellQuote("/opt/homebrew/bin/agent-brain") + " git-clean",
+			want:   "/opt/homebrew/bin/agent-brain",
+			wantOK: true,
+		},
+		{
+			name:   "path with a space keeps the space",
+			value:  shellQuote("/fake path/agent-brain") + " git-smudge",
+			want:   "/fake path/agent-brain",
+			wantOK: true,
+		},
+		{
+			name:   "path with an embedded single quote decodes the escape",
+			value:  shellQuote("/weird'quote/agent-brain") + " git-merge --mode fact -- %O %A %B %P",
+			want:   "/weird'quote/agent-brain",
+			wantOK: true,
+		},
+		{
+			name:   "credential-helper shape strips the leading bang",
+			value:  "!" + shellQuote("/opt/homebrew/bin/gh") + " auth git-credential",
+			want:   "/opt/homebrew/bin/gh",
+			wantOK: true,
+		},
+		{
+			name:   "unquoted legacy value takes the first field",
+			value:  "/legacy/bin/agent-brain git-clean",
+			want:   "/legacy/bin/agent-brain",
+			wantOK: true,
+		},
+		{
+			name:   "empty value is undecodable",
+			value:  "",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "unterminated single quote is undecodable",
+			value:  "'/no/closing-quote git-clean",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "bare non-command token decodes to itself",
+			value:  "true",
+			want:   "true",
+			wantOK: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := WiredBinaryPath(tt.value)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("WiredBinaryPath(%q) = (%q, %v), want (%q, %v)", tt.value, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
 // TestInstallCredentialHelperEmptyGhPath pins the fail-closed guard: wiring
 // an empty command as gh's credential helper would silently make every HTTPS
 // credential lookup fail, so InstallCredentialHelper must reject it up front

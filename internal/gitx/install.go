@@ -54,6 +54,79 @@ func InstallFilters(ctx context.Context, repoDir, binPath string) error {
 	return nil
 }
 
+// WiredBinaryPath recovers the binary path out of a git-config value this
+// file WROTE as a shell command line: InstallFilters' filter/diff/merge
+// drivers (shellQuote(binPath) + " <subcommand>") and InstallCredentialHelper's
+// helper ("!" + shellQuote(ghPath) + " auth git-credential"). It is the READER
+// half of shellQuote; keep the two adjacent, because an edit to shellQuote's
+// escaping is only correct if this decoder honors the same scheme.
+// doctor.checkFilters / doctor.checkCredentialHelper call this to compare the
+// recorded binary against the running one by FILE IDENTITY, so a symlink
+// spelling and its target's real spelling equate — a raw substring test cannot.
+//
+// Decoding: one leading "!" (git's shell-command helper prefix) is stripped
+// first. If the remainder begins with a single quote it is decoded exactly as
+// shellQuote wrote it — literal characters inside '...', an embedded quote
+// encoded as shellQuote's four-byte seam (close-quote, backslash-escaped
+// quote, reopen-quote — spelled out in shellQuote's own doc, since gofmt's
+// doc-comment quote conversion mangles the literal here), stopping at the
+// first UNQUOTED space (the delimiter before the subcommand). Otherwise the
+// value is treated as hand-edited, unquoted config:
+// the path is its first space-delimited field. An empty value, a value that
+// decodes to the empty string, or a single-quoted value with no closing quote,
+// is undecodable (ok=false).
+func WiredBinaryPath(value string) (string, bool) {
+	value = strings.TrimPrefix(value, "!")
+	if value == "" {
+		return "", false
+	}
+	if value[0] != '\'' {
+		field, _, _ := strings.Cut(value, " ")
+		if field == "" {
+			return "", false
+		}
+		return field, true
+	}
+	var decoded strings.Builder
+	for index := 0; index < len(value); {
+		character := value[index]
+		if character == ' ' {
+			break // unquoted delimiter: end of the path token
+		}
+		if character == '\'' {
+			index++
+			start := index
+			for index < len(value) && value[index] != '\'' {
+				index++
+			}
+			if index >= len(value) {
+				return "", false // unterminated single quote
+			}
+			decoded.WriteString(value[start:index])
+			index++ // consume the closing quote
+			continue
+		}
+		if character == '\\' {
+			// Backslash escape between quoted spans (shellQuote's '\'' seam):
+			// the next byte is literal.
+			index++
+			if index >= len(value) {
+				return "", false
+			}
+			decoded.WriteByte(value[index])
+			index++
+			continue
+		}
+		decoded.WriteByte(character)
+		index++
+	}
+	result := decoded.String()
+	if result == "" {
+		return "", false
+	}
+	return result, true
+}
+
 // InstallMaintenancePosture pins git's automatic maintenance to the
 // FOREGROUND in this repo's LOCAL .git/config (ADR 19). Git's auto
 // maintenance defaults to DETACHING: after a repository-writing command it

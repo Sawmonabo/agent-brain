@@ -161,20 +161,36 @@ func checkCheckout(ctx context.Context, deps Deps) (CheckResult, bool) {
 	return CheckResult{Name: name, Status: StatusOK, Detail: dir + " is a git work tree"}, true
 }
 
-// filterConfigKeys are exactly the local git-config keys gitx.InstallFilters
-// (internal/gitx/install.go) writes, besides clean/required which get their
-// own value assertions below. Kept as this hand-matched literal rather than
-// an exported symbol so a future edit to either site forces a look at the
-// other. Presence-only: InstallFilters writes all nine atomically in one
-// pass, so a present-but-wrong entry among these seven never happens
-// without clean/required ALSO drifting.
-var filterConfigKeys = []string{
+// commandBearingFilterKeys are the local git-config keys gitx.InstallFilters
+// (internal/gitx/install.go) wires to a COMMAND LINE beginning with the
+// agent-brain binary path (shellQuote(binPath) + " <subcommand>"). Every one
+// must resolve to the SAME file as the running binary — checked by file
+// identity (sameBinaryFile), symlink-agnostic — not merely be non-empty:
+// InstallFilters writes its nine keys in a loop that can die mid-way (disk
+// full, killed process), and a check that equated only clean would wave through
+// MIXED wiring (clean at the new binary, a merge driver still at a dead old
+// one) that surfaces later as a failed merge or textconv. Held as this
+// hand-matched literal — not an exported symbol — so an edit to either site
+// forces a look at the other. clean leads so its failure keeps the historical
+// terse Detail spelling.
+var commandBearingFilterKeys = []string{
+	"filter.agentbrain.clean",
 	"filter.agentbrain.smudge",
 	"diff.agentbrain.textconv",
-	"merge.agentbrain.name",
 	"merge.agentbrain.driver",
-	"merge.agentbrain-lww.name",
 	"merge.agentbrain-lww.driver",
+}
+
+// filterConfigKeys are the remaining gitx.InstallFilters keys whose value is a
+// fixed NON-command string (a merge driver's display name, or a boolean), so
+// presence — not a binary path — is all there is to verify. Kept as this
+// hand-matched literal rather than an exported symbol so a future edit to
+// either site forces a look at the other. Presence-only: InstallFilters writes
+// all nine atomically in one pass, so a present-but-wrong entry among these
+// never happens without a command-bearing key (or required) ALSO drifting.
+var filterConfigKeys = []string{
+	"merge.agentbrain.name",
+	"merge.agentbrain-lww.name",
 	"merge.renormalize",
 }
 
@@ -217,20 +233,37 @@ func localConfig(ctx context.Context, dir string) (map[string]string, bool) {
 
 func checkFilters(ctx context.Context, deps Deps) (CheckResult, bool) {
 	const name = "filters"
-	// strings.Contains(x, "") is always true — without this guard an empty
-	// BinaryPath would make the clean-filter comparison below vacuously
-	// pass regardless of what filter.agentbrain.clean actually holds.
-	// Never empty via daemon/CLI (both resolve a real path before building
-	// Deps), but Deps/SafetyGate are exported, so a caller that forgets to
-	// set BinaryPath must get a named failure, not a silent pass.
+	// deps.BinaryPath is what a writer (init, doctor --fix) records into the
+	// command-bearing filter keys and what the daemon hands SafetyGate as the
+	// binary it was exec'd as. An empty value from an exported-Deps caller must
+	// fail BY NAME here rather than fall through to the comparison below:
+	// sameBinaryFile can never match a real recorded path against "" (Stat("")
+	// always errors), so an empty BinaryPath would otherwise reach the generic
+	// "points at a different binary" Detail and misdescribe the fault. Never
+	// empty via daemon/CLI (both resolve a real path before building Deps), but
+	// Deps and SafetyGate are exported.
 	if deps.BinaryPath == "" {
-		return CheckResult{Name: name, Status: StatusFail, Detail: "BinaryPath is empty — cannot verify filter.agentbrain.clean points at a real binary"}, true
+		return CheckResult{Name: name, Status: StatusFail, Detail: "BinaryPath is empty — cannot verify the filter wiring points at a real binary"}, true
 	}
 	dir := deps.Paths.MemoriesDir()
 
 	config, ok := localConfig(ctx, dir)
-	if !ok || !strings.Contains(config["filter.agentbrain.clean"], deps.BinaryPath) {
-		return CheckResult{Name: name, Status: StatusFail, Detail: "filter.agentbrain.clean is missing or does not point at this binary", Fix: fixDoctorFix}, true
+	if !ok {
+		return CheckResult{Name: name, Status: StatusFail, Detail: "filter.agentbrain.clean is missing — the checkout has no local git config", Fix: fixDoctorFix}, true
+	}
+	// Every command-bearing key must resolve to the SAME file as the running
+	// binary — by file identity, not raw string, so a brew symlink and its
+	// Cellar target equate. Checking all of them (not just clean) is what
+	// catches MIXED wiring a killed mid-loop InstallFilters leaves; the Detail
+	// names the offending key (clean's terse spelling reads naturally here too).
+	for _, key := range commandBearingFilterKeys {
+		recorded, decoded := gitx.WiredBinaryPath(config[key])
+		if !decoded {
+			return CheckResult{Name: name, Status: StatusFail, Detail: key + " is missing or unset", Fix: fixDoctorFix}, true
+		}
+		if !sameBinaryFile(recorded, deps.BinaryPath) {
+			return CheckResult{Name: name, Status: StatusFail, Detail: fmt.Sprintf("%s points at %s, not this binary", key, recorded), Fix: fixDoctorFix}, true
+		}
 	}
 	if config["filter.agentbrain.required"] != "true" {
 		return CheckResult{Name: name, Status: StatusFail, Detail: "filter.agentbrain.required is not true — encryption is not fail-closed", Fix: fixDoctorFix}, true
@@ -241,6 +274,31 @@ func checkFilters(ctx context.Context, deps Deps) (CheckResult, bool) {
 		}
 	}
 	return CheckResult{Name: name, Status: StatusOK, Detail: "filter/merge/textconv wiring intact"}, true
+}
+
+// sameBinaryFile reports whether the binary path recorded in git config
+// (recorded) and the path the checker was invoked as (want) name the SAME file.
+// Identical strings match outright — the common case, and the only one that
+// holds when the recorded target does not exist on disk (a test fixture, or a
+// path resolved before the binary was installed). Otherwise both must os.Stat
+// successfully and os.SameFile must agree: Stat follows symlinks, so this
+// equates every spelling of one binary — a Homebrew symlink and its Cellar
+// target, a case-variant path on APFS, a hardlink. Either side missing (e.g. a
+// Cellar path orphaned by `brew upgrade`) is NOT a match, so checkFilters names
+// the failure and doctor --fix rewrites the wiring.
+func sameBinaryFile(recorded, want string) bool {
+	if recorded == want {
+		return true
+	}
+	recordedInfo, err := os.Stat(recorded)
+	if err != nil {
+		return false
+	}
+	wantInfo, err := os.Stat(want)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(recordedInfo, wantInfo)
 }
 
 // maintenancePostureKeys are exactly the local git-config keys
@@ -320,8 +378,36 @@ func checkCredentialHelper(ctx context.Context, deps Deps) (CheckResult, bool) {
 		return CheckResult{}, false
 	}
 	result, err := gitx.RunStatus(ctx, dir, "config", "--local", "--get-all", "credential.helper")
-	if err != nil || result.ExitCode != 0 || !strings.Contains(result.Stdout, "auth git-credential") {
+	if err != nil || result.ExitCode != 0 {
 		return CheckResult{Name: name, Status: StatusFail, Detail: "credential.helper is not wired to gh — HTTPS pushes will fail to authenticate", Fix: fixDoctorFix}, true
+	}
+	// InstallCredentialHelper writes two entries: an empty reset sentinel that
+	// clears inherited helpers, then gh's own `!<ghPath> auth git-credential`
+	// command. Find the gh command line, skipping the empty sentinel entry.
+	var ghHelper string
+	for entry := range strings.SplitSeq(result.Stdout, "\n") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if strings.Contains(entry, "auth git-credential") {
+			ghHelper = entry
+			break
+		}
+	}
+	if ghHelper == "" {
+		return CheckResult{Name: name, Status: StatusFail, Detail: "credential.helper is not wired to gh — HTTPS pushes will fail to authenticate", Fix: fixDoctorFix}, true
+	}
+	// The wired gh must still exist on disk: a helper pointing at an
+	// uninstalled/moved gh passes the presence grep above yet fails every HTTPS
+	// push at sync time. EXISTENCE is the assertion, deliberately NOT identity
+	// with deps.GH (which may be nil, and a differently-spelled but real gh is
+	// legitimately fine) — doctor --fix re-wires the helper to the current gh.
+	ghPath, decoded := gitx.WiredBinaryPath(ghHelper)
+	if !decoded {
+		return CheckResult{Name: name, Status: StatusFail, Detail: "credential.helper gh command is unparseable — HTTPS pushes will fail to authenticate", Fix: fixDoctorFix}, true
+	}
+	if _, err := os.Stat(ghPath); err != nil {
+		return CheckResult{Name: name, Status: StatusFail, Detail: fmt.Sprintf("credential.helper points at %s, which does not exist — HTTPS pushes will fail", ghPath), Fix: fixDoctorFix}, true
 	}
 	return CheckResult{Name: name, Status: StatusOK, Detail: "credential.helper wired to gh"}, true
 }

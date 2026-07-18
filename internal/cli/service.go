@@ -18,10 +18,36 @@ import (
 // defaultLogLines bounds `service logs` output absent -n.
 const defaultLogLines = 100
 
-// resolveBinary pins the service definition to the real installed
-// binary, not a symlink or a go-run temp path.
-func resolveBinary() (string, error) {
-	executable, err := os.Executable()
+// invokedBinary returns this process's own executable path WITHOUT resolving
+// symlinks — os.Executable() as invoked. This is the UPGRADE-STABLE spelling:
+// on a Homebrew install it is /opt/homebrew/bin/agent-brain (the symlink-farm
+// entry), which survives every `brew upgrade`, whereas the symlink's target
+// (…/Cellar/agent-brain/<version>/bin/agent-brain) is version-scoped and
+// vanishes the moment the version changes. Every site that RECORDS the binary
+// path into durable state or re-execs the user's invocation uses this: the
+// service definition's Executable (a Cellar path there dies on upgrade, leaving
+// the launchd/systemd unit pointing at nothing), the git filter wiring init
+// installs, the hub's post-update re-exec, and the in-TUI service controller.
+// It is also the spelling every CHECKER already reads — daemon.go and
+// buildDoctorDeps both take raw os.Executable() — so recording it here is what
+// makes writer and checker converge on one spelling (doctor.checkFilters still
+// equates spellings by file identity, but converging first avoids needless
+// churn and dead-Cellar wiring).
+func invokedBinary() (string, error) {
+	return os.Executable()
+}
+
+// resolvedBinary returns this process's own executable path WITH symlinks
+// resolved (os.Executable() + filepath.EvalSymlinks) — the real on-disk file,
+// never a symlink or a go-run temp path. Exactly one caller needs this
+// spelling: `update`'s selfupdate.Options.TargetPath (update.go). selfupdate
+// detects a Homebrew install by a /Cellar/ segment in TargetPath and refuses
+// there (brew owns that binary), and its atomic swap must replace the real
+// file, never a symlink pointing at it — both require the resolved spelling.
+// Options.TargetPath's own doc says "resolved (symlink-free)"; this keeps that
+// true.
+func resolvedBinary() (string, error) {
+	executable, err := invokedBinary()
 	if err != nil {
 		return "", err
 	}
@@ -34,7 +60,7 @@ func newServiceCmd() *cobra.Command {
 		Short: "Install or control the login-started daemon service",
 	}
 	controllerFor := func() (service.Controller, error) {
-		binaryPath, err := resolveBinary()
+		binaryPath, err := invokedBinary()
 		if err != nil {
 			return nil, err
 		}

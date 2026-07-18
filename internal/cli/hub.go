@@ -37,7 +37,7 @@ func maybeReExec(finalModel tea.Model, execFn func(argv0 string, argv []string, 
 	if !ok || !requester.ReExecRequested() {
 		return nil
 	}
-	binary, err := resolveBinary()
+	binary, err := invokedBinary()
 	if err != nil {
 		return err
 	}
