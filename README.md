@@ -8,9 +8,9 @@ working with zero ceremony — no wrapper, no settings injection. A single-gorou
 sync engine is the only writer, git filters encrypt content transparently on the wire
 (Tink AES-SIV), and overlapping edits are retained side by side, never overwritten.
 
-> **Status: v2 rebuild on `develop`.** All v2 work happens on `develop`; `main` still
-> holds the retired bash/chezmoi/age v1 system until v2 merges (ADR 11). The public
-> `v2.0.0` release and Homebrew tap activate only after the ADR-13 history scrub.
+> **Status: public since 2026-07-17.** The ADR-13 history scrub is executed, `main`
+> tracks `develop`, and `v1.0.0` is the first public release — installable from the
+> Homebrew tap below.
 
 ## Table of contents
 
@@ -25,30 +25,28 @@ sync engine is the only writer, git filters encrypt content transparently on the
 
 ## Install
 
-**Homebrew (once the repo is public):**
+**Homebrew (macOS/Linux):**
 
 ```bash
 brew install sawmonabo/tap/agent-brain
 ```
 
-**While the repo is private** (the current posture, as of 2026-07-11 — Homebrew
-fetches release assets anonymously, so `brew install` is not yet live):
+**Without Homebrew** — download a release archive, or build from source:
 
 ```bash
-# Authenticated download of a release archive (owner/collaborator gh auth):
-gh release download <tag> -R Sawmonabo/agent-brain -p '*darwin_arm64*' -O - \
+# Release archive; swap the pattern per platform (darwin/linux × arm64/amd64):
+gh release download v1.0.0 -R Sawmonabo/agent-brain -p '*darwin_arm64*' -O - \
   | tar -xz -C ~/.local/bin agent-brain
 
-# …or build from source (owner git access; Linux/WSL2 no-brew fallback):
+# …or build from source (Linux/WSL2 no-brew fallback):
 go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest
 ```
 
-Once installed, `agent-brain update` keeps the binary current through the same
-authenticated `gh` path — it works against the private repo, verifies the release
-checksums, swaps atomically, and restarts the service (Homebrew installs use
-`brew upgrade` instead). Naming a version pins it exactly — `agent-brain update
-v2.0.0-rc.2` — including a deliberate, warned rollback; `--select` picks from a
-list on a terminal, `--list` shows what is installable.
+Once installed, `agent-brain update` keeps the binary current through `gh` — it
+verifies the release checksums, swaps atomically, and restarts the service
+(Homebrew installs use `brew upgrade` instead). Naming a version pins it
+exactly — `agent-brain update v1.0.0` — including a deliberate, warned rollback;
+`--select` picks from a list on a terminal, `--list` shows what is installable.
 
 Per-OS runbooks (macOS, Linux, WSL2) live in [docs/onboarding.md](docs/onboarding.md).
 

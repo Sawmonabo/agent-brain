@@ -24,25 +24,23 @@ never transfer the keyset file through a repo.
 
 ### Installing the binary
 
-Once the repo is public, Homebrew is the path on macOS/Linux:
+Homebrew is the path on macOS/Linux:
 
 ```bash
 brew install sawmonabo/tap/agent-brain
 ```
 
-**While the repo is private** (current posture, 2026-07-10 — Homebrew fetches release
-assets anonymously and cannot read a private repo, so the tap is not yet live), use an
-authenticated release download or `go install`:
+Without Homebrew, use a release download or `go install`:
 
 ```bash
-# Release archive (owner/collaborator gh auth); swap the OS_ARCH pattern per platform:
+# Release archive; swap the OS_ARCH pattern per platform:
 mkdir -p ~/.local/bin
-gh release download <tag> -R Sawmonabo/agent-brain -p '*<os>_<arch>*' -O - \
+gh release download v1.0.0 -R Sawmonabo/agent-brain -p '*<os>_<arch>*' -O - \
   | tar -xz -C ~/.local/bin agent-brain
 #   macOS Apple Silicon: *darwin_arm64*   ·   Intel: *darwin_amd64*
 #   Linux/WSL2 x86-64:   *linux_amd64*    ·   arm64: *linux_arm64*
 
-# …or build from source (needs owner git access; set GOPRIVATE if the module is private):
+# …or build from source:
 go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest
 ```
 
@@ -61,7 +59,7 @@ The daemon runs as a per-user **LaunchAgent**, installed by `init` via
 kardianos/service.
 
 ```bash
-# 1. Install (brew once public, or the interim download above).
+# 1. Install (brew, or the direct download above).
 # 2. First-run wizard — imports the keyset on a joining machine:
 agent-brain init
 #    Joining an existing fleet: at the keyset step choose "import" and paste the
@@ -158,12 +156,12 @@ service logs`), and vice versa.
 agent-brain update --check              # report whether a newer release exists
 agent-brain update                      # download, verify, swap, restart the service (newest release, rc or stable)
 agent-brain update --list               # show the installable releases (--json for scripts)
-agent-brain update v2.0.0-rc.2          # pin an exact release (rollback too — warned, then honored)
+agent-brain update v1.0.0               # pin an exact release (rollback too — warned, then honored)
 agent-brain update --select             # pick from the release list (interactive terminal only)
 ```
 
-The update runs through the same authenticated `gh` as the install, so it works
-while the repo is private. It verifies the release's sha256 checksums, sanity-runs
+The update runs through the same `gh` as the install. It verifies the
+release's sha256 checksums, sanity-runs
 the new binary, swaps atomically, and confirms the daemon came back on the new
 version (ADR 18). Implicit resolution never downgrades; naming an older version
 does, after a warning — run `agent-brain doctor` afterwards, since state written
