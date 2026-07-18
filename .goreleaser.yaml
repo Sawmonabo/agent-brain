@@ -71,6 +71,10 @@ brews:
       owner: Sawmonabo
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # The tap has a Formula/ directory; when one exists, brew loads formulae
+    # only from it, so a root-level .rb (goreleaser's default target) would be
+    # invisible to `brew install`.
+    directory: Formula
     # ADR 16 decision 13 / decision 6: prerelease tags (v2.0.0-rc.*) publish
     # GitHub release assets but skip the formula push, so cutover RCs never
     # point a public `brew install` at this still-private repo's assets.
