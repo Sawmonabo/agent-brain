@@ -1,11 +1,11 @@
-# agent-brain v2 — Design Specification
+# agent-brain — Design Specification
 
 - **Status:** Approved 2026-07-07 (all 13 sections user-approved); implemented through Phase 5 and maintained as-built. Repo public since 2026-07-17 (ADR 13 scrub executed).
-- **Branch:** `develop` (integration) → `main` (released line). ADR 11's original arrangement — main retaining the bash-era system until v2 proved out — ended at the 2026-07-17 cutover: the scrubbed v2 line became `main` (ADR 13).
-- **Supersedes:** the bash/chezmoi/age system spec (bash era). Its archived copy — and all bash-era history — was removed from this repository by the ADR 13 full-v1-erasure scrub; the offline pre-scrub mirror is the only remaining record.
+- **Branch:** `develop` (integration) → `main` (released line). ADR 11's original arrangement — main retaining the bash-era system until the Go rebuild proved out — ended at the 2026-07-17 cutover: the scrubbed Go line became `main` (ADR 13).
+- **Supersedes:** the bash/chezmoi/age system spec (bash era). Its archived copy — and all bash-era history — was removed from this repository by the ADR 13 full-v1-erasure scrub, and the offline pre-scrub mirror was itself deleted in the post-launch backup retirement (2026-07-17, owner decision): the bash era is intentionally unrecoverable.
 - **Decisions:** every load-bearing choice has an ADR under `docs/decisions/` — this spec states *what* the system is; the ADRs record *why*, the alternatives, buy-vs-build, and full research trails.
 
-agent-brain v2 is a single Go binary that syncs AI coding agents' per-project memory
+agent-brain is a single Go binary that syncs AI coding agents' per-project memory
 across machines through an encrypted private GitHub repo — invisibly. Plain `claude`
 and `codex` work with zero ceremony: a resident user-level daemon discovers projects
 as providers create memory for them, watches enrolled projects' memory directories,
@@ -42,7 +42,8 @@ and syncs continuously. A pretty interactive CLI is the management surface.
 
 The bash-era system required launching sessions through an `ab-claude` wrapper,
 serialized whole sessions behind a mkdir lock, and resolved concurrent edits by
-overwriting — losing recent changes. v2 removes every one of those properties.
+overwriting — losing recent changes. The Go rebuild removes every one of those
+properties.
 
 Requirement → mechanism:
 
@@ -354,7 +355,7 @@ entry per ADR 20 decision 1; see [docs/01-dashboard-hub-spec.md](01-dashboard-hu
   --no-restart]`** — gh-native self-update (ADR 18): resolve the target
   release — the newest release by default (semver max over non-draft tags,
   rc and stable alike), an exact pin when a version is named
-  (`update v2.1.0`), or an interactive pick
+  (`update v1.2.0`), or an interactive pick
   via `--select` (TTY only) — download archive + checksums through
   authenticated `gh`, verify sha256, sanity-run the new binary, atomically
   swap it over the current executable, then bounce the service and confirm
@@ -382,9 +383,10 @@ gh's `pkg/` is historical). Single module at the repo root —
 `go install .../cmd/agent-brain@latest` works by construction.
 
 Per ADR 11 (greenfield): the legacy bash system (`home/`, `tools/`, chezmoi
-scaffolding) is DELETED on `develop`. Migration reads machine-local runtime state,
-never legacy repo files (§10), so nothing in-repo needs to survive; `main` retains
-the bash world until v2 merges.
+scaffolding) was deleted outright. Migration reads machine-local runtime state,
+never legacy repo files (§10), so nothing in-repo needed to survive. (`main`
+retained the bash world only until the 2026-07-17 cutover — ADR 11 amendment,
+ADR 13 scrub.)
 
 ```
 agent-brain/
@@ -457,8 +459,8 @@ Memories currently live in **two places** per machine: (a) `~/.agent-brain/<slug
 — bash-era runtime plaintext from wrapper-managed sessions; (b)
 `~/.claude/projects/<slug>/memory/` — Claude's default path, holding every
 plain-`claude` session plus the entire pre-v3 era (local-scope
-`autoMemoryDirectory` was silently rejected). v2 watches (b) natively, so migration
-only rescues (a).
+`autoMemoryDirectory` was silently rejected). agent-brain watches (b) natively, so
+migration only rescues (a).
 
 **`agent-brain migrate`** — one-time, idempotent, import-only (the sole
 backward-compat surface, ADR 11):
@@ -491,19 +493,21 @@ unadjudicated.
 leftovers): remove the SessionStart healthcheck hook; delete `~/.local/bin/ab-claude`
 and the healthcheck script; strip `autoMemoryDirectory` from per-project
 `.claude/settings.local.json`; remove `~/.config/agent-brain/chezmoi.toml`; delete
-the `~/.agent-brain/` runtime dir. The age key stays archived ONLY until the scrub
-below completes, then retires everywhere.
+the `~/.agent-brain/` runtime dir. The bash-era age key is fully retired (scrub
+executed and every archive deleted 2026-07-17) — nothing age-encrypted remains
+anywhere, so leftover bash-era state needs no key custody: after a verified
+import it can simply be deleted.
 
-**History scrub — decided** (ADR 13): after migration is verified on every machine,
-this repo's history is rewritten with git-filter-repo v2.47.0
+**History scrub — executed 2026-07-17** (ADR 13, full execution record there):
+this repo's history was rewritten with git-filter-repo v2.47.0
 (`--sensitive-data-removal --invert-paths --path home/dot_agent-brain`) — removing
-the blobs empties the `memory:` commits so filter-repo prunes them, taking
+the blobs emptied the `memory:` commits so filter-repo pruned them, taking
 hostname/timing metadata along. Verification = gitleaks full-history scan + manual
-inspection BEFORE any push. Because GitHub retains cached views and unreachable
-objects past a force-push, the chosen finish for this private, forkless repo is
-**delete-and-recreate**. Gate: v2 merged to main + all machines migrated + a local
-pre-scrub archive kept through the first weeks. Going public afterward becomes a
-zero-cost option.
+inspection before any push. Because GitHub retains cached views and unreachable
+objects past a force-push, the finish was **delete-and-recreate** of the GitHub
+repo. The repo went public the same day; the local pre-scrub mirror was kept
+through launch verification, then deleted in the backup retirement (§Supersedes
+note above).
 
 ## 11. Failure modes & security
 
@@ -625,8 +629,8 @@ Daemon logging: `log/slog` (stdlib), JSON handler.
   era's paths — `gh release download <tag> -R Sawmonabo/agent-brain -p
   '<os>_<arch>'` or
   `go install github.com/Sawmonabo/agent-brain/cmd/agent-brain@latest` (§8) —
-  both remain valid post-launch; brew becomes the primary path once `v1.0.0`
-  publishes the formula.
+  both remain valid post-launch; brew became the primary path when `v1.0.0`
+  published the formula.
 - **New-machine onboarding** (target: under 5 minutes; per-OS runbook in
   `docs/onboarding.md`): install → `agent-brain init` (gh auth → clone memories repo
   → `key import` from password manager → service install → enrollment picker) →

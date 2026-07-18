@@ -4,18 +4,23 @@ Guidance for Claude Code sessions in this repository.
 
 ## What this repo is
 
-agent-brain v2: a single Go binary that syncs AI coding agents' per-project
+agent-brain: a single Go binary that syncs AI coding agents' per-project
 memory across machines through an encrypted private GitHub repo
 (`agent-brain-memories`). A resident user daemon watches provider-native
 memory paths (no wrapper command), a single-goroutine sync engine is the only
 writer, and git filters encrypt content transparently (Tink AES-SIV).
+Shipped publicly since 2026-07-17 (v1.x, Homebrew tap `sawmonabo/tap`).
 
 `docs/00-design-spec.md` is the canonical spec — section references (§4, §5…)
 appear in code comments and are load-bearing. Every design decision has an ADR
-in `docs/decisions/`. The active implementation plan is in `docs/plans/`.
+in `docs/decisions/`. The executed phase plans live in `docs/plans/`
+(historical record); `backlog-*.md` files there hold deferred, not-yet-planned
+work.
 
-**Branch discipline (ADR 11):** all v2 work happens on `develop`. `main`
-still holds the retired bash-era system until v2 merges; never commit there.
+**Branch discipline (ADR 11 as amended):** work lands on `develop`; `main` is
+the released public line, fast-forwarded from `develop` (equal since the
+2026-07-17 cutover, when the scrubbed line replaced the bash era). Never
+commit directly to `main`.
 
 ## Commands
 

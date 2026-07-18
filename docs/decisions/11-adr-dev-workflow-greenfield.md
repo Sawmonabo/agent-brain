@@ -1,6 +1,7 @@
 # ADR 11: Development workflow — develop-gated main, greenfield reset
 
-- **Status:** Accepted
+- **Status:** Accepted (transitional `main` arrangement concluded 2026-07-17 — see
+  "Amendment: cutover executed" below)
 - **Date:** 2026-07-07
 - **Deciders:** Sawmon (directive)
 - **Related:** ADR 10 (build verdict), Section 10 of the design (migration)
@@ -45,3 +46,21 @@ n/a (process decision).
 No websearch conducted — user-directed workflow decision, not a technology
 selection. Branch state verified locally (only `main` and a stale
 `feat/install-upgrade-path` existed prior).
+
+## Amendment: cutover executed (2026-07-17, Sawmon)
+
+The transitional arrangement above — `main` representing the working bash
+system until the Go rebuild proved out — ended at the public launch:
+
+- The Go system demonstrably worked end-to-end, ADR 13's history scrub was
+  executed, and `main` was reset to the scrubbed greenfield line
+  (`develop` = `main` at cutover). The repo went public the same day, with
+  `v1.0.0` as the first tag on the new line.
+- **What persists:** the develop-first flow. All work still lands on
+  `develop`; `main` is the released public line, advanced only by
+  fast-forward from `develop`. Direct commits to `main` remain forbidden.
+- **Superseded consequence:** "History preserves everything — deletion on
+  `develop` loses nothing that `git log`/`main` can't recover" was true
+  during the transition but is deliberately false since the scrub: the bash
+  era is no longer recoverable from this repository's history (that was the
+  point — ADR 13 records what was erased and why).

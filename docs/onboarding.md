@@ -33,9 +33,9 @@ brew install sawmonabo/tap/agent-brain
 Without Homebrew, use a release download or `go install`:
 
 ```bash
-# Release archive; swap the OS_ARCH pattern per platform:
+# Release archive (latest); swap the OS_ARCH pattern per platform:
 mkdir -p ~/.local/bin
-gh release download v1.0.0 -R Sawmonabo/agent-brain -p '*<os>_<arch>*' -O - \
+gh release download -R Sawmonabo/agent-brain -p '*<os>_<arch>*' -O - \
   | tar -xz -C ~/.local/bin agent-brain
 #   macOS Apple Silicon: *darwin_arm64*   ·   Intel: *darwin_amd64*
 #   Linux/WSL2 x86-64:   *linux_amd64*    ·   arm64: *linux_arm64*
@@ -134,8 +134,9 @@ echo "$DBUS_SESSION_BUS_ADDRESS"   # empty → the #8842 gotcha; start/repair th
 alive across *logouts*, but it cannot keep the WSL2 utility VM running: the VM halts
 when the last WSL session closes, and the daemon stops with it. Residency therefore
 holds only while a session/VM is up; when you reopen WSL, the daemon's start-up
-recovery scan and polling backstop catch up on anything missed. (The idle-posture
-decision for WSL2 is settled during Task 10 and recorded in the ledger.)
+recovery scan and polling backstop catch up on anything missed. (This
+catch-up-on-open posture is the accepted design — no Windows-side keep-alive
+machinery.)
 
 ## Verify (all platforms)
 
@@ -146,7 +147,7 @@ agent-brain status      # daemon ready; last cycle reported
 agent-brain dashboard   # live TUI: Projects healthy, Activity sane (interactive TTY only)
 ```
 
-Two-machine proof (the point of v2): write a memory in an enrolled project on one
+Two-machine proof (the point of agent-brain): write a memory in an enrolled project on one
 machine, then watch it arrive on another (dashboard **Activity** or `agent-brain
 service logs`), and vice versa.
 
@@ -156,7 +157,7 @@ service logs`), and vice versa.
 agent-brain update --check              # report whether a newer release exists
 agent-brain update                      # download, verify, swap, restart the service (newest release, rc or stable)
 agent-brain update --list               # show the installable releases (--json for scripts)
-agent-brain update v1.0.0               # pin an exact release (rollback too — warned, then honored)
+agent-brain update v1.0.1               # pin an exact release (rollback too — warned, then honored)
 agent-brain update --select             # pick from the release list (interactive terminal only)
 ```
 
@@ -174,5 +175,7 @@ design — use `brew upgrade agent-brain` there. Dev builds (`go build`, version
 After a verified `migrate`, follow the spec §10 retirement checklist (remove the
 SessionStart healthcheck hook, delete `~/.local/bin/ab-claude`, strip
 `autoMemoryDirectory` from per-project `.claude/settings.local.json`, remove
-`~/.config/agent-brain/chezmoi.toml`, delete `~/.agent-brain/`). The age key stays
-archived until the history scrub (ADR 13) completes fleet-wide.
+`~/.config/agent-brain/chezmoi.toml`, delete `~/.agent-brain/`). The ADR 13
+history scrub is executed and the bash-era age key is fully retired — nothing
+age-encrypted remains anywhere, so bash-era state needs no key custody: once
+`migrate` has imported a machine's memories, its leftovers can simply be deleted.
